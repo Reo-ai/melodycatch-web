@@ -49,6 +49,11 @@ import {
   holdOn,
   releaseAll,
 } from "../audio/pianoEngine";
+import {
+  bassHoldOff,
+  bassHoldOn,
+  bassReleaseAll,
+} from "../audio/bassEngine";
 import { useComputerKeyboard } from "../input/useComputerKeyboard";
 import { useWebMIDI } from "../input/useWebMIDI";
 import type { Scale } from "../music/scale";
@@ -67,11 +72,20 @@ interface StudioProps {
 type ArmState = "idle" | "recording";
 
 const PALETTE_CHORD_DURATION_SEC = 1.4;
+const HISTORY_LIMIT = 50;
+
+interface Snapshot {
+  melody: Layer;
+  chord: Layer;
+  drum: Layer;
+  bass: Layer;
+}
 
 export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [melody, setMelody] = useState<Layer>(() => emptyLayer("melody", "メロディ"));
   const [chord, setChord] = useState<Layer>(() => emptyLayer("chord", "コード"));
   const [drum, setDrum] = useState<Layer>(() => emptyLayer("drum", "ドラム"));
+  const [bass, setBass] = useState<Layer>(() => emptyLayer("bass", "ベース"));
   const [armed, setArmed] = useState<LayerId>("melody");
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
@@ -85,6 +99,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [selectedChord, setSelectedChord] = useState<HarmonicChord | null>(null);
   const [bpm, setBpm] = useState<number>(100);
   const [quantizeGrid, setQuantizeGrid] = useState<QuantizeGrid>("1/16");
+  const [editMode, setEditMode] = useState(false);
+  const [past, setPast] = useState<Snapshot[]>([]);
+  const [future, setFuture] = useState<Snapshot[]>([]);
   const audioReady = useRef(false);
 
   const sessionRef = useRef<RecordingSession | null>(null);
@@ -122,11 +139,74 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setMelody((cur) => ({ ...cur, notes: [...cur.notes] }));
       } else if (armedRef.current === "chord") {
         setChord((cur) => ({ ...cur, notes: [...cur.notes] }));
+      } else if (armedRef.current === "bass") {
+        setBass((cur) => ({ ...cur, notes: [...cur.notes] }));
       } else {
         setDrum((cur) => ({ ...cur, notes: [...cur.notes] }));
       }
     });
   }, []);
+
+  // ---- Undo/Redo: 破壊的操作の前にスナップショット保存 -----------------------
+  const pushHistory = useCallback(() => {
+    setPast((p) => {
+      const snap: Snapshot = { melody, chord, drum, bass };
+      const next = [...p, snap];
+      if (next.length > HISTORY_LIMIT) next.shift();
+      return next;
+    });
+    setFuture([]);
+  }, [melody, chord, drum, bass]);
+
+  const undo = useCallback(() => {
+    setPast((p) => {
+      if (p.length === 0) return p;
+      const prev = p[p.length - 1];
+      setFuture((f) => [...f, { melody, chord, drum, bass }]);
+      setMelody(prev.melody);
+      setChord(prev.chord);
+      setDrum(prev.drum);
+      setBass(prev.bass);
+      return p.slice(0, -1);
+    });
+  }, [melody, chord, drum, bass]);
+
+  const redo = useCallback(() => {
+    setFuture((f) => {
+      if (f.length === 0) return f;
+      const next = f[f.length - 1];
+      setPast((p) => [...p, { melody, chord, drum, bass }]);
+      setMelody(next.melody);
+      setChord(next.chord);
+      setDrum(next.drum);
+      setBass(next.bass);
+      return f.slice(0, -1);
+    });
+  }, [melody, chord, drum, bass]);
+
+  // Cmd+Z / Ctrl+Z = undo, Cmd+Shift+Z / Ctrl+Y = redo
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (target.isContentEditable) return;
+      }
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const k = e.key.toLowerCase();
+      if (k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((k === "z" && e.shiftKey) || k === "y") {
+        e.preventDefault();
+        redo();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
 
   // ---- ドラムヒット (DrumPad ループから来る) -------------------------------
   const handleDrumHit = useCallback(
@@ -153,10 +233,15 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   }, []);
 
   // ---- 共通 note handler (ピアノ/キーボード/MIDI) ---------------------------
+  // bass がアームされているときは bassEngine、それ以外は pianoEngine に流す
   const handleNoteOn = useCallback(
     async (midi: number, velocity = 0.85) => {
       await arm();
-      holdOn(midi, velocity);
+      if (armedRef.current === "bass") {
+        bassHoldOn(midi, velocity);
+      } else {
+        holdOn(midi, velocity);
+      }
       setActiveNotes((cur) => {
         const next = new Set(cur);
         next.add(midi);
@@ -171,7 +256,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
 
   const handleNoteOff = useCallback(
     (midi: number) => {
+      // 入力中に armed が切り替わっている可能性に備えて両方 off する
       holdOff(midi);
+      bassHoldOff(midi);
       setActiveNotes((cur) => {
         if (!cur.has(midi)) return cur;
         const next = new Set(cur);
@@ -318,11 +405,21 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     stopPlayback();
     cancelProgressionTimers();
 
+    // 録音は対象レイヤを上書きするので Undo 用にスナップショット
+    pushHistory();
+
     const layer =
-      armed === "melody" ? melody : armed === "chord" ? chord : drum;
+      armed === "melody"
+        ? melody
+        : armed === "chord"
+          ? chord
+          : armed === "bass"
+            ? bass
+            : drum;
     const fresh = emptyLayer(armed, layer.name);
     if (armed === "melody") setMelody(fresh);
     else if (armed === "chord") setChord(fresh);
+    else if (armed === "bass") setBass(fresh);
     else setDrum(fresh);
 
     sessionRef.current = new RecordingSession(fresh);
@@ -334,6 +431,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     const otherLayers: Layer[] = [];
     if (armed !== "melody" && melody.notes.length > 0) otherLayers.push(melody);
     if (armed !== "chord" && chord.notes.length > 0) otherLayers.push(chord);
+    if (armed !== "bass" && bass.notes.length > 0) otherLayers.push(bass);
     if (armed !== "drum" && drum.notes.length > 0) otherLayers.push(drum);
     if (otherLayers.length > 0) {
       const overdub = new Playback(otherLayers, {
@@ -368,6 +466,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       const finished = sessionRef.current.end();
       if (finished.id === "melody") setMelody({ ...finished });
       else if (finished.id === "chord") setChord({ ...finished });
+      else if (finished.id === "bass") setBass({ ...finished });
       else setDrum({ ...finished });
     }
     sessionRef.current = null;
@@ -377,14 +476,19 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     }
     cancelProgressionTimers();
     setState("idle");
-    activeNotes.forEach((m) => holdOff(m));
+    activeNotes.forEach((m) => {
+      holdOff(m);
+      bassHoldOff(m);
+    });
     setActiveNotes(new Set());
     setPlaybackHighlight(new Set());
   }
 
   function clearLayer(id: LayerId) {
+    pushHistory();
     if (id === "melody") setMelody(emptyLayer("melody", "メロディ"));
     else if (id === "chord") setChord(emptyLayer("chord", "コード"));
+    else if (id === "bass") setBass(emptyLayer("bass", "ベース"));
     else setDrum(emptyLayer("drum", "ドラム"));
   }
 
@@ -395,7 +499,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     cancelProgressionTimers();
     // 録音した内容を再生する間はライブ DrumLoop を止める (二重発音防止)
     if (drumPadRef.current?.isPlaying()) drumPadRef.current.stop();
-    const layers = [melody, chord, drum].filter((l) => l.notes.length > 0);
+    const layers = [melody, chord, bass, drum].filter((l) => l.notes.length > 0);
     if (layers.length === 0) return;
     const pb = new Playback(layers, {
       onNoteOn: (_id, m) =>
@@ -427,6 +531,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setPlaying(false);
     setPlaybackHighlight(new Set());
     releaseAll();
+    bassReleaseAll();
   }
 
   function cancelProgressionTimers() {
@@ -442,13 +547,15 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   function applyQuantize() {
     if (state === "recording" || playing) return;
     if (quantizeGrid === "off") return;
+    pushHistory();
     setMelody((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setChord((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setDrum((cur) => quantizeLayer(cur, quantizeGrid, bpm));
+    setBass((cur) => quantizeLayer(cur, quantizeGrid, bpm));
   }
 
   function exportMidi() {
-    const layers = [melody, chord, drum].filter((l) => l.notes.length > 0);
+    const layers = [melody, chord, bass, drum].filter((l) => l.notes.length > 0);
     if (layers.length === 0) return;
     const blob = exportToMidi(layers, "melodycatch.mid");
     const stamp = new Date()
@@ -464,11 +571,46 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (drumPadRef.current?.isPlaying()) drumPadRef.current.stop();
     cancelProgressionTimers();
     releaseAll();
+    bassReleaseAll();
     setActiveNotes(new Set());
     setPlaybackHighlight(new Set());
     setActiveChordIndex(null);
     setSpotlightLabel(null);
   }
+
+  // ---- 手動編集ハンドラ -----------------------------------------------------
+  // PianoRoll から「クリックでノート追加」「クリックでノート削除」を受け取る
+  const handleAddNote = useCallback(
+    (layerId: LayerId, midi: number, startSec: number) => {
+      pushHistory();
+      const dur = layerId === "drum" ? 0.05 : 0.5;
+      const note = { midi, startSec, durationSec: dur, velocity: 0.85 };
+      const update = (cur: Layer): Layer => ({
+        ...cur,
+        notes: [...cur.notes, note].sort((a, b) => a.startSec - b.startSec),
+      });
+      if (layerId === "melody") setMelody(update);
+      else if (layerId === "chord") setChord(update);
+      else if (layerId === "bass") setBass(update);
+      else setDrum(update);
+    },
+    [pushHistory],
+  );
+
+  const handleDeleteNote = useCallback(
+    (layerId: LayerId, index: number) => {
+      pushHistory();
+      const update = (cur: Layer): Layer => ({
+        ...cur,
+        notes: cur.notes.filter((_, i) => i !== index),
+      });
+      if (layerId === "melody") setMelody(update);
+      else if (layerId === "chord") setChord(update);
+      else if (layerId === "bass") setBass(update);
+      else setDrum(update);
+    },
+    [pushHistory],
+  );
 
   // ---- アンマウント時クリーンアップ ----------------------------------------
   useEffect(() => {
@@ -477,6 +619,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (overdubRef.current) overdubRef.current.stop();
       cancelProgressionTimers();
       releaseAll();
+      bassReleaseAll();
     };
   }, []);
 
@@ -484,13 +627,18 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const melodyDur = useMemo(() => layerDuration(melody), [melody]);
   const chordDur = useMemo(() => layerDuration(chord), [chord]);
   const drumDur = useMemo(() => layerDuration(drum), [drum]);
-  const totalDur = Math.max(melodyDur, chordDur, drumDur);
+  const bassDur = useMemo(() => layerDuration(bass), [bass]);
+  const totalDur = Math.max(melodyDur, chordDur, drumDur, bassDur);
   const hasAnything =
-    melody.notes.length > 0 || chord.notes.length > 0 || drum.notes.length > 0;
+    melody.notes.length > 0 ||
+    chord.notes.length > 0 ||
+    drum.notes.length > 0 ||
+    bass.notes.length > 0;
   const overdubPlaying =
     state === "recording" &&
     ((armed !== "melody" && melody.notes.length > 0) ||
       (armed !== "chord" && chord.notes.length > 0) ||
+      (armed !== "bass" && bass.notes.length > 0) ||
       (armed !== "drum" && drum.notes.length > 0));
   const isActive = state === "recording" || playing;
   const recordingLayerId: LayerId | null =
@@ -498,6 +646,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const trackInfo: { id: LayerId; layer: Layer; label: string }[] = [
     { id: "melody", layer: melody, label: "🎵 メロディ層" },
     { id: "chord", layer: chord, label: "🎼 コード層" },
+    { id: "bass", layer: bass, label: "🎸 ベース層" },
     { id: "drum", layer: drum, label: "🥁 ドラム層" },
   ];
   const armedLabel =
@@ -505,7 +654,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       ? "メロディ"
       : armed === "chord"
         ? "コード"
-        : "ドラム";
+        : armed === "bass"
+          ? "ベース"
+          : "ドラム";
   const progressionGapSec = (60 * 4) / Math.max(40, Math.min(220, bpm));
 
   return (
@@ -581,6 +732,38 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </h2>
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
             <span>横:時間 / 縦:音程</span>
+            <button
+              type="button"
+              onClick={undo}
+              disabled={past.length === 0 || state === "recording"}
+              title="元に戻る (Cmd/Ctrl+Z)"
+              className="rounded-full border border-ink-300 bg-white px-2 py-0.5 text-xs font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
+            >
+              ↶ 元に戻る
+            </button>
+            <button
+              type="button"
+              onClick={redo}
+              disabled={future.length === 0 || state === "recording"}
+              title="やり直し (Cmd/Ctrl+Shift+Z)"
+              className="rounded-full border border-ink-300 bg-white px-2 py-0.5 text-xs font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
+            >
+              ↷ やり直し
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditMode((v) => !v)}
+              disabled={state === "recording" || playing}
+              title={`編集モード ON のときは、ピアノロール上をクリックしてノートを追加 / 既存ノートをクリックして削除できます。${armedLabel}層が編集対象です。`}
+              className={[
+                "rounded-full px-3 py-0.5 text-xs font-semibold shadow-sm disabled:opacity-40",
+                editMode
+                  ? "bg-rose-500 text-white hover:bg-rose-600"
+                  : "border border-ink-300 bg-white text-ink-700 hover:border-accent-300",
+              ].join(" ")}
+            >
+              ✎ 編集モード {editMode ? "ON" : "OFF"}
+            </button>
             <label className="flex items-center gap-1">
               <span className="font-medium text-ink-700">クオンタイズ</span>
               <select
@@ -614,14 +797,25 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             </button>
           </div>
         </div>
+        {editMode && (
+          <div className="mb-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">
+            ✎ 編集モード: 空の場所をクリックすると <b>{armedLabel}層</b> にノート追加 (0.5 秒、ドラムは 1 ヒット)。
+            既存ノートをクリックすると削除できます。下の④で対象トラックを切り替えられます。
+          </div>
+        )}
         <PianoRoll
           melody={melody}
           chord={chord}
           drum={drum}
+          bass={bass}
           isActive={isActive}
           recordingLayerId={recordingLayerId}
           getPlayheadSec={getPlayheadSec}
           bpm={bpm}
+          editMode={editMode}
+          armedLayer={armed}
+          onAddNote={handleAddNote}
+          onDeleteNote={handleDeleteNote}
         />
       </section>
 
@@ -641,7 +835,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {trackInfo.map(({ id, layer, label }) => {
             const isArmed = armed === id;
             const dur = layerDuration(layer);
@@ -822,6 +1016,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             ⑦ スケール構成音だけのミニピアノ (キーから外れない)
             {armed === "melody" && state === "recording" && (
               <span className="ml-2 text-rose-500">● メロディ層に録音中</span>
+            )}
+            {armed === "bass" && state === "recording" && (
+              <span className="ml-2 text-rose-500">● ベース層に録音中 (低音シンセ)</span>
+            )}
+            {armed === "bass" && state !== "recording" && (
+              <span className="ml-2 text-emerald-600">🎸 ベース音で鳴ります</span>
             )}
           </h2>
           {selectedChord && (
