@@ -102,14 +102,20 @@ export default function Piano({
   }
 
   function handlePointerDown(e: React.PointerEvent) {
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    // タッチでは setPointerCapture しない (キャプチャすると親の touch-pan-x が効かず、
+    // 88 鍵を横スワイプでスクロールできなくなる)。マウスは従来通りキャプチャしてグリッサンドを許可。
+    if (e.pointerType === "mouse") {
+      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    }
     const midi = midiFromPointerEvent(e);
     if (midi != null) press(midi);
   }
 
   function handlePointerMove(e: React.PointerEvent) {
+    // タッチではグリッサンド処理をスキップしてブラウザの横スクロールに任せる。
+    if (e.pointerType !== "mouse") return;
     // Only treat as glissando if pointer is being pressed.
-    if (e.buttons === 0 && e.pointerType === "mouse") return;
+    if (e.buttons === 0) return;
     const midi = midiFromPointerEvent(e);
     // Release any previously-held note that isn't the current target.
     pressed.current.forEach((m) => {
@@ -190,7 +196,8 @@ export default function Piano({
                   left: x,
                   width: WHITE_KEY_WIDTH,
                   height,
-                  touchAction: "none",
+                  // pan-x: 横スワイプは 88 鍵スクロールに譲り、タップで発音する。
+                  touchAction: "pan-x",
                 }}
               >
                 <span
@@ -228,7 +235,7 @@ export default function Piano({
                   left: x,
                   width: BLACK_KEY_WIDTH,
                   height: Math.min(BLACK_KEY_HEIGHT, height * 0.65),
-                  touchAction: "none",
+                  touchAction: "pan-x",
                 }}
               />
             );

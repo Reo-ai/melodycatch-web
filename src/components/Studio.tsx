@@ -280,27 +280,48 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   }, [scale.rootPitchClass, scale.kind]);
 
   // ---- 録音中レイヤを React に通知 (PianoRoll 即時更新用) ------------------
+  // sessionRef から `snapshotNotes()` で確定 + 押しっぱなし両方のスナップショットを取り、
+  // React state に反映する。これにより:
+  //   - 録音中の押下中ノートも (現在時刻まで伸びた仮の長さで) リアルタイム表示される
+  //   - 確定済みの全ノートが毎フレーム新しい配列として state に流れるので
+  //     レコーダ側の追記とぶつからずに最新が見える
   const refreshScheduledRef = useRef(false);
   const scheduleRefresh = useCallback(() => {
     if (refreshScheduledRef.current) return;
     refreshScheduledRef.current = true;
     requestAnimationFrame(() => {
       refreshScheduledRef.current = false;
+      const sess = sessionRef.current;
+      if (!sess) return;
+      const notes = sess.snapshotNotes();
       if (armedRef.current === "melody") {
-        setMelody((cur) => ({ ...cur, notes: [...cur.notes] }));
+        setMelody((cur) => ({ ...cur, notes }));
       } else if (armedRef.current === "chord") {
-        setChord((cur) => ({ ...cur, notes: [...cur.notes] }));
+        setChord((cur) => ({ ...cur, notes }));
       } else if (armedRef.current === "bass") {
-        setBass((cur) => ({ ...cur, notes: [...cur.notes] }));
+        setBass((cur) => ({ ...cur, notes }));
       } else if (armedRef.current === "synth") {
-        setSynth((cur) => ({ ...cur, notes: [...cur.notes] }));
+        setSynth((cur) => ({ ...cur, notes }));
       } else if (armedRef.current === "guitar") {
-        setGuitar((cur) => ({ ...cur, notes: [...cur.notes] }));
+        setGuitar((cur) => ({ ...cur, notes }));
       } else {
-        setDrum((cur) => ({ ...cur, notes: [...cur.notes] }));
+        setDrum((cur) => ({ ...cur, notes }));
       }
     });
   }, []);
+
+  // 録音中は毎フレーム scheduleRefresh を呼んで、押しっぱなしのノートが
+  // 「だんだん伸びていく」アニメーションを PianoRoll に反映する。
+  useEffect(() => {
+    if (state !== "recording") return;
+    let raf = 0;
+    const tick = () => {
+      scheduleRefresh();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [state, scheduleRefresh]);
 
   // ---- Undo/Redo: 破壊的操作の前にスナップショット保存 -----------------------
   const pushHistory = useCallback(() => {
@@ -419,9 +440,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       });
       if (stateRef.current === "recording" && sessionRef.current) {
         sessionRef.current.noteOn(midi, velocity);
+        scheduleRefresh();
       }
     },
-    [arm],
+    [arm, scheduleRefresh],
   );
 
   const handleNoteOff = useCallback(
@@ -843,16 +865,24 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   }, []);
 
   const handleResizeNote = useCallback(
-    (layerId: LayerId, index: number, durationSec: number) => {
+    (layerId: LayerId, index: number, durationSec: number, side: "right" | "left" = "right") => {
       if (!resizePushedRef.current) {
         pushHistory();
         resizePushedRef.current = true;
       }
       const update = (cur: Layer): Layer => ({
         ...cur,
-        notes: cur.notes.map((n, i) =>
-          i === index ? { ...n, durationSec: Math.max(0.05, durationSec) } : n,
-        ),
+        notes: cur.notes.map((n, i) => {
+          if (i !== index) return n;
+          if (side === "left") {
+            // 左端を掴んでドラッグ: 終端 (start + duration) を固定したまま start と duration を更新
+            const end = n.startSec + n.durationSec;
+            const newDur = Math.max(0.05, durationSec);
+            const newStart = Math.max(0, end - newDur);
+            return { ...n, startSec: newStart, durationSec: end - newStart };
+          }
+          return { ...n, durationSec: Math.max(0.05, durationSec) };
+        }),
       });
       if (layerId === "melody") setMelody(update);
       else if (layerId === "chord") setChord(update);
@@ -860,6 +890,94 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "synth") setSynth(update);
       else if (layerId === "guitar") setGuitar(update);
       else setDrum(update);
+    },
+    [pushHistory],
+  );
+
+  // ---- 範囲選択 / 一括編集 -------------------------------------------------
+  // 移動中も毎フレーム履歴を積まないように、movePushedRef でドラッグ開始時の 1 度だけ pushHistory する。
+  const movePushedRef = useRef(false);
+  useEffect(() => {
+    function onUp() {
+      movePushedRef.current = false;
+    }
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, []);
+
+  /** 一括削除。selections は { layerId, index } の配列。 */
+  const handleDeleteNotes = useCallback(
+    (selections: { layerId: LayerId; index: number }[]) => {
+      if (selections.length === 0) return;
+      pushHistory();
+      const byLayer = new Map<LayerId, Set<number>>();
+      for (const s of selections) {
+        if (!byLayer.has(s.layerId)) byLayer.set(s.layerId, new Set());
+        byLayer.get(s.layerId)!.add(s.index);
+      }
+      const buildUpdate = (lid: LayerId) => (cur: Layer): Layer => {
+        const idxs = byLayer.get(lid);
+        if (!idxs) return cur;
+        return { ...cur, notes: cur.notes.filter((_, i) => !idxs.has(i)) };
+      };
+      if (byLayer.has("melody")) setMelody(buildUpdate("melody"));
+      if (byLayer.has("chord")) setChord(buildUpdate("chord"));
+      if (byLayer.has("bass")) setBass(buildUpdate("bass"));
+      if (byLayer.has("synth")) setSynth(buildUpdate("synth"));
+      if (byLayer.has("guitar")) setGuitar(buildUpdate("guitar"));
+      if (byLayer.has("drum")) setDrum(buildUpdate("drum"));
+    },
+    [pushHistory],
+  );
+
+  /**
+   * 一括移動。selections のノートを (deltaSec, deltaMidi) だけずらす。
+   * - deltaMidi はドラム層では無視される (キット番号を変えると音色が変わるため)。
+   * - インデックス番号は移動中もずれない (ドラッグ開始時のスナップショットに対応)
+   *   ようにするため、ここでは sort せず、index 位置のまま値だけ更新する。
+   */
+  const handleMoveNotes = useCallback(
+    (
+      selections: { layerId: LayerId; index: number }[],
+      deltaSec: number,
+      deltaMidi: number,
+    ) => {
+      if (selections.length === 0) return;
+      if (!movePushedRef.current) {
+        pushHistory();
+        movePushedRef.current = true;
+      }
+      const byLayer = new Map<LayerId, Set<number>>();
+      for (const s of selections) {
+        if (!byLayer.has(s.layerId)) byLayer.set(s.layerId, new Set());
+        byLayer.get(s.layerId)!.add(s.index);
+      }
+      const buildUpdate = (lid: LayerId) => (cur: Layer): Layer => {
+        const idxs = byLayer.get(lid);
+        if (!idxs) return cur;
+        const isDrum = lid === "drum";
+        return {
+          ...cur,
+          notes: cur.notes.map((n, i) => {
+            if (!idxs.has(i)) return n;
+            const newStart = Math.max(0, n.startSec + deltaSec);
+            const newMidi = isDrum
+              ? n.midi
+              : Math.max(21, Math.min(108, n.midi + deltaMidi));
+            return { ...n, startSec: newStart, midi: newMidi };
+          }),
+        };
+      };
+      if (byLayer.has("melody")) setMelody(buildUpdate("melody"));
+      if (byLayer.has("chord")) setChord(buildUpdate("chord"));
+      if (byLayer.has("bass")) setBass(buildUpdate("bass"));
+      if (byLayer.has("synth")) setSynth(buildUpdate("synth"));
+      if (byLayer.has("guitar")) setGuitar(buildUpdate("guitar"));
+      if (byLayer.has("drum")) setDrum(buildUpdate("drum"));
     },
     [pushHistory],
   );
@@ -1182,7 +1300,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               type="button"
               onClick={() => setEditMode((v) => !v)}
               disabled={state === "recording" || playing}
-              title={`編集モード ON のときは、ピアノロール上をクリックしてノートを追加 / 既存ノートをクリックして削除 / 右端ドラッグで長さを変更できます。${armedLabel}層が編集対象です。`}
+              title={`編集モード ON のときは、ピアノロール上をクリックしてノートを追加 / 既存ノートをドラッグで自由移動 / 両端ドラッグで長さ変更 / 空エリアをドラッグで範囲選択 → Delete で一括削除 / Esc で選択解除。${armedLabel}層が編集対象です。`}
               className={[
                 "rounded-full px-3 py-0.5 text-xs font-semibold shadow-sm disabled:opacity-40",
                 editMode
@@ -1261,8 +1379,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         </div>
         {editMode && (
           <div className="mb-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">
-            ✎ 編集モード: 空の場所をクリックで <b>{armedLabel}層</b> にノート追加 (長さは「音の長さ」: <b>{noteLength}</b>、ドラムは 1 ヒット)。
-            既存ノートはクリックで削除 / 右端ドラッグで長さを自由に変更できます。下の④で対象トラックを切り替えられます。
+            ✎ 編集モード: 空の場所をドラッグで範囲選択 / クリックで <b>{armedLabel}層</b> にノート追加 (長さ <b>{noteLength}</b>、ドラムは 1 ヒット)。
+            ノートをドラッグで自由に移動 (時間 + 音程)。両端を掴むと長さ調整。
+            選択中に <b>Delete</b>/<b>Backspace</b> で一括削除、<b>Esc</b> で選択解除。
+            移動は BPM のグリッドにスナップ (Alt キー押しながらでスナップ無効)。
           </div>
         )}
         <PianoRoll
@@ -1281,6 +1401,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           onAddNote={handleAddNote}
           onDeleteNote={handleDeleteNote}
           onResizeNote={handleResizeNote}
+          onDeleteNotes={handleDeleteNotes}
+          onMoveNotes={handleMoveNotes}
         />
       </section>
 

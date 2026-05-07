@@ -1,80 +1,91 @@
 /**
- * ギター楽器 (Tone.js PluckSynth ベース、手動ボイス管理)。
+ * ギター楽器 (ディストーションのかかったエレキギター / スタジアムロック想定)。
  *
- * - PluckSynth で撥弦音を作る。Tone.PolySynth は PluckSynth を受け付けない
- *   (Monophonic 派生でないため) ので、自前で MIDI -> PluckSynth マップを管理する。
- * - holdOn / holdOff で持続音、triggerNote で短いノート、chordOn で和音を鳴らせる。
- * - pianoEngine / bassEngine / synthEngine と独立しているので、
- *   同時に鳴らしても干渉しない。
+ * シグナルチェーン:
+ *   PolySynth(MonoSynth, sawtooth) ──▶ Distortion ──▶ HighPass(110Hz)
+ *     ──▶ LowPass(3.4kHz) ──▶ Chorus ──▶ Gain ──▶ Reverb ──▶ Destination
+ *
+ * - sawtooth + Distortion で歪んだエレキギターのコア音色を作る。
+ * - Highpass / Lowpass はキャビネットシミュレーション (低域モヤと超高域のジャリつきをカット)。
+ * - Chorus でコーラスがかった「広がり」、Reverb でスタジアムの空気感。
+ * - holdOn / holdOff で持続音、triggerNote で短いノート、chordOn でストロークを鳴らせる。
  */
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 
 let guitarReverb: Tone.Reverb | null = null;
+let guitarChorus: Tone.Chorus | null = null;
+let guitarLowpass: Tone.Filter | null = null;
+let guitarHighpass: Tone.Filter | null = null;
+let guitarDistortion: Tone.Distortion | null = null;
 let guitarGain: Tone.Gain | null = null;
-const voices: Map<number, Tone.PluckSynth> = new Map();
+let guitarPoly: Tone.PolySynth<Tone.MonoSynth> | null = null;
 
 function ensureGuitar() {
-  if (guitarGain) return;
-  guitarReverb = new Tone.Reverb({ decay: 1.6, wet: 0.18 }).toDestination();
-  guitarGain = new Tone.Gain(0.9).connect(guitarReverb);
-}
-
-function makeVoice(): Tone.PluckSynth {
-  ensureGuitar();
-  const v = new Tone.PluckSynth({
-    attackNoise: 0.6,
-    dampening: 4200,
-    resonance: 0.78,
-    release: 1.4,
+  if (guitarPoly) return;
+  guitarReverb = new Tone.Reverb({ decay: 2.6, wet: 0.22 }).toDestination();
+  guitarGain = new Tone.Gain(0.55).connect(guitarReverb);
+  guitarChorus = new Tone.Chorus({
+    frequency: 1.1,
+    delayTime: 3.6,
+    depth: 0.45,
+    wet: 0.32,
+  })
+    .connect(guitarGain)
+    .start();
+  guitarLowpass = new Tone.Filter({
+    frequency: 3400,
+    type: "lowpass",
+    Q: 0.9,
+  }).connect(guitarChorus);
+  guitarHighpass = new Tone.Filter({
+    frequency: 110,
+    type: "highpass",
+  }).connect(guitarLowpass);
+  guitarDistortion = new Tone.Distortion({
+    distortion: 0.85,
+    oversample: "4x",
+    wet: 1,
+  }).connect(guitarHighpass);
+  guitarPoly = new Tone.PolySynth(Tone.MonoSynth, {
+    oscillator: { type: "sawtooth" },
+    envelope: {
+      attack: 0.005,
+      decay: 0.18,
+      sustain: 0.78,
+      release: 0.55,
+    },
+    filter: { type: "lowpass", Q: 1.1 },
+    filterEnvelope: {
+      attack: 0.005,
+      decay: 0.25,
+      sustain: 0.55,
+      release: 0.6,
+      baseFrequency: 230,
+      octaves: 3.2,
+    },
   });
-  v.volume.value = -6;
-  if (guitarGain) v.connect(guitarGain);
-  return v;
+  guitarPoly.connect(guitarDistortion);
+  guitarPoly.volume.value = -10;
 }
 
-function disposeVoice(v: Tone.PluckSynth) {
-  // 余韻が消えてからクリーンアップする
-  setTimeout(() => {
-    try {
-      v.dispose();
-    } catch {
-      // noop
-    }
-  }, 1800);
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
 }
 
 export function guitarHoldOn(midi: number, velocity = 0.85): void {
   ensureGuitar();
-  // 既存ボイスがあればリリース後に破棄して新規割り当て
-  const prev = voices.get(midi);
-  if (prev) {
-    try {
-      prev.triggerRelease();
-    } catch {
-      // noop
-    }
-    disposeVoice(prev);
-    voices.delete(midi);
-  }
-  const v = makeVoice();
-  // velocity をボリュームに反映 (0..1 → -16..0 dB ぐらい)
-  v.volume.value = -6 + (Math.max(0, Math.min(1, velocity)) - 1) * 12;
-  voices.set(midi, v);
-  v.triggerAttack(midiToNoteString(midi));
+  guitarPoly!.triggerAttack(
+    midiToNoteString(midi),
+    undefined,
+    clamp01(velocity),
+  );
 }
 
 export function guitarHoldOff(midi: number): void {
-  const v = voices.get(midi);
-  if (!v) return;
-  voices.delete(midi);
-  try {
-    v.triggerRelease();
-  } catch {
-    // noop
-  }
-  disposeVoice(v);
+  if (!guitarPoly) return;
+  guitarPoly.triggerRelease(midiToNoteString(midi));
 }
 
 export function guitarTriggerNote(
@@ -84,24 +95,17 @@ export function guitarTriggerNote(
   time?: number,
 ): void {
   ensureGuitar();
-  const v = makeVoice();
-  v.volume.value = -6 + (Math.max(0, Math.min(1, velocity)) - 1) * 12;
-  v.triggerAttack(midiToNoteString(midi), time);
-  // duration 後にリリース + 破棄
-  const ms = Math.max(50, durationSec * 1000);
-  window.setTimeout(() => {
-    try {
-      v.triggerRelease();
-    } catch {
-      // noop
-    }
-    disposeVoice(v);
-  }, ms);
+  guitarPoly!.triggerAttackRelease(
+    midiToNoteString(midi),
+    Math.max(0.05, durationSec),
+    time,
+    clamp01(velocity),
+  );
 }
 
 /**
  * 和音を一括で鳴らす (コードパレット / 進行プリセット用)。
- * ギターらしい軽いストロークになるよう、少しずらして発音する。
+ * ギターらしいダウンストロークになるよう、低音弦から少しずらして発音する。
  */
 export function guitarChordOn(
   midiNotes: number[],
@@ -110,7 +114,7 @@ export function guitarChordOn(
 ): void {
   ensureGuitar();
   const sorted = [...midiNotes].sort((a, b) => a - b);
-  const strumStep = 12; // ms ずつずらしてストロークっぽく
+  const strumStep = 14; // ms ずつずらしてストロークっぽく
   sorted.forEach((m, i) => {
     window.setTimeout(() => {
       guitarTriggerNote(m, duration, velocity);
@@ -119,13 +123,6 @@ export function guitarChordOn(
 }
 
 export function guitarReleaseAll(): void {
-  voices.forEach((v) => {
-    try {
-      v.triggerRelease();
-    } catch {
-      // noop
-    }
-    disposeVoice(v);
-  });
-  voices.clear();
+  if (!guitarPoly) return;
+  guitarPoly.releaseAll();
 }

@@ -112,6 +112,28 @@ export class RecordingSession {
     }
   }
 
+  /**
+   * 録音中の最新ノート列のスナップショットを返す (PianoRoll リアルタイム描画用)。
+   * - 確定ノートに加えて、まだリリースされていない持続音 (active) も
+   *   `現在時刻まで伸びた仮ノート` として含める。
+   * - 既存配列は返さず必ずコピーを返すので、これを React state に流しても
+   *   レコーダ側の追記とぶつからない。
+   */
+  snapshotNotes(): NoteEvent[] {
+    const out = [...this.layer.notes];
+    if (this.startedAt === null) return out;
+    const now = this.elapsedSec();
+    this.active.forEach((a, midi) => {
+      out.push({
+        midi,
+        startSec: a.startSec,
+        durationSec: Math.max(0.02, now - a.startSec),
+        velocity: a.velocity,
+      });
+    });
+    return out;
+  }
+
   /** 録音停止。残った押しっぱなしは即終了。 */
   end(): Layer {
     if (this.startedAt === null) return this.layer;

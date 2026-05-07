@@ -2,15 +2,26 @@
  * DAW 風ピアノロール表示。
  *
  * - ドラム層 (上部 3 レーン: Hi-Hat / Snare / Kick) +
- *   メロディ層 (オレンジ) と コード層 (インディゴ) を同じタイムライン上に重ねて描画
+ *   メロディ / コード / ベース / シンセ / ギター を同じタイムライン上に重ねて描画
  * - 横軸: 時間 (秒)、縦軸: ピッチ (MIDI ノート番号) / ドラムは固定 3 レーン
  * - BPM が指定されているときは拍 (beat) と小節 (bar) のグリッドを描画
  * - 録音 / 再生中は赤 or 水色の再生ヘッドが進み、自動スクロールで追尾する
- * - 再生ヘッドは requestAnimationFrame + 直接 DOM 更新で 60fps に近づける
+ *
+ * 編集モード操作 (editMode = true のとき):
+ *   - 空エリアをクリック     → armedLayer に新規ノート追加
+ *   - 空エリアをドラッグ     → 矩形範囲選択 (中に入った全ノートを選択)
+ *   - ノート本体をドラッグ   → そのノートを (時間 + ピッチ) ともに自由移動
+ *                              選択中なら選択中の全ノートを一緒に移動
+ *   - ノート右端ドラッグ     → 終端を伸縮 (右側 RESIZE)
+ *   - ノート左端ドラッグ     → 始端を伸縮 (左側 RESIZE — 終端固定)
+ *   - Shift+クリック         → 選択へ追加 / 解除
+ *   - Delete / Backspace     → 選択中のノートを一括削除
+ *   - Esc                    → 選択クリア
+ *   - Alt キー押しながら     → BPM グリッドへのスナップを一時無効化
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Layer, LayerId } from "../audio/recorder";
 import {
   DRUM_HIHAT_MIDI,
@@ -41,10 +52,23 @@ interface PianoRollProps {
   armedLayer?: LayerId;
   /** 空白クリック → ノート追加 */
   onAddNote?: (layerId: LayerId, midi: number, startSec: number) => void;
-  /** ノートクリック → 削除 */
+  /** ノートクリック → 削除 (単発削除 / 互換) */
   onDeleteNote?: (layerId: LayerId, index: number) => void;
-  /** ノート右端ドラッグ → 長さ変更 */
-  onResizeNote?: (layerId: LayerId, index: number, durationSec: number) => void;
+  /** ノート端ドラッグ → 長さ変更。side="left" のときは始端、"right" のときは終端を動かす。 */
+  onResizeNote?: (
+    layerId: LayerId,
+    index: number,
+    durationSec: number,
+    side?: "right" | "left",
+  ) => void;
+  /** 範囲選択 → 一括削除 */
+  onDeleteNotes?: (selections: { layerId: LayerId; index: number }[]) => void;
+  /** ノート/範囲移動 → (deltaSec, deltaMidi) でずらす */
+  onMoveNotes?: (
+    selections: { layerId: LayerId; index: number }[],
+    deltaSec: number,
+    deltaMidi: number,
+  ) => void;
 }
 
 const PX_PER_SEC = 80;
@@ -60,16 +84,65 @@ const DRUM_LANES: { kind: DrumKind; midi: number; label: string; color: string }
   { kind: "kick", midi: DRUM_KICK_MIDI, label: "Kick", color: "#a855f7" },
 ];
 const DRUM_TOTAL_HEIGHT = DRUM_LANES.length * DRUM_LANE_HEIGHT;
-const DRUM_PITCH_GAP = 4; // ドラム帯と pitch 帯の境界線のスペース
+const DRUM_PITCH_GAP = 4;
 
-const COLOR_MELODY = "#f97316"; // orange-500
-const COLOR_CHORD = "#6366f1"; // indigo-500
-const COLOR_BASS = "#0d9488"; // teal-600
-const COLOR_SYNTH = "#ec4899"; // pink-500
-const COLOR_GUITAR = "#b45309"; // amber-700
-const COLOR_REC = "#ef4444"; // red-500
-const COLOR_PLAY = "#0ea5e9"; // sky-500
-const RESIZE_HANDLE_WIDTH = 5;
+const COLOR_MELODY = "#f97316";
+const COLOR_CHORD = "#6366f1";
+const COLOR_BASS = "#0d9488";
+const COLOR_SYNTH = "#ec4899";
+const COLOR_GUITAR = "#b45309";
+const COLOR_REC = "#ef4444";
+const COLOR_PLAY = "#0ea5e9";
+/** 端を掴むためのつまみ幅 (px)。短いノートでは自動的に半分以下に縮める。 */
+const RESIZE_HANDLE_WIDTH = 6;
+/** 移動と単発クリック (削除) を区別する閾値 (px)。これ未満で離せばクリック扱い。 */
+const CLICK_THRESHOLD_PX = 4;
+/** 選択中のノートを示すアウトライン色 */
+const SELECTION_OUTLINE = "#0ea5e9";
+
+type SelKey = string; // `${layerId}:${index}`
+function selKey(layerId: LayerId, index: number): SelKey {
+  return `${layerId}:${index}`;
+}
+function parseSel(key: SelKey): { layerId: LayerId; index: number } {
+  const [l, i] = key.split(":");
+  return { layerId: l as LayerId, index: Number(i) };
+}
+
+interface MoveDrag {
+  kind: "move";
+  startX: number;
+  startY: number;
+  selections: { layerId: LayerId; index: number }[];
+  /** ドラッグ開始時にすでに選択されていなかった場合 (= 単発ノートをドラッグ)、
+   *  クリック扱いになったときに削除すべきか判定するためのターゲット */
+  clickTarget?: { layerId: LayerId; index: number };
+  moved: boolean;
+}
+
+interface ResizeDrag {
+  kind: "resize";
+  side: "left" | "right";
+  layerId: LayerId;
+  index: number;
+  startX: number;
+  origStartSec: number;
+  origDurationSec: number;
+}
+
+interface MarqueeDrag {
+  kind: "marquee";
+  startX: number;
+  startY: number;
+  curX: number;
+  curY: number;
+  /** Shift で押下開始したか。true なら既存選択を残して追加選択。 */
+  additive: boolean;
+  /** Shift 開始時のスナップショット (削除/追加判定の起点) */
+  origSelection: Set<SelKey>;
+}
+
+type Drag = MoveDrag | ResizeDrag | MarqueeDrag;
 
 export default function PianoRoll({
   melody,
@@ -87,16 +160,23 @@ export default function PianoRoll({
   onAddNote,
   onDeleteNote,
   onResizeNote,
+  onDeleteNotes,
+  onMoveNotes,
 }: PianoRollProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<SVGLineElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  const [resizing, setResizing] = useState<{
-    layerId: LayerId;
-    index: number;
-    startClientX: number;
-    origDurationSec: number;
-  } | null>(null);
+
+  const [selection, setSelection] = useState<Set<SelKey>>(new Set());
+  const [drag, setDrag] = useState<Drag | null>(null);
+
+  // 編集モードを抜けたら選択クリア
+  useEffect(() => {
+    if (!editMode) {
+      setSelection(new Set());
+      setDrag(null);
+    }
+  }, [editMode]);
 
   const { width, pitchHeight, pitchMin, pitchMax, totalSec } = useMemo(() => {
     const all = [
@@ -125,7 +205,6 @@ export default function PianoRoll({
       pMax++;
       pMin--;
     }
-    // ドラムの最後の時間も totalSec に反映
     for (const n of drum.notes) {
       const e = n.startSec + n.durationSec;
       if (e > last) last = e;
@@ -151,6 +230,14 @@ export default function PianoRoll({
   function drumLaneY(kind: DrumKind): number {
     const idx = DRUM_LANES.findIndex((l) => l.kind === kind);
     return drumTop + idx * DRUM_LANE_HEIGHT;
+  }
+
+  /** ピクセル座標 → 秒。snapEnabled なら BPM グリッドにスナップ (1/16 が基本)。 */
+  function snapSec(sec: number, snapEnabled: boolean): number {
+    if (!snapEnabled || !bpm) return sec;
+    const beatSec = 60 / Math.max(1, bpm);
+    const grid = beatSec / 4; // 1/16
+    return Math.round(sec / grid) * grid;
   }
 
   // 再生ヘッド rAF ループ
@@ -205,81 +292,404 @@ export default function PianoRoll({
 
   const playheadColor = recordingLayerId ? COLOR_REC : COLOR_PLAY;
 
-  // ---- 編集モード: SVG 上の座標 → (midi, sec) または (drumKind, sec) -----
-  function svgPoint(e: ReactMouseEvent): { x: number; y: number } | null {
+  // ---- レイヤごとのノート取得ヘルパ -----------------------------------------
+  const layers: { id: LayerId; layer: Layer; color: string; opacity: number }[] = [
+    { id: "bass", layer: bass, color: COLOR_BASS, opacity: 0.85 },
+    { id: "chord", layer: chord, color: COLOR_CHORD, opacity: 0.85 },
+    { id: "synth", layer: synth, color: COLOR_SYNTH, opacity: 0.9 },
+    { id: "guitar", layer: guitar, color: COLOR_GUITAR, opacity: 0.9 },
+    { id: "melody", layer: melody, color: COLOR_MELODY, opacity: 0.95 },
+  ];
+  // ---- SVG 座標変換 ---------------------------------------------------------
+  function svgPoint(clientX: number, clientY: number): { x: number; y: number } | null {
     const svg = svgRef.current;
     if (!svg) return null;
     const rect = svg.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    return { x: clientX - rect.left, y: clientY - rect.top };
   }
 
-  function handleSvgClick(e: ReactMouseEvent) {
-    if (!editMode || !onAddNote || !armedLayer) return;
-    if ((e.target as Element).closest("[data-note]")) return; // ノートクリックは別ハンドラ
-    const pt = svgPoint(e);
+  // ---- 編集モード: 空エリア pointer down ------------------------------------
+  function handleSvgPointerDown(e: ReactPointerEvent) {
+    if (!editMode) return;
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    if ((e.target as Element).closest("[data-note]")) return; // ノート押下は別ハンドラ
+    if ((e.target as Element).closest("[data-resize]")) return;
+
+    // 通常クリック (マウスを動かさず離した場合) でノート追加するため、
+    // 直ちには追加せず marquee として開始。pointerup 時に「動かなかった」なら追加扱い。
+    const pt = svgPoint(e.clientX, e.clientY);
     if (!pt) return;
-    const sec = Math.max(0, pt.x / PX_PER_SEC);
-    // ドラム帯クリック → ドラム層に追加 (kind に応じて MIDI を決める)
-    if (pt.y < DRUM_TOTAL_HEIGHT) {
-      const laneIdx = Math.floor(pt.y / DRUM_LANE_HEIGHT);
-      const lane = DRUM_LANES[laneIdx];
-      if (lane) onAddNote("drum", lane.midi, sec);
-      return;
+
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+
+    setDrag({
+      kind: "marquee",
+      startX: pt.x,
+      startY: pt.y,
+      curX: pt.x,
+      curY: pt.y,
+      additive: e.shiftKey,
+      origSelection: new Set(selection),
+    });
+    if (!e.shiftKey) {
+      setSelection(new Set());
     }
-    // pitch 帯クリック → armed レイヤに追加 (drum/bass/chord/melody)
-    if (armedLayer === "drum") return; // pitch 帯から drum 追加は禁止
-    const yInPitch = pt.y - pitchTop;
-    const row = Math.floor(yInPitch / ROW_HEIGHT);
-    const midi = pitchMax - row;
-    if (midi < pitchMin || midi > pitchMax) return;
-    onAddNote(armedLayer, midi, sec);
   }
 
-  function handleNoteClick(
-    e: ReactMouseEvent,
+  // ---- ノート本体 pointer down → 移動開始 -----------------------------------
+  function handleNotePointerDown(
+    e: ReactPointerEvent,
     layerId: LayerId,
     index: number,
   ) {
-    if (!editMode || !onDeleteNote) return;
-    if (resizing) return; // リサイズ中の click は無視
+    if (!editMode) return;
+    if (e.button !== 0 && e.pointerType === "mouse") return;
     e.stopPropagation();
-    onDeleteNote(layerId, index);
+
+    const key = selKey(layerId, index);
+
+    let activeSelection: Set<SelKey>;
+    if (e.shiftKey) {
+      // Shift 押下: トグル
+      activeSelection = new Set(selection);
+      if (activeSelection.has(key)) activeSelection.delete(key);
+      else activeSelection.add(key);
+    } else if (selection.has(key)) {
+      // すでに選択中: 既存選択を維持して全部一緒にドラッグ
+      activeSelection = new Set(selection);
+    } else {
+      // 単発: そのノートだけ選択
+      activeSelection = new Set([key]);
+    }
+    setSelection(activeSelection);
+
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+
+    setDrag({
+      kind: "move",
+      startX: e.clientX,
+      startY: e.clientY,
+      selections: [...activeSelection].map(parseSel),
+      clickTarget: !selection.has(key) && !e.shiftKey
+        ? { layerId, index }
+        : undefined,
+      moved: false,
+    });
   }
 
-  function handleResizeMouseDown(
-    e: ReactMouseEvent,
+  // ---- ノート端 pointer down → リサイズ開始 ---------------------------------
+  function handleResizePointerDown(
+    e: ReactPointerEvent,
     layerId: LayerId,
     index: number,
+    side: "left" | "right",
+    origStartSec: number,
     origDurationSec: number,
   ) {
     if (!editMode || !onResizeNote) return;
+    if (e.button !== 0 && e.pointerType === "mouse") return;
     e.stopPropagation();
     e.preventDefault();
-    setResizing({
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    setDrag({
+      kind: "resize",
+      side,
       layerId,
       index,
-      startClientX: e.clientX,
+      startX: e.clientX,
+      origStartSec,
       origDurationSec,
     });
   }
 
-  // ノート右端ドラッグでリサイズ (window 全体で mousemove/mouseup を拾う)
+  // ---- pointer move / up は window 全体で拾う ------------------------------
   useEffect(() => {
-    if (!resizing || !onResizeNote) return;
-    const onMove = (e: MouseEvent) => {
-      const dx = e.clientX - resizing.startClientX;
-      const dDur = dx / PX_PER_SEC;
-      const newDur = Math.max(0.05, resizing.origDurationSec + dDur);
-      onResizeNote(resizing.layerId, resizing.index, newDur);
+    if (!drag) return;
+
+    const onMove = (e: PointerEvent) => {
+      if (drag.kind === "move") {
+        const dx = e.clientX - drag.startX;
+        const dy = e.clientY - drag.startY;
+        const moved =
+          drag.moved ||
+          Math.abs(dx) > CLICK_THRESHOLD_PX ||
+          Math.abs(dy) > CLICK_THRESHOLD_PX;
+        if (moved && onMoveNotes) {
+          const snapEnabled = !e.altKey;
+          const rawDeltaSec = dx / PX_PER_SEC;
+          const deltaSec = snapEnabled
+            ? snapSec(rawDeltaSec, true) // 0 から見たグリッド単位
+            : rawDeltaSec;
+          const deltaMidi = -Math.round(dy / ROW_HEIGHT);
+          // 増分ではなく毎フレーム「初期位置からの差分」を渡す。
+          // ただし onMoveNotes は毎回累積するのではなく
+          // ストアから「オリジナル位置」を覚えていないと壊れる。
+          // 本実装では毎フレーム選択ノートに deltaSec/deltaMidi を加算する代わりに
+          // 「直前フレームからの差分」を計算して渡す。
+          // → そのために `lastDelta` を closure で保持する。
+          const last = lastDeltaRef.current;
+          const stepSec = deltaSec - last.sec;
+          const stepMidi = deltaMidi - last.midi;
+          if (stepSec !== 0 || stepMidi !== 0) {
+            onMoveNotes(drag.selections, stepSec, stepMidi);
+            lastDeltaRef.current = { sec: deltaSec, midi: deltaMidi };
+          }
+        }
+        if (moved && !drag.moved) {
+          setDrag({ ...drag, moved: true });
+        }
+        return;
+      }
+      if (drag.kind === "resize" && onResizeNote) {
+        const dx = e.clientX - drag.startX;
+        const snapEnabled = !e.altKey;
+        const rawDeltaSec = dx / PX_PER_SEC;
+        const deltaSec = snapEnabled
+          ? snapSec(rawDeltaSec, true)
+          : rawDeltaSec;
+        if (drag.side === "right") {
+          const newDur = Math.max(0.05, drag.origDurationSec + deltaSec);
+          onResizeNote(drag.layerId, drag.index, newDur, "right");
+        } else {
+          // 左端: 終端を固定したまま start を動かす
+          // start が動く分 duration は逆方向に変化
+          const newDur = Math.max(0.05, drag.origDurationSec - deltaSec);
+          onResizeNote(drag.layerId, drag.index, newDur, "left");
+        }
+        return;
+      }
+      if (drag.kind === "marquee") {
+        const pt = svgPoint(e.clientX, e.clientY);
+        if (!pt) return;
+        setDrag({ ...drag, curX: pt.x, curY: pt.y });
+        // 矩形に入ったノートを選択
+        const x1 = Math.min(drag.startX, pt.x);
+        const x2 = Math.max(drag.startX, pt.x);
+        const y1 = Math.min(drag.startY, pt.y);
+        const y2 = Math.max(drag.startY, pt.y);
+        const inRect = new Set<SelKey>();
+        // pitch 帯
+        for (const { id, layer } of layers) {
+          layer.notes.forEach((n, i) => {
+            const nx1 = n.startSec * PX_PER_SEC;
+            const nx2 = nx1 + Math.max(2, n.durationSec * PX_PER_SEC);
+            const ny1 = noteY(n.midi);
+            const ny2 = ny1 + Math.max(2, ROW_HEIGHT - 1);
+            if (nx2 >= x1 && nx1 <= x2 && ny2 >= y1 && ny1 <= y2) {
+              inRect.add(selKey(id, i));
+            }
+          });
+        }
+        // ドラム帯
+        drum.notes.forEach((n, i) => {
+          const kind = drumKindOf(n.midi);
+          if (!kind) return;
+          const nx1 = n.startSec * PX_PER_SEC;
+          const nx2 = nx1 + Math.max(6, n.durationSec * PX_PER_SEC);
+          const ny1 = drumLaneY(kind) + 2;
+          const ny2 = ny1 + DRUM_LANE_HEIGHT - 4;
+          if (nx2 >= x1 && nx1 <= x2 && ny2 >= y1 && ny1 <= y2) {
+            inRect.add(selKey("drum", i));
+          }
+        });
+        if (drag.additive) {
+          const merged = new Set(drag.origSelection);
+          inRect.forEach((k) => merged.add(k));
+          setSelection(merged);
+        } else {
+          setSelection(inRect);
+        }
+        return;
+      }
     };
-    const onUp = () => setResizing(null);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+
+    const onUp = (e: PointerEvent) => {
+      if (drag.kind === "move") {
+        if (!drag.moved) {
+          // 動かさなかった → 単発クリック扱い: clickTarget があれば削除
+          const target = drag.clickTarget;
+          if (target && onDeleteNote) {
+            onDeleteNote(target.layerId, target.index);
+            setSelection(new Set());
+          }
+        }
+        lastDeltaRef.current = { sec: 0, midi: 0 };
+      } else if (drag.kind === "marquee") {
+        const dx = Math.abs(drag.curX - drag.startX);
+        const dy = Math.abs(drag.curY - drag.startY);
+        if (
+          dx < CLICK_THRESHOLD_PX &&
+          dy < CLICK_THRESHOLD_PX &&
+          onAddNote &&
+          armedLayer
+        ) {
+          // 動かさなかった → クリック扱い: ノート追加
+          const pt = svgPoint(e.clientX, e.clientY);
+          if (pt) {
+            const sec = snapSec(Math.max(0, pt.x / PX_PER_SEC), !e.altKey);
+            if (pt.y < DRUM_TOTAL_HEIGHT) {
+              const laneIdx = Math.floor(pt.y / DRUM_LANE_HEIGHT);
+              const lane = DRUM_LANES[laneIdx];
+              if (lane) onAddNote("drum", lane.midi, sec);
+            } else if (armedLayer !== "drum") {
+              const yInPitch = pt.y - pitchTop;
+              const row = Math.floor(yInPitch / ROW_HEIGHT);
+              const midi = pitchMax - row;
+              if (midi >= pitchMin && midi <= pitchMax) {
+                onAddNote(armedLayer, midi, sec);
+              }
+            }
+            // 追加直後はインデックスがずれる可能性があるので選択クリア
+            setSelection(new Set());
+          }
+        }
+      }
+      setDrag(null);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
-  }, [resizing, onResizeNote]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag, onMoveNotes, onResizeNote, onDeleteNote, onAddNote, armedLayer, layers, drum.notes]);
+
+  // 移動中の累積デルタを保持。pointerup でリセット。
+  const lastDeltaRef = useRef<{ sec: number; midi: number }>({ sec: 0, midi: 0 });
+
+  // ---- キーボード: Delete / Backspace で一括削除、Esc で選択解除 ----------
+  useEffect(() => {
+    if (!editMode) return;
+    function onKey(e: KeyboardEvent) {
+      const target = e.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (target.isContentEditable) return;
+      }
+      if (e.key === "Escape") {
+        if (selection.size > 0) {
+          e.preventDefault();
+          setSelection(new Set());
+        }
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        if (selection.size > 0 && onDeleteNotes) {
+          e.preventDefault();
+          onDeleteNotes([...selection].map(parseSel));
+          setSelection(new Set());
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editMode, selection, onDeleteNotes]);
+
+  // ---- レンダリングヘルパ ---------------------------------------------------
+  function isSelected(layerId: LayerId, index: number): boolean {
+    return selection.has(selKey(layerId, index));
+  }
+
+  function renderPitchNote(
+    layerId: LayerId,
+    n: { midi: number; startSec: number; durationSec: number },
+    i: number,
+    color: string,
+    opacity: number,
+  ) {
+    const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
+    const x = n.startSec * PX_PER_SEC;
+    const y = noteY(n.midi);
+    const h = Math.max(2, ROW_HEIGHT - 1);
+    const sel = isSelected(layerId, i);
+    const handleW = Math.min(RESIZE_HANDLE_WIDTH, w / 2);
+    return (
+      <g key={`${layerId}-${i}-${n.midi}-${n.startSec}`}>
+        <rect
+          data-note={layerId}
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          fill={color}
+          opacity={opacity}
+          rx={1}
+          style={editMode ? { cursor: "grab" } : undefined}
+          onPointerDown={(e) => handleNotePointerDown(e, layerId, i)}
+        />
+        {sel && (
+          <rect
+            x={x - 0.5}
+            y={y - 0.5}
+            width={w + 1}
+            height={h + 1}
+            fill="none"
+            stroke={SELECTION_OUTLINE}
+            strokeWidth={1}
+            pointerEvents="none"
+          />
+        )}
+        {editMode && onResizeNote && (
+          <>
+            <rect
+              data-resize={`${layerId}-left`}
+              x={x}
+              y={y}
+              width={handleW}
+              height={h}
+              fill="#fff"
+              fillOpacity={0.001}
+              style={{ cursor: "ew-resize" }}
+              onPointerDown={(e) =>
+                handleResizePointerDown(
+                  e,
+                  layerId,
+                  i,
+                  "left",
+                  n.startSec,
+                  n.durationSec,
+                )
+              }
+            />
+            <rect
+              data-resize={`${layerId}-right`}
+              x={x + Math.max(0, w - handleW)}
+              y={y}
+              width={handleW}
+              height={h}
+              fill="#fff"
+              fillOpacity={0.001}
+              style={{ cursor: "ew-resize" }}
+              onPointerDown={(e) =>
+                handleResizePointerDown(
+                  e,
+                  layerId,
+                  i,
+                  "right",
+                  n.startSec,
+                  n.durationSec,
+                )
+              }
+            />
+          </>
+        )}
+      </g>
+    );
+  }
+
+  // ---- マーキー矩形の描画情報 -----------------------------------------------
+  const marqueeRect =
+    drag && drag.kind === "marquee"
+      ? {
+          x: Math.min(drag.startX, drag.curX),
+          y: Math.min(drag.startY, drag.curY),
+          w: Math.abs(drag.curX - drag.startX),
+          h: Math.abs(drag.curY - drag.startY),
+        }
+      : null;
 
   return (
     <div className="flex flex-col gap-2">
@@ -345,6 +755,11 @@ export default function PianoRoll({
             {bpm} BPM グリッド
           </span>
         )}
+        {editMode && selection.size > 0 && (
+          <span className="rounded-full bg-sky-100 px-2 py-0.5 font-medium text-sky-700">
+            {selection.size} 個選択中 (Delete=削除 / Esc=解除)
+          </span>
+        )}
         {isActive && (
           <span className="flex items-center gap-1 font-medium">
             <span
@@ -380,10 +795,11 @@ export default function PianoRoll({
           style={{
             display: "block",
             cursor: editMode ? "crosshair" : "default",
+            touchAction: editMode ? "none" : "pan-x",
           }}
-          onClick={handleSvgClick}
+          onPointerDown={handleSvgPointerDown}
         >
-          {/* ドラムレーン背景 (交互の薄色) */}
+          {/* ドラムレーン背景 */}
           {DRUM_LANES.map((lane, idx) => (
             <g key={`dl${lane.kind}`}>
               <rect
@@ -416,7 +832,7 @@ export default function PianoRoll({
             strokeWidth={1}
           />
 
-          {/* 拍グリッド (BPM 指定時) */}
+          {/* 拍グリッド */}
           {beatLines.map((b, i) => (
             <line
               key={`bb${i}`}
@@ -431,7 +847,7 @@ export default function PianoRoll({
             />
           ))}
 
-          {/* time grid (秒) */}
+          {/* 秒目盛り (BPM 未指定時のみ縦線も引く) */}
           {ticks.map((s) => (
             <g key={`t${s}`}>
               {!bpm && (
@@ -456,7 +872,7 @@ export default function PianoRoll({
             </g>
           ))}
 
-          {/* C ライン (オクターブ目安) */}
+          {/* C ライン */}
           {cLines.map((p) => (
             <g key={`p${p}`}>
               <line
@@ -479,224 +895,69 @@ export default function PianoRoll({
             </g>
           ))}
 
-          {/* ドラムノート (上部レーン) */}
+          {/* ドラムノート */}
           {drum.notes.map((n, i) => {
             const kind = drumKindOf(n.midi);
             if (!kind) return null;
             const lane = DRUM_LANES.find((l) => l.kind === kind);
             if (!lane) return null;
             const w = Math.max(6, n.durationSec * PX_PER_SEC);
-            return (
-              <rect
-                key={`d${i}-${n.midi}-${n.startSec}`}
-                data-note="drum"
-                x={n.startSec * PX_PER_SEC}
-                y={drumLaneY(kind) + 2}
-                width={w}
-                height={DRUM_LANE_HEIGHT - 4}
-                fill={lane.color}
-                opacity={0.9}
-                rx={2}
-                style={editMode ? { cursor: "pointer" } : undefined}
-                onClick={(e) => handleNoteClick(e, "drum", i)}
-              />
-            );
-          })}
-
-          {/* ベースノート (最背面) */}
-          {bass.notes.map((n, i) => {
-            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
             const x = n.startSec * PX_PER_SEC;
-            const y = noteY(n.midi);
-            const h = Math.max(2, ROW_HEIGHT - 1);
+            const y = drumLaneY(kind) + 2;
+            const h = DRUM_LANE_HEIGHT - 4;
+            const sel = isSelected("drum", i);
             return (
-              <g key={`b${i}-${n.midi}-${n.startSec}`}>
+              <g key={`d${i}-${n.midi}-${n.startSec}`}>
                 <rect
-                  data-note="bass"
+                  data-note="drum"
                   x={x}
                   y={y}
                   width={w}
                   height={h}
-                  fill={COLOR_BASS}
-                  opacity={0.85}
-                  rx={1}
-                  style={editMode ? { cursor: "pointer" } : undefined}
-                  onClick={(e) => handleNoteClick(e, "bass", i)}
-                />
-                {editMode && onResizeNote && (
-                  <rect
-                    data-resize="bass"
-                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
-                    y={y}
-                    width={RESIZE_HANDLE_WIDTH}
-                    height={h}
-                    fill="#fff"
-                    fillOpacity={0.001}
-                    style={{ cursor: "ew-resize" }}
-                    onMouseDown={(e) =>
-                      handleResizeMouseDown(e, "bass", i, n.durationSec)
-                    }
-                  />
-                )}
-              </g>
-            );
-          })}
-
-          {/* コードノート (背面) */}
-          {chord.notes.map((n, i) => {
-            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
-            const x = n.startSec * PX_PER_SEC;
-            const y = noteY(n.midi);
-            const h = Math.max(2, ROW_HEIGHT - 1);
-            return (
-              <g key={`c${i}-${n.midi}-${n.startSec}`}>
-                <rect
-                  data-note="chord"
-                  x={x}
-                  y={y}
-                  width={w}
-                  height={h}
-                  fill={COLOR_CHORD}
-                  opacity={0.85}
-                  rx={1}
-                  style={editMode ? { cursor: "pointer" } : undefined}
-                  onClick={(e) => handleNoteClick(e, "chord", i)}
-                />
-                {editMode && onResizeNote && (
-                  <rect
-                    data-resize="chord"
-                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
-                    y={y}
-                    width={RESIZE_HANDLE_WIDTH}
-                    height={h}
-                    fill="#fff"
-                    fillOpacity={0.001}
-                    style={{ cursor: "ew-resize" }}
-                    onMouseDown={(e) =>
-                      handleResizeMouseDown(e, "chord", i, n.durationSec)
-                    }
-                  />
-                )}
-              </g>
-            );
-          })}
-
-          {/* シンセノート (中間) */}
-          {synth.notes.map((n, i) => {
-            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
-            const x = n.startSec * PX_PER_SEC;
-            const y = noteY(n.midi);
-            const h = Math.max(2, ROW_HEIGHT - 1);
-            return (
-              <g key={`s${i}-${n.midi}-${n.startSec}`}>
-                <rect
-                  data-note="synth"
-                  x={x}
-                  y={y}
-                  width={w}
-                  height={h}
-                  fill={COLOR_SYNTH}
+                  fill={lane.color}
                   opacity={0.9}
-                  rx={1}
-                  style={editMode ? { cursor: "pointer" } : undefined}
-                  onClick={(e) => handleNoteClick(e, "synth", i)}
+                  rx={2}
+                  style={editMode ? { cursor: "grab" } : undefined}
+                  onPointerDown={(e) => handleNotePointerDown(e, "drum", i)}
                 />
-                {editMode && onResizeNote && (
+                {sel && (
                   <rect
-                    data-resize="synth"
-                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
-                    y={y}
-                    width={RESIZE_HANDLE_WIDTH}
-                    height={h}
-                    fill="#fff"
-                    fillOpacity={0.001}
-                    style={{ cursor: "ew-resize" }}
-                    onMouseDown={(e) =>
-                      handleResizeMouseDown(e, "synth", i, n.durationSec)
-                    }
+                    x={x - 0.5}
+                    y={y - 0.5}
+                    width={w + 1}
+                    height={h + 1}
+                    fill="none"
+                    stroke={SELECTION_OUTLINE}
+                    strokeWidth={1}
+                    pointerEvents="none"
                   />
                 )}
               </g>
             );
           })}
 
-          {/* ギターノート (中前面) */}
-          {guitar.notes.map((n, i) => {
-            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
-            const x = n.startSec * PX_PER_SEC;
-            const y = noteY(n.midi);
-            const h = Math.max(2, ROW_HEIGHT - 1);
-            return (
-              <g key={`g${i}-${n.midi}-${n.startSec}`}>
-                <rect
-                  data-note="guitar"
-                  x={x}
-                  y={y}
-                  width={w}
-                  height={h}
-                  fill={COLOR_GUITAR}
-                  opacity={0.9}
-                  rx={1}
-                  style={editMode ? { cursor: "pointer" } : undefined}
-                  onClick={(e) => handleNoteClick(e, "guitar", i)}
-                />
-                {editMode && onResizeNote && (
-                  <rect
-                    data-resize="guitar"
-                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
-                    y={y}
-                    width={RESIZE_HANDLE_WIDTH}
-                    height={h}
-                    fill="#fff"
-                    fillOpacity={0.001}
-                    style={{ cursor: "ew-resize" }}
-                    onMouseDown={(e) =>
-                      handleResizeMouseDown(e, "guitar", i, n.durationSec)
-                    }
-                  />
-                )}
-              </g>
-            );
-          })}
+          {/* pitch 帯ノート (背面〜前面の順に重ねる) */}
+          {layers.map(({ id, layer, color, opacity }) =>
+            layer.notes.map((n, i) =>
+              renderPitchNote(id, n, i, color, opacity),
+            ),
+          )}
 
-          {/* メロディノート (前面) */}
-          {melody.notes.map((n, i) => {
-            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
-            const x = n.startSec * PX_PER_SEC;
-            const y = noteY(n.midi);
-            const h = Math.max(2, ROW_HEIGHT - 1);
-            return (
-              <g key={`m${i}-${n.midi}-${n.startSec}`}>
-                <rect
-                  data-note="melody"
-                  x={x}
-                  y={y}
-                  width={w}
-                  height={h}
-                  fill={COLOR_MELODY}
-                  opacity={0.95}
-                  rx={1}
-                  style={editMode ? { cursor: "pointer" } : undefined}
-                  onClick={(e) => handleNoteClick(e, "melody", i)}
-                />
-                {editMode && onResizeNote && (
-                  <rect
-                    data-resize="melody"
-                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
-                    y={y}
-                    width={RESIZE_HANDLE_WIDTH}
-                    height={h}
-                    fill="#fff"
-                    fillOpacity={0.001}
-                    style={{ cursor: "ew-resize" }}
-                    onMouseDown={(e) =>
-                      handleResizeMouseDown(e, "melody", i, n.durationSec)
-                    }
-                  />
-                )}
-              </g>
-            );
-          })}
+          {/* マーキー矩形 */}
+          {marqueeRect && (
+            <rect
+              x={marqueeRect.x}
+              y={marqueeRect.y}
+              width={marqueeRect.w}
+              height={marqueeRect.h}
+              fill={SELECTION_OUTLINE}
+              fillOpacity={0.12}
+              stroke={SELECTION_OUTLINE}
+              strokeWidth={1}
+              strokeDasharray="3 3"
+              pointerEvents="none"
+            />
+          )}
 
           {/* 再生ヘッド */}
           <line
