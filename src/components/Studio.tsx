@@ -6,12 +6,10 @@
  * 構成:
  *   ① キー / スケール
  *   ② ドラムマシン (5 パターン + BPM)
- *   ③ ピアノロール (DAW 風 / 録音した内容を可視化)
- *   ④ 録音トラック (メロディ層 / コード層)
- *   ⑤ コードパレット
+ *   ③ 録音トラック (5 層) — ピアノロールを見ながら操作できるよう上に配置
+ *   ④ ピアノロール (DAW 風 / 録音した内容を可視化)
+ *   ⑤ 入力カルーセル (コードパレット ↔ スケールミニピアノ ↔ 88鍵ピアノ)
  *   ⑥ 進行プリセット
- *   ⑦ スケール構成音だけのミニピアノ
- *   ⑧ 88 鍵ピアノ
  *
  * - 録音しなければ「演奏モード」として使えるし、
  *   そのまま録音ボタンを押せば「録音モード」として MIDI 書き出しまでできる。
@@ -22,7 +20,7 @@
  * (stale closure 防止)。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Piano from "./Piano";
 import ChordPalette from "./ChordPalette";
 import ChordTonePiano from "./ChordTonePiano";
@@ -37,6 +35,7 @@ import {
   layerDuration,
   Playback,
   quantizeLayer,
+  quantizeUnitSec,
   RecordingSession,
   type Layer,
   type LayerId,
@@ -108,6 +107,116 @@ function noteLengthToSec(nl: NoteLength, bpm: number): number {
     case "1/32":
       return beat / 8;
   }
+}
+
+/**
+ * 入力パネルのカルーセル。
+ * 横スワイプ (touch) または ◀ ▶ ボタンでパネル切替。
+ * - CSS scroll-snap で iOS でも自然なスナップ動作
+ * - すべてのパネルを常に DOM に保持 (音源・状態を維持)
+ */
+interface SwipeCarouselProps {
+  panels: { id: string; title: string; node: ReactNode }[];
+}
+function SwipeCarousel({ panels }: SwipeCarouselProps) {
+  const [page, setPage] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const c = containerRef.current;
+    if (!c) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const w = c.clientWidth;
+        if (w > 0) {
+          const p = Math.round(c.scrollLeft / w);
+          setPage(Math.max(0, Math.min(panels.length - 1, p)));
+        }
+      });
+    };
+    c.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      c.removeEventListener("scroll", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [panels.length]);
+
+  const goTo = useCallback((p: number) => {
+    const c = containerRef.current;
+    if (!c) return;
+    const target = Math.max(0, Math.min(panels.length - 1, p));
+    c.scrollTo({ left: c.clientWidth * target, behavior: "smooth" });
+  }, [panels.length]);
+
+  return (
+    <div className="flex flex-col gap-2">
+      {/* タブ + 左右ボタン */}
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => goTo(page - 1)}
+          disabled={page === 0}
+          className="rounded-full border border-ink-300 bg-white px-2.5 py-1 text-sm text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-30"
+          aria-label="前のパネル"
+        >
+          ◀
+        </button>
+        <div className="flex flex-1 flex-wrap items-center justify-center gap-1.5">
+          {panels.map((p, i) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => goTo(i)}
+              className={[
+                "rounded-full px-3 py-1 text-xs font-semibold transition",
+                i === page
+                  ? "bg-accent-500 text-white shadow-sm"
+                  : "border border-ink-300 bg-white text-ink-700 hover:border-accent-300",
+              ].join(" ")}
+            >
+              {p.title}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => goTo(page + 1)}
+          disabled={page >= panels.length - 1}
+          className="rounded-full border border-ink-300 bg-white px-2.5 py-1 text-sm text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-30"
+          aria-label="次のパネル"
+        >
+          ▶
+        </button>
+      </div>
+
+      {/* スクロールコンテナ (横スワイプ + scroll-snap) */}
+      <div
+        ref={containerRef}
+        className="flex w-full snap-x snap-mandatory overflow-x-auto scroll-smooth"
+        style={{
+          scrollbarWidth: "none",
+          msOverflowStyle: "none",
+        }}
+      >
+        {panels.map((p) => (
+          <div
+            key={p.id}
+            className="w-full shrink-0 snap-start snap-always pr-0"
+            style={{ flex: "0 0 100%" }}
+          >
+            {p.node}
+          </div>
+        ))}
+      </div>
+
+      <div className="text-center text-[11px] text-ink-500">
+        ← スワイプで「{panels.map((p) => p.title).join(" → ")}」を切替 →
+      </div>
+    </div>
+  );
 }
 
 export default function Studio({ scale, onScaleChange }: StudioProps) {
@@ -245,6 +354,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   }, [undo, redo]);
 
   // ---- ドラムヒット (DrumPad ループから来る) -------------------------------
+  // 録音時はピアノロール上の拍グリッドに必ず重なるよう自動スナップする。
+  // クオンタイズ設定が "off" のときは 1/16 をデフォルトのドラムグリッドとして使う。
   const handleDrumHit = useCallback(
     (midi: number, velocity: number) => {
       if (
@@ -252,13 +363,18 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         armedRef.current === "drum" &&
         sessionRef.current
       ) {
-        // ドラムは percussive: 短い固定 duration で 1 ヒットを記録
-        sessionRef.current.recordChord([midi], 0.05, velocity);
+        const beat = 60 / Math.max(1, bpm);
+        const snap =
+          quantizeGrid !== "off"
+            ? quantizeUnitSec(quantizeGrid, bpm)
+            : beat / 4; // 1/16 fallback
+        // ドラムは percussive: 短い固定 duration で 1 ヒットを記録 + 拍にスナップ
+        sessionRef.current.recordChord([midi], 0.05, velocity, snap);
         setDrumRecCount((n) => n + 1);
         scheduleRefresh();
       }
     },
-    [scheduleRefresh],
+    [scheduleRefresh, bpm, quantizeGrid],
   );
 
   // ---- audio gate -----------------------------------------------------------
@@ -703,8 +819,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   );
 
   // ---- メトロノーム (BPM 連動) ---------------------------------------------
+  // ON 状態かつ「録音中 または 再生中」のときだけ鳴らす。
+  // ON だけでは鳴らない (静かな練習中にノイズを出さない)。
   useEffect(() => {
     if (!metronomeOn) return;
+    if (state !== "recording" && !playing) return;
     let cancelled = false;
     (async () => {
       await arm();
@@ -714,7 +833,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       cancelled = true;
       stopMetronome();
     };
-  }, [metronomeOn, arm, bpm]);
+  }, [metronomeOn, state, playing, arm, bpm]);
 
   // BPM 変更時にメトロノームの BPM をライブ更新
   useEffect(() => {
@@ -841,11 +960,143 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         </div>
       </section>
 
-      {/* ③ ピアノロール */}
+      {/* ③ 録音トラック (ピアノロールの上に配置: ピアノロールを見ながら録音できるように) */}
+      <section className="rounded-2xl border border-ink-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-ink-700">
+            ③ 録音トラック (録音したい時だけ使う)
+          </h2>
+          <div className="text-xs font-mono tabular-nums text-ink-600">
+            {state === "recording" ? "● REC " : playing ? "▶ PLAY " : "■ "}
+            {elapsed.toFixed(1)}s
+            {totalDur > 0 && ` / ${totalDur.toFixed(1)}s`}
+            {overdubPlaying && (
+              <span className="ml-2 text-accent-700">+ オーバーダブ再生中</span>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          {trackInfo.map(({ id, layer, label }) => {
+            const isArmed = armed === id;
+            const dur = layerDuration(layer);
+            const isRec = state === "recording";
+            return (
+              <div key={id} className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={isArmed}
+                  onClick={() => {
+                    if (isRec) return;
+                    setArmed(id);
+                  }}
+                  disabled={isRec}
+                  className={[
+                    "flex w-full items-center justify-between gap-3 rounded-xl border p-3 text-left transition",
+                    "active:scale-[0.99] disabled:cursor-not-allowed",
+                    isArmed
+                      ? "border-accent-500 bg-accent-50 ring-2 ring-accent-300/60"
+                      : "border-ink-200 bg-white hover:border-accent-300",
+                    isRec && !isArmed ? "opacity-40" : "",
+                  ].join(" ")}
+                >
+                  <span className="flex items-center gap-3">
+                    <span
+                      className={[
+                        "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 transition",
+                        isArmed
+                          ? "border-accent-500 bg-accent-500"
+                          : "border-ink-300 bg-white",
+                      ].join(" ")}
+                      aria-hidden
+                    >
+                      {isArmed && (
+                        <span className="h-2.5 w-2.5 rounded-full bg-white" />
+                      )}
+                    </span>
+                    <span className="text-base font-semibold">{label}</span>
+                  </span>
+                  <span className="text-xs text-ink-500">
+                    {id === "drum"
+                      ? `${layer.notes.length} ヒット`
+                      : `${layer.notes.length} ノート`}{" "}
+                    / {dur.toFixed(1)}s
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => clearLayer(id)}
+                  disabled={isRec || layer.notes.length === 0}
+                  className="self-start rounded-full border border-ink-200 bg-white px-3 py-1 text-xs text-ink-700 disabled:cursor-not-allowed disabled:opacity-40 hover:border-accent-300"
+                >
+                  クリア
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {state === "idle" ? (
+            <button
+              type="button"
+              onClick={startRecord}
+              disabled={playing}
+              className="rounded-full bg-rose-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-600 disabled:opacity-40"
+            >
+              ● {armedLabel} を録音
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={stopRecord}
+              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
+            >
+              ■ 停止
+            </button>
+          )}
+
+          {!playing ? (
+            <button
+              type="button"
+              onClick={startPlayback}
+              disabled={state === "recording" || !hasAnything}
+              className="rounded-full bg-accent-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-accent-600 disabled:opacity-40"
+            >
+              ▶ 同時再生 (全層)
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={stopPlayback}
+              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
+            >
+              ■ 停止
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={exportMidi}
+            disabled={!hasAnything}
+            className="rounded-full border border-ink-300 bg-white px-5 py-2 text-sm font-semibold text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-40"
+          >
+            ⤓ MIDIファイル書き出し
+          </button>
+        </div>
+
+        <p className="mt-3 text-xs text-ink-500">
+          録音せずただ弾くだけでも OK。録音中は録音対象以外のレイヤが同時再生されます (DAW 風オーバーダブ)。
+          ドラム層を録音中はドラムループも自動で回ります。下のピアノロールを見ながら録音できます。
+        </p>
+      </section>
+
+      {/* ④ ピアノロール */}
       <section className="rounded-2xl border border-ink-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-ink-700">
-            ③ ピアノロール (DAW 風 / ドラムレーン付き)
+            ④ ピアノロール (DAW 風 / ドラムレーン付き)
           </h2>
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
             <span>横:時間 / 縦:音程</span>
@@ -972,170 +1223,108 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         />
       </section>
 
-      {/* ④ 録音トラック */}
-      <section className="rounded-2xl border border-ink-200 bg-white p-4 shadow-sm">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink-700">
-            ④ 録音トラック (録音したい時だけ使う)
-          </h2>
-          <div className="text-xs font-mono tabular-nums text-ink-600">
-            {state === "recording" ? "● REC " : playing ? "▶ PLAY " : "■ "}
-            {elapsed.toFixed(1)}s
-            {totalDur > 0 && ` / ${totalDur.toFixed(1)}s`}
-            {overdubPlaying && (
-              <span className="ml-2 text-accent-700">+ オーバーダブ再生中</span>
-            )}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          {trackInfo.map(({ id, layer, label }) => {
-            const isArmed = armed === id;
-            const dur = layerDuration(layer);
-            const isRec = state === "recording";
-            return (
-              <div key={id} className="flex flex-col gap-2">
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={isArmed}
-                  onClick={() => {
-                    if (isRec) return;
-                    setArmed(id);
-                  }}
-                  disabled={isRec}
-                  className={[
-                    "flex w-full items-center justify-between gap-3 rounded-xl border p-3 text-left transition",
-                    "active:scale-[0.99] disabled:cursor-not-allowed",
-                    isArmed
-                      ? "border-accent-500 bg-accent-50 ring-2 ring-accent-300/60"
-                      : "border-ink-200 bg-white hover:border-accent-300",
-                    isRec && !isArmed ? "opacity-40" : "",
-                  ].join(" ")}
-                >
-                  <span className="flex items-center gap-3">
-                    <span
-                      className={[
-                        "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 transition",
-                        isArmed
-                          ? "border-accent-500 bg-accent-500"
-                          : "border-ink-300 bg-white",
-                      ].join(" ")}
-                      aria-hidden
-                    >
-                      {isArmed && (
-                        <span className="h-2.5 w-2.5 rounded-full bg-white" />
-                      )}
-                    </span>
-                    <span className="text-base font-semibold">{label}</span>
-                  </span>
-                  <span className="text-xs text-ink-500">
-                    {id === "drum"
-                      ? `${layer.notes.length} ヒット`
-                      : `${layer.notes.length} ノート`}{" "}
-                    / {dur.toFixed(1)}s
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => clearLayer(id)}
-                  disabled={isRec || layer.notes.length === 0}
-                  className="self-start rounded-full border border-ink-200 bg-white px-3 py-1 text-xs text-ink-700 disabled:cursor-not-allowed disabled:opacity-40 hover:border-accent-300"
-                >
-                  クリア
-                </button>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          {state === "idle" ? (
-            <button
-              type="button"
-              onClick={startRecord}
-              disabled={playing}
-              className="rounded-full bg-rose-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-600 disabled:opacity-40"
-            >
-              ● {armedLabel} を録音
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={stopRecord}
-              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
-            >
-              ■ 停止
-            </button>
-          )}
-
-          {!playing ? (
-            <button
-              type="button"
-              onClick={startPlayback}
-              disabled={state === "recording" || !hasAnything}
-              className="rounded-full bg-accent-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-accent-600 disabled:opacity-40"
-            >
-              ▶ 同時再生 (全層)
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={stopPlayback}
-              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
-            >
-              ■ 停止
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={exportMidi}
-            disabled={!hasAnything}
-            className="rounded-full border border-ink-300 bg-white px-5 py-2 text-sm font-semibold text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-40"
-          >
-            ⤓ MIDIファイル書き出し
-          </button>
-        </div>
-
-        <p className="mt-3 text-xs text-ink-500">
-          録音せずただ弾くだけでも OK。録音中は録音対象以外のレイヤが同時再生されます (DAW 風オーバーダブ)。
-          ドラム層を録音中はドラムループも自動で回ります。
-        </p>
-      </section>
-
-      {/* ⑤ コードパレット */}
+      {/* ⑤ 入力カルーセル: コードパレット → スケールミニピアノ → 88鍵ピアノ */}
       <section
         className={[
           "rounded-2xl border bg-white p-4 shadow-sm transition",
-          armed === "chord"
-            ? "border-accent-300"
-            : "border-ink-200",
+          armed === "chord" ? "border-accent-300" : "border-ink-200",
         ].join(" ")}
       >
         <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="text-sm font-semibold text-ink-700">
-            ⑤ コードパレット{" "}
-            {armed === "chord" && state === "recording"
-              ? `🎼 録音中 (+${chordRecCount} コード)`
-              : armed === "chord"
-                ? "🎼 コード層に録音可"
-                : ""}
+            ⑤ 入力 (コードパレット ↔ スケールミニピアノ ↔ 88鍵ピアノ)
+            {armed === "chord" && state === "recording" && (
+              <span className="ml-2 text-rose-500">
+                🎼 コード層に録音中 (+{chordRecCount} コード)
+              </span>
+            )}
+            {armed === "melody" && state === "recording" && (
+              <span className="ml-2 text-rose-500">● メロディ層に録音中</span>
+            )}
+            {armed === "bass" && state === "recording" && (
+              <span className="ml-2 text-rose-500">
+                ● ベース層に録音中 (低音シンセ)
+              </span>
+            )}
+            {armed === "synth" && state === "recording" && (
+              <span className="ml-2 text-rose-500">● シンセ層に録音中</span>
+            )}
           </h2>
-          {spotlightLabel && (
+          {(spotlightLabel || selectedChord) && (
             <span className="text-xs font-medium text-accent-700">
-              {spotlightLabel}
+              {spotlightLabel ??
+                (selectedChord
+                  ? `${chordSymbol(selectedChord)} ${chordLabelJa(selectedChord)}`
+                  : "")}
             </span>
           )}
         </div>
-        <ChordPalette
-          scale={scale}
-          onPlayChord={onPaletteChord}
-          activeIndex={activeChordIndex}
+
+        <SwipeCarousel
+          panels={[
+            {
+              id: "chord-palette",
+              title: "🎼 コードパレット",
+              node: (
+                <div className="px-1">
+                  <ChordPalette
+                    scale={scale}
+                    onPlayChord={onPaletteChord}
+                    activeIndex={activeChordIndex}
+                  />
+                  <p className="mt-3 text-xs text-ink-500">
+                    タップでコードを鳴らせます。
+                    armed が「コード」なら録音もできます。
+                  </p>
+                </div>
+              ),
+            },
+            {
+              id: "scale-piano",
+              title: "🎵 スケールミニピアノ",
+              node: (
+                <div className="px-1">
+                  <ChordTonePiano
+                    scale={scale}
+                    chord={selectedChord}
+                    activeNotes={
+                      playbackHighlight.size > 0
+                        ? playbackHighlight
+                        : activeNotes
+                    }
+                    onNoteOn={(m) => void handleNoteOn(m)}
+                    onNoteOff={handleNoteOff}
+                  />
+                  <p className="mt-3 text-xs text-ink-500">
+                    選んだスケールの音だけが並ぶので、どのキーを弾いてもキーから外れません。
+                    コードパレットでコードを選ぶとそのコードトーン (★) が強調されます。
+                  </p>
+                </div>
+              ),
+            },
+            {
+              id: "full-piano",
+              title: "🎹 88鍵ピアノ (自由)",
+              node: (
+                <div className="px-1">
+                  <Piano
+                    scale={scale}
+                    activeNotes={
+                      playbackHighlight.size > 0
+                        ? playbackHighlight
+                        : activeNotes
+                    }
+                    onNoteOn={(m) => void handleNoteOn(m)}
+                    onNoteOff={handleNoteOff}
+                  />
+                  <p className="mt-3 text-xs text-ink-500">
+                    横にスワイプ/スクロールで音域を移動。複数の指/PCキーボードで和音も弾けます。
+                  </p>
+                </div>
+              ),
+            },
+          ]}
         />
-        <p className="mt-3 text-xs text-ink-500">
-          タップでコードを鳴らせます。下のピアノに構成音が光ります。
-        </p>
       </section>
 
       {/* ⑥ 進行プリセット */}
@@ -1159,61 +1348,6 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         <p className="mt-3 text-xs text-ink-500">
           BPM <b className="font-mono">{bpm}</b> 連動: 1 コード = 1 小節 (
           {progressionGapSec.toFixed(2)} 秒)。ドラム②の BPM を変えると進行も追従します。
-        </p>
-      </section>
-
-      {/* ⑦ スケール構成音だけのミニピアノ */}
-      <section className="rounded-2xl border border-ink-200 bg-white p-4 shadow-sm">
-        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold text-ink-700">
-            ⑦ スケール構成音だけのミニピアノ (キーから外れない)
-            {armed === "melody" && state === "recording" && (
-              <span className="ml-2 text-rose-500">● メロディ層に録音中</span>
-            )}
-            {armed === "bass" && state === "recording" && (
-              <span className="ml-2 text-rose-500">● ベース層に録音中 (低音シンセ)</span>
-            )}
-            {armed === "bass" && state !== "recording" && (
-              <span className="ml-2 text-emerald-600">🎸 ベース音で鳴ります</span>
-            )}
-          </h2>
-          {selectedChord && (
-            <span className="text-xs font-medium text-accent-700">
-              {chordSymbol(selectedChord)} {chordLabelJa(selectedChord)}
-            </span>
-          )}
-        </div>
-        <ChordTonePiano
-          scale={scale}
-          chord={selectedChord}
-          activeNotes={
-            playbackHighlight.size > 0 ? playbackHighlight : activeNotes
-          }
-          onNoteOn={(m) => void handleNoteOn(m)}
-          onNoteOff={handleNoteOff}
-        />
-        <p className="mt-3 text-xs text-ink-500">
-          選んだスケールの音だけが並ぶので、どのキーを弾いてもキーから外れません。
-          ⑤でコードを選ぶとそのコードトーン (★) が強調され、最も安全な着地音が分かります。
-        </p>
-      </section>
-
-      {/* ⑧ ピアノ */}
-      <section className="rounded-2xl border border-ink-200 bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-sm font-semibold text-ink-700">
-          ⑧ ピアノで自由に弾く (88鍵 / 複数同時押しOK)
-        </h2>
-        <Piano
-          scale={scale}
-          activeNotes={
-            playbackHighlight.size > 0 ? playbackHighlight : activeNotes
-          }
-          onNoteOn={(m) => void handleNoteOn(m)}
-          onNoteOff={handleNoteOff}
-        />
-        <p className="mt-3 text-xs text-ink-500">
-          横にスワイプ/スクロールで音域を移動できます。指やマウスを滑らせるとグリッサンド、
-          複数の指/PCキーボードで和音も弾けます。
         </p>
       </section>
     </div>

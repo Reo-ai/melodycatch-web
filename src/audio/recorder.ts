@@ -85,10 +85,21 @@ export class RecordingSession {
   /**
    * 既知の長さのコード(ブロック)を一括で記録する。
    * パレットや進行プリセットのワンタップ用。
+   *
+   * `snapUnitSec` を指定すると、開始位置をその単位 (秒) にスナップする。
+   * ドラム録音時にピアノロール上の拍グリッドと正確に重ねるために使う。
    */
-  recordChord(midiNotes: number[], durationSec: number, velocity = 0.85) {
+  recordChord(
+    midiNotes: number[],
+    durationSec: number,
+    velocity = 0.85,
+    snapUnitSec?: number,
+  ) {
     if (this.startedAt === null) return;
-    const startSec = this.elapsedSec();
+    let startSec = this.elapsedSec();
+    if (snapUnitSec && snapUnitSec > 0) {
+      startSec = Math.max(0, Math.round(startSec / snapUnitSec) * snapUnitSec);
+    }
     const dur = Math.max(0.05, durationSec);
     for (const m of midiNotes) {
       this.layer.notes.push({
