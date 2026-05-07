@@ -54,6 +54,16 @@ import {
   bassHoldOn,
   bassReleaseAll,
 } from "../audio/bassEngine";
+import {
+  synthHoldOff,
+  synthHoldOn,
+  synthReleaseAll,
+} from "../audio/synthEngine";
+import {
+  setMetronomeBpm,
+  startMetronome,
+  stopMetronome,
+} from "../audio/metronome";
 import { useComputerKeyboard } from "../input/useComputerKeyboard";
 import { useWebMIDI } from "../input/useWebMIDI";
 import type { Scale } from "../music/scale";
@@ -79,6 +89,25 @@ interface Snapshot {
   chord: Layer;
   drum: Layer;
   bass: Layer;
+  synth: Layer;
+}
+
+/** 編集モード時の追加ノート長。"free" は 0.5 秒固定。 */
+type NoteLength = "free" | "1/4" | "1/8" | "1/16" | "1/32";
+
+function noteLengthToSec(nl: NoteLength, bpm: number): number {
+  if (nl === "free") return 0.5;
+  const beat = 60 / Math.max(1, bpm);
+  switch (nl) {
+    case "1/4":
+      return beat;
+    case "1/8":
+      return beat / 2;
+    case "1/16":
+      return beat / 4;
+    case "1/32":
+      return beat / 8;
+  }
 }
 
 export default function Studio({ scale, onScaleChange }: StudioProps) {
@@ -86,6 +115,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [chord, setChord] = useState<Layer>(() => emptyLayer("chord", "コード"));
   const [drum, setDrum] = useState<Layer>(() => emptyLayer("drum", "ドラム"));
   const [bass, setBass] = useState<Layer>(() => emptyLayer("bass", "ベース"));
+  const [synth, setSynth] = useState<Layer>(() => emptyLayer("synth", "シンセ"));
   const [armed, setArmed] = useState<LayerId>("melody");
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
@@ -100,6 +130,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [bpm, setBpm] = useState<number>(100);
   const [quantizeGrid, setQuantizeGrid] = useState<QuantizeGrid>("1/16");
   const [editMode, setEditMode] = useState(false);
+  const [noteLength, setNoteLength] = useState<NoteLength>("1/8");
+  const [metronomeOn, setMetronomeOn] = useState(false);
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
   const audioReady = useRef(false);
@@ -141,6 +173,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setChord((cur) => ({ ...cur, notes: [...cur.notes] }));
       } else if (armedRef.current === "bass") {
         setBass((cur) => ({ ...cur, notes: [...cur.notes] }));
+      } else if (armedRef.current === "synth") {
+        setSynth((cur) => ({ ...cur, notes: [...cur.notes] }));
       } else {
         setDrum((cur) => ({ ...cur, notes: [...cur.notes] }));
       }
@@ -150,39 +184,41 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // ---- Undo/Redo: 破壊的操作の前にスナップショット保存 -----------------------
   const pushHistory = useCallback(() => {
     setPast((p) => {
-      const snap: Snapshot = { melody, chord, drum, bass };
+      const snap: Snapshot = { melody, chord, drum, bass, synth };
       const next = [...p, snap];
       if (next.length > HISTORY_LIMIT) next.shift();
       return next;
     });
     setFuture([]);
-  }, [melody, chord, drum, bass]);
+  }, [melody, chord, drum, bass, synth]);
 
   const undo = useCallback(() => {
     setPast((p) => {
       if (p.length === 0) return p;
       const prev = p[p.length - 1];
-      setFuture((f) => [...f, { melody, chord, drum, bass }]);
+      setFuture((f) => [...f, { melody, chord, drum, bass, synth }]);
       setMelody(prev.melody);
       setChord(prev.chord);
       setDrum(prev.drum);
       setBass(prev.bass);
+      setSynth(prev.synth);
       return p.slice(0, -1);
     });
-  }, [melody, chord, drum, bass]);
+  }, [melody, chord, drum, bass, synth]);
 
   const redo = useCallback(() => {
     setFuture((f) => {
       if (f.length === 0) return f;
       const next = f[f.length - 1];
-      setPast((p) => [...p, { melody, chord, drum, bass }]);
+      setPast((p) => [...p, { melody, chord, drum, bass, synth }]);
       setMelody(next.melody);
       setChord(next.chord);
       setDrum(next.drum);
       setBass(next.bass);
+      setSynth(next.synth);
       return f.slice(0, -1);
     });
-  }, [melody, chord, drum, bass]);
+  }, [melody, chord, drum, bass, synth]);
 
   // Cmd+Z / Ctrl+Z = undo, Cmd+Shift+Z / Ctrl+Y = redo
   useEffect(() => {
@@ -233,12 +269,14 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   }, []);
 
   // ---- 共通 note handler (ピアノ/キーボード/MIDI) ---------------------------
-  // bass がアームされているときは bassEngine、それ以外は pianoEngine に流す
+  // bass / synth は専用エンジン、それ以外 (melody/chord/drum) は pianoEngine に流す
   const handleNoteOn = useCallback(
     async (midi: number, velocity = 0.85) => {
       await arm();
       if (armedRef.current === "bass") {
         bassHoldOn(midi, velocity);
+      } else if (armedRef.current === "synth") {
+        synthHoldOn(midi, velocity);
       } else {
         holdOn(midi, velocity);
       }
@@ -256,9 +294,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
 
   const handleNoteOff = useCallback(
     (midi: number) => {
-      // 入力中に armed が切り替わっている可能性に備えて両方 off する
+      // 入力中に armed が切り替わっている可能性に備えて全エンジンを off する
       holdOff(midi);
       bassHoldOff(midi);
+      synthHoldOff(midi);
       setActiveNotes((cur) => {
         if (!cur.has(midi)) return cur;
         const next = new Set(cur);
@@ -415,11 +454,14 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           ? chord
           : armed === "bass"
             ? bass
-            : drum;
+            : armed === "synth"
+              ? synth
+              : drum;
     const fresh = emptyLayer(armed, layer.name);
     if (armed === "melody") setMelody(fresh);
     else if (armed === "chord") setChord(fresh);
     else if (armed === "bass") setBass(fresh);
+    else if (armed === "synth") setSynth(fresh);
     else setDrum(fresh);
 
     sessionRef.current = new RecordingSession(fresh);
@@ -432,6 +474,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (armed !== "melody" && melody.notes.length > 0) otherLayers.push(melody);
     if (armed !== "chord" && chord.notes.length > 0) otherLayers.push(chord);
     if (armed !== "bass" && bass.notes.length > 0) otherLayers.push(bass);
+    if (armed !== "synth" && synth.notes.length > 0) otherLayers.push(synth);
     if (armed !== "drum" && drum.notes.length > 0) otherLayers.push(drum);
     if (otherLayers.length > 0) {
       const overdub = new Playback(otherLayers, {
@@ -467,6 +510,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (finished.id === "melody") setMelody({ ...finished });
       else if (finished.id === "chord") setChord({ ...finished });
       else if (finished.id === "bass") setBass({ ...finished });
+      else if (finished.id === "synth") setSynth({ ...finished });
       else setDrum({ ...finished });
     }
     sessionRef.current = null;
@@ -479,6 +523,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     activeNotes.forEach((m) => {
       holdOff(m);
       bassHoldOff(m);
+      synthHoldOff(m);
     });
     setActiveNotes(new Set());
     setPlaybackHighlight(new Set());
@@ -489,6 +534,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (id === "melody") setMelody(emptyLayer("melody", "メロディ"));
     else if (id === "chord") setChord(emptyLayer("chord", "コード"));
     else if (id === "bass") setBass(emptyLayer("bass", "ベース"));
+    else if (id === "synth") setSynth(emptyLayer("synth", "シンセ"));
     else setDrum(emptyLayer("drum", "ドラム"));
   }
 
@@ -499,7 +545,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     cancelProgressionTimers();
     // 録音した内容を再生する間はライブ DrumLoop を止める (二重発音防止)
     if (drumPadRef.current?.isPlaying()) drumPadRef.current.stop();
-    const layers = [melody, chord, bass, drum].filter((l) => l.notes.length > 0);
+    const layers = [melody, chord, bass, synth, drum].filter(
+      (l) => l.notes.length > 0,
+    );
     if (layers.length === 0) return;
     const pb = new Playback(layers, {
       onNoteOn: (_id, m) =>
@@ -532,6 +580,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setPlaybackHighlight(new Set());
     releaseAll();
     bassReleaseAll();
+    synthReleaseAll();
   }
 
   function cancelProgressionTimers() {
@@ -552,10 +601,13 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setChord((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setDrum((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setBass((cur) => quantizeLayer(cur, quantizeGrid, bpm));
+    setSynth((cur) => quantizeLayer(cur, quantizeGrid, bpm));
   }
 
   function exportMidi() {
-    const layers = [melody, chord, bass, drum].filter((l) => l.notes.length > 0);
+    const layers = [melody, chord, bass, synth, drum].filter(
+      (l) => l.notes.length > 0,
+    );
     if (layers.length === 0) return;
     const blob = exportToMidi(layers, "melodycatch.mid");
     const stamp = new Date()
@@ -572,6 +624,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     cancelProgressionTimers();
     releaseAll();
     bassReleaseAll();
+    synthReleaseAll();
     setActiveNotes(new Set());
     setPlaybackHighlight(new Set());
     setActiveChordIndex(null);
@@ -579,11 +632,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   }
 
   // ---- 手動編集ハンドラ -----------------------------------------------------
-  // PianoRoll から「クリックでノート追加」「クリックでノート削除」を受け取る
+  // PianoRoll から「クリックでノート追加」「クリックでノート削除」「右端ドラッグでリサイズ」
   const handleAddNote = useCallback(
     (layerId: LayerId, midi: number, startSec: number) => {
       pushHistory();
-      const dur = layerId === "drum" ? 0.05 : 0.5;
+      const dur =
+        layerId === "drum" ? 0.05 : noteLengthToSec(noteLength, bpm);
       const note = { midi, startSec, durationSec: dur, velocity: 0.85 };
       const update = (cur: Layer): Layer => ({
         ...cur,
@@ -592,9 +646,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (layerId === "melody") setMelody(update);
       else if (layerId === "chord") setChord(update);
       else if (layerId === "bass") setBass(update);
+      else if (layerId === "synth") setSynth(update);
       else setDrum(update);
     },
-    [pushHistory],
+    [pushHistory, noteLength, bpm],
   );
 
   const handleDeleteNote = useCallback(
@@ -607,10 +662,64 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (layerId === "melody") setMelody(update);
       else if (layerId === "chord") setChord(update);
       else if (layerId === "bass") setBass(update);
+      else if (layerId === "synth") setSynth(update);
       else setDrum(update);
     },
     [pushHistory],
   );
+
+  // リサイズ中は履歴を毎フレーム積まない (mousedown で 1 度だけ)。
+  // setResizingPushed ref で初回のみ pushHistory する。
+  const resizePushedRef = useRef(false);
+  useEffect(() => {
+    // どこかでリセット用 (useResize の onUp は PianoRoll 内なので
+    // mouseup イベントを window 全体で拾って ref を戻す)
+    function onUp() {
+      resizePushedRef.current = false;
+    }
+    window.addEventListener("mouseup", onUp);
+    return () => window.removeEventListener("mouseup", onUp);
+  }, []);
+
+  const handleResizeNote = useCallback(
+    (layerId: LayerId, index: number, durationSec: number) => {
+      if (!resizePushedRef.current) {
+        pushHistory();
+        resizePushedRef.current = true;
+      }
+      const update = (cur: Layer): Layer => ({
+        ...cur,
+        notes: cur.notes.map((n, i) =>
+          i === index ? { ...n, durationSec: Math.max(0.05, durationSec) } : n,
+        ),
+      });
+      if (layerId === "melody") setMelody(update);
+      else if (layerId === "chord") setChord(update);
+      else if (layerId === "bass") setBass(update);
+      else if (layerId === "synth") setSynth(update);
+      else setDrum(update);
+    },
+    [pushHistory],
+  );
+
+  // ---- メトロノーム (BPM 連動) ---------------------------------------------
+  useEffect(() => {
+    if (!metronomeOn) return;
+    let cancelled = false;
+    (async () => {
+      await arm();
+      if (!cancelled) startMetronome(bpm);
+    })();
+    return () => {
+      cancelled = true;
+      stopMetronome();
+    };
+  }, [metronomeOn, arm, bpm]);
+
+  // BPM 変更時にメトロノームの BPM をライブ更新
+  useEffect(() => {
+    if (metronomeOn) setMetronomeBpm(bpm);
+  }, [bpm, metronomeOn]);
 
   // ---- アンマウント時クリーンアップ ----------------------------------------
   useEffect(() => {
@@ -620,6 +729,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       cancelProgressionTimers();
       releaseAll();
       bassReleaseAll();
+      synthReleaseAll();
+      stopMetronome();
     };
   }, []);
 
@@ -628,17 +739,20 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const chordDur = useMemo(() => layerDuration(chord), [chord]);
   const drumDur = useMemo(() => layerDuration(drum), [drum]);
   const bassDur = useMemo(() => layerDuration(bass), [bass]);
-  const totalDur = Math.max(melodyDur, chordDur, drumDur, bassDur);
+  const synthDur = useMemo(() => layerDuration(synth), [synth]);
+  const totalDur = Math.max(melodyDur, chordDur, drumDur, bassDur, synthDur);
   const hasAnything =
     melody.notes.length > 0 ||
     chord.notes.length > 0 ||
     drum.notes.length > 0 ||
-    bass.notes.length > 0;
+    bass.notes.length > 0 ||
+    synth.notes.length > 0;
   const overdubPlaying =
     state === "recording" &&
     ((armed !== "melody" && melody.notes.length > 0) ||
       (armed !== "chord" && chord.notes.length > 0) ||
       (armed !== "bass" && bass.notes.length > 0) ||
+      (armed !== "synth" && synth.notes.length > 0) ||
       (armed !== "drum" && drum.notes.length > 0));
   const isActive = state === "recording" || playing;
   const recordingLayerId: LayerId | null =
@@ -647,6 +761,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     { id: "melody", layer: melody, label: "🎵 メロディ層" },
     { id: "chord", layer: chord, label: "🎼 コード層" },
     { id: "bass", layer: bass, label: "🎸 ベース層" },
+    { id: "synth", layer: synth, label: "🎹 シンセ層" },
     { id: "drum", layer: drum, label: "🥁 ドラム層" },
   ];
   const armedLabel =
@@ -656,7 +771,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         ? "コード"
         : armed === "bass"
           ? "ベース"
-          : "ドラム";
+          : armed === "synth"
+            ? "シンセ"
+            : "ドラム";
   const progressionGapSec = (60 * 4) / Math.max(40, Math.min(220, bpm));
 
   return (
@@ -754,7 +871,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               type="button"
               onClick={() => setEditMode((v) => !v)}
               disabled={state === "recording" || playing}
-              title={`編集モード ON のときは、ピアノロール上をクリックしてノートを追加 / 既存ノートをクリックして削除できます。${armedLabel}層が編集対象です。`}
+              title={`編集モード ON のときは、ピアノロール上をクリックしてノートを追加 / 既存ノートをクリックして削除 / 右端ドラッグで長さを変更できます。${armedLabel}層が編集対象です。`}
               className={[
                 "rounded-full px-3 py-0.5 text-xs font-semibold shadow-sm disabled:opacity-40",
                 editMode
@@ -763,6 +880,40 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               ].join(" ")}
             >
               ✎ 編集モード {editMode ? "ON" : "OFF"}
+            </button>
+            <label className="flex items-center gap-1">
+              <span className="font-medium text-ink-700">音の長さ</span>
+              <select
+                value={noteLength}
+                onChange={(e) =>
+                  setNoteLength(e.target.value as NoteLength)
+                }
+                disabled={state === "recording" || playing}
+                title="編集モードで追加するノートの長さ。BPM 連動で 1/4〜1/32、または自由 (0.5秒固定)。"
+                className="rounded-md border border-ink-300 bg-white px-2 py-0.5 text-xs disabled:opacity-50"
+              >
+                <option value="1/4">1/4</option>
+                <option value="1/8">1/8</option>
+                <option value="1/16">1/16</option>
+                <option value="1/32">1/32</option>
+                <option value="free">自由 (0.5s)</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={async () => {
+                await arm();
+                setMetronomeOn((v) => !v);
+              }}
+              title={`メトロノーム ${metronomeOn ? "OFF" : "ON"} (BPM ${bpm} 連動)`}
+              className={[
+                "rounded-full px-3 py-0.5 text-xs font-semibold shadow-sm",
+                metronomeOn
+                  ? "bg-emerald-500 text-white hover:bg-emerald-600"
+                  : "border border-ink-300 bg-white text-ink-700 hover:border-accent-300",
+              ].join(" ")}
+            >
+              🎵 メトロノーム {metronomeOn ? "ON" : "OFF"}
             </button>
             <label className="flex items-center gap-1">
               <span className="font-medium text-ink-700">クオンタイズ</span>
@@ -799,8 +950,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         </div>
         {editMode && (
           <div className="mb-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">
-            ✎ 編集モード: 空の場所をクリックすると <b>{armedLabel}層</b> にノート追加 (0.5 秒、ドラムは 1 ヒット)。
-            既存ノートをクリックすると削除できます。下の④で対象トラックを切り替えられます。
+            ✎ 編集モード: 空の場所をクリックで <b>{armedLabel}層</b> にノート追加 (長さは「音の長さ」: <b>{noteLength}</b>、ドラムは 1 ヒット)。
+            既存ノートはクリックで削除 / 右端ドラッグで長さを自由に変更できます。下の④で対象トラックを切り替えられます。
           </div>
         )}
         <PianoRoll
@@ -808,6 +959,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           chord={chord}
           drum={drum}
           bass={bass}
+          synth={synth}
           isActive={isActive}
           recordingLayerId={recordingLayerId}
           getPlayheadSec={getPlayheadSec}
@@ -816,6 +968,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           armedLayer={armed}
           onAddNote={handleAddNote}
           onDeleteNote={handleDeleteNote}
+          onResizeNote={handleResizeNote}
         />
       </section>
 
@@ -835,7 +988,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
           {trackInfo.map(({ id, layer, label }) => {
             const isArmed = armed === id;
             const dur = layerDuration(layer);

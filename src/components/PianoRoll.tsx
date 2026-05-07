@@ -9,7 +9,7 @@
  * - 再生ヘッドは requestAnimationFrame + 直接 DOM 更新で 60fps に近づける
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Layer, LayerId } from "../audio/recorder";
 import {
@@ -25,6 +25,7 @@ interface PianoRollProps {
   chord: Layer;
   drum: Layer;
   bass: Layer;
+  synth: Layer;
   /** 録音中 or 再生中 */
   isActive: boolean;
   /** 録音中の対象トラック (ハイライト色を変える) */
@@ -41,6 +42,8 @@ interface PianoRollProps {
   onAddNote?: (layerId: LayerId, midi: number, startSec: number) => void;
   /** ノートクリック → 削除 */
   onDeleteNote?: (layerId: LayerId, index: number) => void;
+  /** ノート右端ドラッグ → 長さ変更 */
+  onResizeNote?: (layerId: LayerId, index: number, durationSec: number) => void;
 }
 
 const PX_PER_SEC = 80;
@@ -61,14 +64,17 @@ const DRUM_PITCH_GAP = 4; // ドラム帯と pitch 帯の境界線のスペー�
 const COLOR_MELODY = "#f97316"; // orange-500
 const COLOR_CHORD = "#6366f1"; // indigo-500
 const COLOR_BASS = "#0d9488"; // teal-600
+const COLOR_SYNTH = "#ec4899"; // pink-500
 const COLOR_REC = "#ef4444"; // red-500
 const COLOR_PLAY = "#0ea5e9"; // sky-500
+const RESIZE_HANDLE_WIDTH = 5;
 
 export default function PianoRoll({
   melody,
   chord,
   drum,
   bass,
+  synth,
   isActive,
   recordingLayerId,
   getPlayheadSec,
@@ -77,13 +83,20 @@ export default function PianoRoll({
   armedLayer,
   onAddNote,
   onDeleteNote,
+  onResizeNote,
 }: PianoRollProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<SVGLineElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const [resizing, setResizing] = useState<{
+    layerId: LayerId;
+    index: number;
+    startClientX: number;
+    origDurationSec: number;
+  } | null>(null);
 
   const { width, pitchHeight, pitchMin, pitchMax, totalSec } = useMemo(() => {
-    const all = [...melody.notes, ...chord.notes, ...bass.notes];
+    const all = [...melody.notes, ...chord.notes, ...bass.notes, ...synth.notes];
     let pMin = 60;
     let pMax = 72;
     let last = 0;
@@ -116,7 +129,7 @@ export default function PianoRoll({
       pitchMax: pMax,
       totalSec: tot,
     };
-  }, [melody.notes, chord.notes, drum.notes, bass.notes]);
+  }, [melody.notes, chord.notes, drum.notes, bass.notes, synth.notes]);
 
   const drumTop = 0;
   const pitchTop = DRUM_TOTAL_HEIGHT + DRUM_PITCH_GAP;
@@ -219,9 +232,45 @@ export default function PianoRoll({
     index: number,
   ) {
     if (!editMode || !onDeleteNote) return;
+    if (resizing) return; // リサイズ中の click は無視
     e.stopPropagation();
     onDeleteNote(layerId, index);
   }
+
+  function handleResizeMouseDown(
+    e: ReactMouseEvent,
+    layerId: LayerId,
+    index: number,
+    origDurationSec: number,
+  ) {
+    if (!editMode || !onResizeNote) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setResizing({
+      layerId,
+      index,
+      startClientX: e.clientX,
+      origDurationSec,
+    });
+  }
+
+  // ノート右端ドラッグでリサイズ (window 全体で mousemove/mouseup を拾う)
+  useEffect(() => {
+    if (!resizing || !onResizeNote) return;
+    const onMove = (e: MouseEvent) => {
+      const dx = e.clientX - resizing.startClientX;
+      const dDur = dx / PX_PER_SEC;
+      const newDur = Math.max(0.05, resizing.origDurationSec + dDur);
+      onResizeNote(resizing.layerId, resizing.index, newDur);
+    };
+    const onUp = () => setResizing(null);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [resizing, onResizeNote]);
 
   return (
     <div className="flex flex-col gap-2">
@@ -246,6 +295,13 @@ export default function PianoRoll({
             style={{ backgroundColor: COLOR_BASS }}
           />
           ベース ({bass.notes.length})
+        </span>
+        <span className="flex items-center gap-1">
+          <span
+            className="inline-block h-2 w-3 rounded-sm"
+            style={{ backgroundColor: COLOR_SYNTH }}
+          />
+          シンセ ({synth.notes.length})
         </span>
         <span className="flex items-center gap-1">
           <span
@@ -285,7 +341,11 @@ export default function PianoRoll({
                 ? "🎼 コード層を録音中"
                 : recordingLayerId === "drum"
                   ? "🥁 ドラム層を録音中"
-                  : "▶ 再生中"}
+                  : recordingLayerId === "bass"
+                    ? "🎸 ベース層を録音中"
+                    : recordingLayerId === "synth"
+                      ? "🎹 シンセ層を録音中"
+                      : "▶ 再生中"}
           </span>
         )}
       </div>
@@ -425,56 +485,161 @@ export default function PianoRoll({
             );
           })}
 
-          {/* ベースノート (背面・最背面) */}
-          {bass.notes.map((n, i) => (
-            <rect
-              key={`b${i}-${n.midi}-${n.startSec}`}
-              data-note="bass"
-              x={n.startSec * PX_PER_SEC}
-              y={noteY(n.midi)}
-              width={Math.max(2, n.durationSec * PX_PER_SEC - 1)}
-              height={Math.max(2, ROW_HEIGHT - 1)}
-              fill={COLOR_BASS}
-              opacity={0.85}
-              rx={1}
-              style={editMode ? { cursor: "pointer" } : undefined}
-              onClick={(e) => handleNoteClick(e, "bass", i)}
-            />
-          ))}
+          {/* ベースノート (最背面) */}
+          {bass.notes.map((n, i) => {
+            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
+            const x = n.startSec * PX_PER_SEC;
+            const y = noteY(n.midi);
+            const h = Math.max(2, ROW_HEIGHT - 1);
+            return (
+              <g key={`b${i}-${n.midi}-${n.startSec}`}>
+                <rect
+                  data-note="bass"
+                  x={x}
+                  y={y}
+                  width={w}
+                  height={h}
+                  fill={COLOR_BASS}
+                  opacity={0.85}
+                  rx={1}
+                  style={editMode ? { cursor: "pointer" } : undefined}
+                  onClick={(e) => handleNoteClick(e, "bass", i)}
+                />
+                {editMode && onResizeNote && (
+                  <rect
+                    data-resize="bass"
+                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
+                    y={y}
+                    width={RESIZE_HANDLE_WIDTH}
+                    height={h}
+                    fill="#fff"
+                    fillOpacity={0.001}
+                    style={{ cursor: "ew-resize" }}
+                    onMouseDown={(e) =>
+                      handleResizeMouseDown(e, "bass", i, n.durationSec)
+                    }
+                  />
+                )}
+              </g>
+            );
+          })}
 
           {/* コードノート (背面) */}
-          {chord.notes.map((n, i) => (
-            <rect
-              key={`c${i}-${n.midi}-${n.startSec}`}
-              data-note="chord"
-              x={n.startSec * PX_PER_SEC}
-              y={noteY(n.midi)}
-              width={Math.max(2, n.durationSec * PX_PER_SEC - 1)}
-              height={Math.max(2, ROW_HEIGHT - 1)}
-              fill={COLOR_CHORD}
-              opacity={0.85}
-              rx={1}
-              style={editMode ? { cursor: "pointer" } : undefined}
-              onClick={(e) => handleNoteClick(e, "chord", i)}
-            />
-          ))}
+          {chord.notes.map((n, i) => {
+            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
+            const x = n.startSec * PX_PER_SEC;
+            const y = noteY(n.midi);
+            const h = Math.max(2, ROW_HEIGHT - 1);
+            return (
+              <g key={`c${i}-${n.midi}-${n.startSec}`}>
+                <rect
+                  data-note="chord"
+                  x={x}
+                  y={y}
+                  width={w}
+                  height={h}
+                  fill={COLOR_CHORD}
+                  opacity={0.85}
+                  rx={1}
+                  style={editMode ? { cursor: "pointer" } : undefined}
+                  onClick={(e) => handleNoteClick(e, "chord", i)}
+                />
+                {editMode && onResizeNote && (
+                  <rect
+                    data-resize="chord"
+                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
+                    y={y}
+                    width={RESIZE_HANDLE_WIDTH}
+                    height={h}
+                    fill="#fff"
+                    fillOpacity={0.001}
+                    style={{ cursor: "ew-resize" }}
+                    onMouseDown={(e) =>
+                      handleResizeMouseDown(e, "chord", i, n.durationSec)
+                    }
+                  />
+                )}
+              </g>
+            );
+          })}
+
+          {/* シンセノート (中間) */}
+          {synth.notes.map((n, i) => {
+            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
+            const x = n.startSec * PX_PER_SEC;
+            const y = noteY(n.midi);
+            const h = Math.max(2, ROW_HEIGHT - 1);
+            return (
+              <g key={`s${i}-${n.midi}-${n.startSec}`}>
+                <rect
+                  data-note="synth"
+                  x={x}
+                  y={y}
+                  width={w}
+                  height={h}
+                  fill={COLOR_SYNTH}
+                  opacity={0.9}
+                  rx={1}
+                  style={editMode ? { cursor: "pointer" } : undefined}
+                  onClick={(e) => handleNoteClick(e, "synth", i)}
+                />
+                {editMode && onResizeNote && (
+                  <rect
+                    data-resize="synth"
+                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
+                    y={y}
+                    width={RESIZE_HANDLE_WIDTH}
+                    height={h}
+                    fill="#fff"
+                    fillOpacity={0.001}
+                    style={{ cursor: "ew-resize" }}
+                    onMouseDown={(e) =>
+                      handleResizeMouseDown(e, "synth", i, n.durationSec)
+                    }
+                  />
+                )}
+              </g>
+            );
+          })}
 
           {/* メロディノート (前面) */}
-          {melody.notes.map((n, i) => (
-            <rect
-              key={`m${i}-${n.midi}-${n.startSec}`}
-              data-note="melody"
-              x={n.startSec * PX_PER_SEC}
-              y={noteY(n.midi)}
-              width={Math.max(2, n.durationSec * PX_PER_SEC - 1)}
-              height={Math.max(2, ROW_HEIGHT - 1)}
-              fill={COLOR_MELODY}
-              opacity={0.95}
-              rx={1}
-              style={editMode ? { cursor: "pointer" } : undefined}
-              onClick={(e) => handleNoteClick(e, "melody", i)}
-            />
-          ))}
+          {melody.notes.map((n, i) => {
+            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
+            const x = n.startSec * PX_PER_SEC;
+            const y = noteY(n.midi);
+            const h = Math.max(2, ROW_HEIGHT - 1);
+            return (
+              <g key={`m${i}-${n.midi}-${n.startSec}`}>
+                <rect
+                  data-note="melody"
+                  x={x}
+                  y={y}
+                  width={w}
+                  height={h}
+                  fill={COLOR_MELODY}
+                  opacity={0.95}
+                  rx={1}
+                  style={editMode ? { cursor: "pointer" } : undefined}
+                  onClick={(e) => handleNoteClick(e, "melody", i)}
+                />
+                {editMode && onResizeNote && (
+                  <rect
+                    data-resize="melody"
+                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
+                    y={y}
+                    width={RESIZE_HANDLE_WIDTH}
+                    height={h}
+                    fill="#fff"
+                    fillOpacity={0.001}
+                    style={{ cursor: "ew-resize" }}
+                    onMouseDown={(e) =>
+                      handleResizeMouseDown(e, "melody", i, n.durationSec)
+                    }
+                  />
+                )}
+              </g>
+            );
+          })}
 
           {/* 再生ヘッド */}
           <line

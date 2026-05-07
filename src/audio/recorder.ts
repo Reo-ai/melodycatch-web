@@ -11,8 +11,9 @@ import { Midi } from "@tonejs/midi";
 import { holdOff, holdOn } from "./pianoEngine";
 import { triggerDrumHit } from "./drums";
 import { bassHoldOff, bassHoldOn } from "./bassEngine";
+import { synthHoldOff, synthHoldOn } from "./synthEngine";
 
-export type LayerId = "melody" | "chord" | "drum" | "bass";
+export type LayerId = "melody" | "chord" | "drum" | "bass" | "synth";
 
 export interface NoteEvent {
   midi: number;
@@ -226,16 +227,19 @@ export class Playback {
           if (end > last) last = end;
           continue;
         }
-        // ベース層は bassEngine、それ以外 (melody/chord) は pianoEngine
+        // bass / synth はそれぞれ専用エンジン、それ以外 (melody/chord) は pianoEngine
         const isBass = layer.id === "bass";
+        const isSynth = layer.id === "synth";
         const tOn = window.setTimeout(() => {
           if (isBass) bassHoldOn(note.midi, note.velocity);
+          else if (isSynth) synthHoldOn(note.midi, note.velocity);
           else holdOn(note.midi, note.velocity);
           this.hooks?.onNoteOn?.(layer.id, note.midi);
         }, note.startSec * 1000);
         const tOff = window.setTimeout(
           () => {
             if (isBass) bassHoldOff(note.midi);
+            else if (isSynth) synthHoldOff(note.midi);
             else holdOff(note.midi);
             this.hooks?.onNoteOff?.(layer.id, note.midi);
           },
