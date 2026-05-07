@@ -51,6 +51,26 @@ export function synthTriggerNote(
   );
 }
 
+/**
+ * 和音を一括で鳴らす (コードパレット / 進行プリセット用)。
+ * シンセ層に armed しているときに使う。
+ */
+export function synthChordOn(
+  midiNotes: number[],
+  velocity = 0.8,
+  duration = 1.4,
+): void {
+  ensureSynth();
+  if (!synthSynth || midiNotes.length === 0) return;
+  const notes = midiNotes.map(midiToNoteString);
+  synthSynth.triggerAttackRelease(
+    notes,
+    Math.max(0.05, duration),
+    undefined,
+    velocity,
+  );
+}
+
 export function synthReleaseAll(): void {
   synthSynth?.releaseAll();
 }

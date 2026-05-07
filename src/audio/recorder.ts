@@ -12,8 +12,9 @@ import { holdOff, holdOn } from "./pianoEngine";
 import { triggerDrumHit } from "./drums";
 import { bassHoldOff, bassHoldOn } from "./bassEngine";
 import { synthHoldOff, synthHoldOn } from "./synthEngine";
+import { guitarHoldOff, guitarHoldOn } from "./guitarEngine";
 
-export type LayerId = "melody" | "chord" | "drum" | "bass" | "synth";
+export type LayerId = "melody" | "chord" | "drum" | "bass" | "synth" | "guitar";
 
 export interface NoteEvent {
   midi: number;
@@ -238,12 +239,14 @@ export class Playback {
           if (end > last) last = end;
           continue;
         }
-        // bass / synth はそれぞれ専用エンジン、それ以外 (melody/chord) は pianoEngine
+        // bass / synth / guitar はそれぞれ専用エンジン、それ以外 (melody/chord) は pianoEngine
         const isBass = layer.id === "bass";
         const isSynth = layer.id === "synth";
+        const isGuitar = layer.id === "guitar";
         const tOn = window.setTimeout(() => {
           if (isBass) bassHoldOn(note.midi, note.velocity);
           else if (isSynth) synthHoldOn(note.midi, note.velocity);
+          else if (isGuitar) guitarHoldOn(note.midi, note.velocity);
           else holdOn(note.midi, note.velocity);
           this.hooks?.onNoteOn?.(layer.id, note.midi);
         }, note.startSec * 1000);
@@ -251,6 +254,7 @@ export class Playback {
           () => {
             if (isBass) bassHoldOff(note.midi);
             else if (isSynth) synthHoldOff(note.midi);
+            else if (isGuitar) guitarHoldOff(note.midi);
             else holdOff(note.midi);
             this.hooks?.onNoteOff?.(layer.id, note.midi);
           },

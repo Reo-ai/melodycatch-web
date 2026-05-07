@@ -44,8 +44,11 @@ interface ChordTonePianoProps {
   onNoteOff: (midi: number) => void;
 }
 
-const DEFAULT_BASS_MIDI = 48; // C3
-const DEFAULT_OCTAVE_SPAN = 2;
+// 88鍵ピアノ (A0=21 〜 C8=108) と同じ音域をカバーする。
+// nearestRootAtOrAbove(21) からスケール構成音を 8 オクターブ分並べ、
+// MIDI <= 108 でクリップする (実装上は <= 127 で OK だが 88鍵ピアノ相当)。
+const DEFAULT_BASS_MIDI = 21; // A0
+const DEFAULT_OCTAVE_SPAN = 8;
 
 export default function ChordTonePiano({
   scale,
@@ -66,7 +69,8 @@ export default function ChordTonePiano({
     for (let oct = 0; oct < octaveSpan; oct++) {
       for (const iv of ivs) {
         const m = root + oct * 12 + iv;
-        if (m >= 0 && m <= 127) list.push(m);
+        // 88鍵ピアノの最高音 C8=108 までに制限
+        if (m >= 21 && m <= 108) list.push(m);
       }
     }
     return list;

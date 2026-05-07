@@ -59,6 +59,29 @@ export function bassTriggerNote(
   );
 }
 
+/**
+ * 和音を一括で鳴らす (コードパレット / 進行プリセット用)。
+ * ベース層に armed しているときに使う。
+ * 重低音が濁るのを避けるため、最低音だけを 1 オクターブ下げて鳴らす。
+ */
+export function bassChordOn(
+  midiNotes: number[],
+  velocity = 0.8,
+  duration = 1.4,
+): void {
+  ensureBass();
+  if (!bassSynth || midiNotes.length === 0) return;
+  const sorted = [...midiNotes].sort((a, b) => a - b);
+  const root = sorted[0] - 12; // ルートを 1 オクターブ下げてベースらしく
+  const notes = [root, ...sorted].map(midiToNoteString);
+  bassSynth.triggerAttackRelease(
+    notes,
+    Math.max(0.05, duration),
+    undefined,
+    velocity,
+  );
+}
+
 export function bassReleaseAll(): void {
   bassSynth?.releaseAll();
 }

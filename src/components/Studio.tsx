@@ -49,15 +49,23 @@ import {
   releaseAll,
 } from "../audio/pianoEngine";
 import {
+  bassChordOn,
   bassHoldOff,
   bassHoldOn,
   bassReleaseAll,
 } from "../audio/bassEngine";
 import {
+  synthChordOn,
   synthHoldOff,
   synthHoldOn,
   synthReleaseAll,
 } from "../audio/synthEngine";
+import {
+  guitarChordOn,
+  guitarHoldOff,
+  guitarHoldOn,
+  guitarReleaseAll,
+} from "../audio/guitarEngine";
 import {
   setMetronomeBpm,
   startMetronome,
@@ -89,6 +97,7 @@ interface Snapshot {
   drum: Layer;
   bass: Layer;
   synth: Layer;
+  guitar: Layer;
 }
 
 /** 編集モード時の追加ノート長。"free" は 0.5 秒固定。 */
@@ -225,6 +234,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [drum, setDrum] = useState<Layer>(() => emptyLayer("drum", "ドラム"));
   const [bass, setBass] = useState<Layer>(() => emptyLayer("bass", "ベース"));
   const [synth, setSynth] = useState<Layer>(() => emptyLayer("synth", "シンセ"));
+  const [guitar, setGuitar] = useState<Layer>(() => emptyLayer("guitar", "ギター"));
   const [armed, setArmed] = useState<LayerId>("melody");
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
@@ -284,6 +294,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setBass((cur) => ({ ...cur, notes: [...cur.notes] }));
       } else if (armedRef.current === "synth") {
         setSynth((cur) => ({ ...cur, notes: [...cur.notes] }));
+      } else if (armedRef.current === "guitar") {
+        setGuitar((cur) => ({ ...cur, notes: [...cur.notes] }));
       } else {
         setDrum((cur) => ({ ...cur, notes: [...cur.notes] }));
       }
@@ -293,41 +305,43 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // ---- Undo/Redo: 破壊的操作の前にスナップショット保存 -----------------------
   const pushHistory = useCallback(() => {
     setPast((p) => {
-      const snap: Snapshot = { melody, chord, drum, bass, synth };
+      const snap: Snapshot = { melody, chord, drum, bass, synth, guitar };
       const next = [...p, snap];
       if (next.length > HISTORY_LIMIT) next.shift();
       return next;
     });
     setFuture([]);
-  }, [melody, chord, drum, bass, synth]);
+  }, [melody, chord, drum, bass, synth, guitar]);
 
   const undo = useCallback(() => {
     setPast((p) => {
       if (p.length === 0) return p;
       const prev = p[p.length - 1];
-      setFuture((f) => [...f, { melody, chord, drum, bass, synth }]);
+      setFuture((f) => [...f, { melody, chord, drum, bass, synth, guitar }]);
       setMelody(prev.melody);
       setChord(prev.chord);
       setDrum(prev.drum);
       setBass(prev.bass);
       setSynth(prev.synth);
+      setGuitar(prev.guitar);
       return p.slice(0, -1);
     });
-  }, [melody, chord, drum, bass, synth]);
+  }, [melody, chord, drum, bass, synth, guitar]);
 
   const redo = useCallback(() => {
     setFuture((f) => {
       if (f.length === 0) return f;
       const next = f[f.length - 1];
-      setPast((p) => [...p, { melody, chord, drum, bass, synth }]);
+      setPast((p) => [...p, { melody, chord, drum, bass, synth, guitar }]);
       setMelody(next.melody);
       setChord(next.chord);
       setDrum(next.drum);
       setBass(next.bass);
       setSynth(next.synth);
+      setGuitar(next.guitar);
       return f.slice(0, -1);
     });
-  }, [melody, chord, drum, bass, synth]);
+  }, [melody, chord, drum, bass, synth, guitar]);
 
   // Cmd+Z / Ctrl+Z = undo, Cmd+Shift+Z / Ctrl+Y = redo
   useEffect(() => {
@@ -393,6 +407,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         bassHoldOn(midi, velocity);
       } else if (armedRef.current === "synth") {
         synthHoldOn(midi, velocity);
+      } else if (armedRef.current === "guitar") {
+        guitarHoldOn(midi, velocity);
       } else {
         holdOn(midi, velocity);
       }
@@ -414,6 +430,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       holdOff(midi);
       bassHoldOff(midi);
       synthHoldOff(midi);
+      guitarHoldOff(midi);
       setActiveNotes((cur) => {
         if (!cur.has(midi)) return cur;
         const next = new Set(cur);
@@ -441,10 +458,21 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   });
 
   // ---- コードパレット --------------------------------------------------------
+  // armed されている楽器に合わせてコードを発音する。
+  // - chord/melody/drum: ピアノ
+  // - bass: ベース (ルートを 1oct 下げて重ねる)
+  // - synth: シンセ
+  // - guitar: ギター (ストロークっぽくずらして発音)
+  // 録音は「コード層」または「ギター層」が armed のときに行う。
   const onPaletteChord = useCallback(
     async (c: HarmonicChord, midiNotes: number[]) => {
       await arm();
-      chordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
+      const a = armedRef.current;
+      if (a === "bass") bassChordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
+      else if (a === "synth") synthChordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
+      else if (a === "guitar") guitarChordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
+      else chordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
+
       const triads = diatonicTriads(scale);
       const idx = triads.findIndex(
         (t) =>
@@ -459,10 +487,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setActiveChordIndex(null);
       }, PALETTE_CHORD_DURATION_SEC * 1000);
 
-      // コード層を録音中ならコードイベントとして記録
+      // コード層 / ギター層 を録音中なら記録
       if (
         stateRef.current === "recording" &&
-        armedRef.current === "chord" &&
+        (armedRef.current === "chord" || armedRef.current === "guitar") &&
         sessionRef.current
       ) {
         sessionRef.current.recordChord(
@@ -487,7 +515,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     ) => {
       await arm();
       const t = window.setTimeout(() => {
-        chordOn(midiNotes, 0.8, durationSec);
+        const a = armedRef.current;
+        if (a === "bass") bassChordOn(midiNotes, 0.8, durationSec);
+        else if (a === "synth") synthChordOn(midiNotes, 0.8, durationSec);
+        else if (a === "guitar") guitarChordOn(midiNotes, 0.8, durationSec);
+        else chordOn(midiNotes, 0.8, durationSec);
+
         setSpotlightLabel(`${chordSymbol(c)}  ${chordLabelJa(c)}`);
         const triads = diatonicTriads(scale);
         const idx = triads.findIndex(
@@ -499,7 +532,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setSelectedChord(c);
         if (
           stateRef.current === "recording" &&
-          armedRef.current === "chord" &&
+          (armedRef.current === "chord" || armedRef.current === "guitar") &&
           sessionRef.current
         ) {
           sessionRef.current.recordChord(midiNotes, durationSec, 0.8);
@@ -572,12 +605,15 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             ? bass
             : armed === "synth"
               ? synth
-              : drum;
+              : armed === "guitar"
+                ? guitar
+                : drum;
     const fresh = emptyLayer(armed, layer.name);
     if (armed === "melody") setMelody(fresh);
     else if (armed === "chord") setChord(fresh);
     else if (armed === "bass") setBass(fresh);
     else if (armed === "synth") setSynth(fresh);
+    else if (armed === "guitar") setGuitar(fresh);
     else setDrum(fresh);
 
     sessionRef.current = new RecordingSession(fresh);
@@ -591,6 +627,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (armed !== "chord" && chord.notes.length > 0) otherLayers.push(chord);
     if (armed !== "bass" && bass.notes.length > 0) otherLayers.push(bass);
     if (armed !== "synth" && synth.notes.length > 0) otherLayers.push(synth);
+    if (armed !== "guitar" && guitar.notes.length > 0) otherLayers.push(guitar);
     if (armed !== "drum" && drum.notes.length > 0) otherLayers.push(drum);
     if (otherLayers.length > 0) {
       const overdub = new Playback(otherLayers, {
@@ -627,6 +664,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (finished.id === "chord") setChord({ ...finished });
       else if (finished.id === "bass") setBass({ ...finished });
       else if (finished.id === "synth") setSynth({ ...finished });
+      else if (finished.id === "guitar") setGuitar({ ...finished });
       else setDrum({ ...finished });
     }
     sessionRef.current = null;
@@ -640,6 +678,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       holdOff(m);
       bassHoldOff(m);
       synthHoldOff(m);
+      guitarHoldOff(m);
     });
     setActiveNotes(new Set());
     setPlaybackHighlight(new Set());
@@ -651,6 +690,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     else if (id === "chord") setChord(emptyLayer("chord", "コード"));
     else if (id === "bass") setBass(emptyLayer("bass", "ベース"));
     else if (id === "synth") setSynth(emptyLayer("synth", "シンセ"));
+    else if (id === "guitar") setGuitar(emptyLayer("guitar", "ギター"));
     else setDrum(emptyLayer("drum", "ドラム"));
   }
 
@@ -661,7 +701,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     cancelProgressionTimers();
     // 録音した内容を再生する間はライブ DrumLoop を止める (二重発音防止)
     if (drumPadRef.current?.isPlaying()) drumPadRef.current.stop();
-    const layers = [melody, chord, bass, synth, drum].filter(
+    const layers = [melody, chord, bass, synth, guitar, drum].filter(
       (l) => l.notes.length > 0,
     );
     if (layers.length === 0) return;
@@ -697,6 +737,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     releaseAll();
     bassReleaseAll();
     synthReleaseAll();
+    guitarReleaseAll();
   }
 
   function cancelProgressionTimers() {
@@ -718,10 +759,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setDrum((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setBass((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setSynth((cur) => quantizeLayer(cur, quantizeGrid, bpm));
+    setGuitar((cur) => quantizeLayer(cur, quantizeGrid, bpm));
   }
 
   function exportMidi() {
-    const layers = [melody, chord, bass, synth, drum].filter(
+    const layers = [melody, chord, bass, synth, guitar, drum].filter(
       (l) => l.notes.length > 0,
     );
     if (layers.length === 0) return;
@@ -741,6 +783,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     releaseAll();
     bassReleaseAll();
     synthReleaseAll();
+    guitarReleaseAll();
     setActiveNotes(new Set());
     setPlaybackHighlight(new Set());
     setActiveChordIndex(null);
@@ -763,6 +806,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "chord") setChord(update);
       else if (layerId === "bass") setBass(update);
       else if (layerId === "synth") setSynth(update);
+      else if (layerId === "guitar") setGuitar(update);
       else setDrum(update);
     },
     [pushHistory, noteLength, bpm],
@@ -779,6 +823,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "chord") setChord(update);
       else if (layerId === "bass") setBass(update);
       else if (layerId === "synth") setSynth(update);
+      else if (layerId === "guitar") setGuitar(update);
       else setDrum(update);
     },
     [pushHistory],
@@ -813,6 +858,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "chord") setChord(update);
       else if (layerId === "bass") setBass(update);
       else if (layerId === "synth") setSynth(update);
+      else if (layerId === "guitar") setGuitar(update);
       else setDrum(update);
     },
     [pushHistory],
@@ -849,6 +895,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       releaseAll();
       bassReleaseAll();
       synthReleaseAll();
+      guitarReleaseAll();
       stopMetronome();
     };
   }, []);
@@ -859,19 +906,29 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const drumDur = useMemo(() => layerDuration(drum), [drum]);
   const bassDur = useMemo(() => layerDuration(bass), [bass]);
   const synthDur = useMemo(() => layerDuration(synth), [synth]);
-  const totalDur = Math.max(melodyDur, chordDur, drumDur, bassDur, synthDur);
+  const guitarDur = useMemo(() => layerDuration(guitar), [guitar]);
+  const totalDur = Math.max(
+    melodyDur,
+    chordDur,
+    drumDur,
+    bassDur,
+    synthDur,
+    guitarDur,
+  );
   const hasAnything =
     melody.notes.length > 0 ||
     chord.notes.length > 0 ||
     drum.notes.length > 0 ||
     bass.notes.length > 0 ||
-    synth.notes.length > 0;
+    synth.notes.length > 0 ||
+    guitar.notes.length > 0;
   const overdubPlaying =
     state === "recording" &&
     ((armed !== "melody" && melody.notes.length > 0) ||
       (armed !== "chord" && chord.notes.length > 0) ||
       (armed !== "bass" && bass.notes.length > 0) ||
       (armed !== "synth" && synth.notes.length > 0) ||
+      (armed !== "guitar" && guitar.notes.length > 0) ||
       (armed !== "drum" && drum.notes.length > 0));
   const isActive = state === "recording" || playing;
   const recordingLayerId: LayerId | null =
@@ -881,6 +938,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     { id: "chord", layer: chord, label: "🎼 コード層" },
     { id: "bass", layer: bass, label: "🎸 ベース層" },
     { id: "synth", layer: synth, label: "🎹 シンセ層" },
+    { id: "guitar", layer: guitar, label: "🎸 ギター層" },
     { id: "drum", layer: drum, label: "🥁 ドラム層" },
   ];
   const armedLabel =
@@ -892,7 +950,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           ? "ベース"
           : armed === "synth"
             ? "シンセ"
-            : "ドラム";
+            : armed === "guitar"
+              ? "ギター"
+              : "ドラム";
   const progressionGapSec = (60 * 4) / Math.max(40, Math.min(220, bpm));
 
   return (
@@ -1211,6 +1271,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           drum={drum}
           bass={bass}
           synth={synth}
+          guitar={guitar}
           isActive={isActive}
           recordingLayerId={recordingLayerId}
           getPlayheadSec={getPlayheadSec}
@@ -1248,6 +1309,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             )}
             {armed === "synth" && state === "recording" && (
               <span className="ml-2 text-rose-500">● シンセ層に録音中</span>
+            )}
+            {armed === "guitar" && state === "recording" && (
+              <span className="ml-2 text-rose-500">
+                🎸 ギター層に録音中 (+{chordRecCount} コード)
+              </span>
             )}
           </h2>
           {(spotlightLabel || selectedChord) && (

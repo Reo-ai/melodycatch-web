@@ -26,6 +26,7 @@ interface PianoRollProps {
   drum: Layer;
   bass: Layer;
   synth: Layer;
+  guitar: Layer;
   /** 録音中 or 再生中 */
   isActive: boolean;
   /** 録音中の対象トラック (ハイライト色を変える) */
@@ -65,6 +66,7 @@ const COLOR_MELODY = "#f97316"; // orange-500
 const COLOR_CHORD = "#6366f1"; // indigo-500
 const COLOR_BASS = "#0d9488"; // teal-600
 const COLOR_SYNTH = "#ec4899"; // pink-500
+const COLOR_GUITAR = "#b45309"; // amber-700
 const COLOR_REC = "#ef4444"; // red-500
 const COLOR_PLAY = "#0ea5e9"; // sky-500
 const RESIZE_HANDLE_WIDTH = 5;
@@ -75,6 +77,7 @@ export default function PianoRoll({
   drum,
   bass,
   synth,
+  guitar,
   isActive,
   recordingLayerId,
   getPlayheadSec,
@@ -96,7 +99,13 @@ export default function PianoRoll({
   } | null>(null);
 
   const { width, pitchHeight, pitchMin, pitchMax, totalSec } = useMemo(() => {
-    const all = [...melody.notes, ...chord.notes, ...bass.notes, ...synth.notes];
+    const all = [
+      ...melody.notes,
+      ...chord.notes,
+      ...bass.notes,
+      ...synth.notes,
+      ...guitar.notes,
+    ];
     let pMin = 60;
     let pMax = 72;
     let last = 0;
@@ -129,7 +138,7 @@ export default function PianoRoll({
       pitchMax: pMax,
       totalSec: tot,
     };
-  }, [melody.notes, chord.notes, drum.notes, bass.notes, synth.notes]);
+  }, [melody.notes, chord.notes, drum.notes, bass.notes, synth.notes, guitar.notes]);
 
   const drumTop = 0;
   const pitchTop = DRUM_TOTAL_HEIGHT + DRUM_PITCH_GAP;
@@ -306,6 +315,13 @@ export default function PianoRoll({
         <span className="flex items-center gap-1">
           <span
             className="inline-block h-2 w-3 rounded-sm"
+            style={{ backgroundColor: COLOR_GUITAR }}
+          />
+          ギター ({guitar.notes.length})
+        </span>
+        <span className="flex items-center gap-1">
+          <span
+            className="inline-block h-2 w-3 rounded-sm"
             style={{ backgroundColor: DRUM_LANES[0].color }}
           />
           HiHat
@@ -345,7 +361,9 @@ export default function PianoRoll({
                     ? "🎸 ベース層を録音中"
                     : recordingLayerId === "synth"
                       ? "🎹 シンセ層を録音中"
-                      : "▶ 再生中"}
+                      : recordingLayerId === "guitar"
+                        ? "🎸 ギター層を録音中"
+                        : "▶ 再生中"}
           </span>
         )}
       </div>
@@ -595,6 +613,45 @@ export default function PianoRoll({
                     style={{ cursor: "ew-resize" }}
                     onMouseDown={(e) =>
                       handleResizeMouseDown(e, "synth", i, n.durationSec)
+                    }
+                  />
+                )}
+              </g>
+            );
+          })}
+
+          {/* ギターノート (中前面) */}
+          {guitar.notes.map((n, i) => {
+            const w = Math.max(2, n.durationSec * PX_PER_SEC - 1);
+            const x = n.startSec * PX_PER_SEC;
+            const y = noteY(n.midi);
+            const h = Math.max(2, ROW_HEIGHT - 1);
+            return (
+              <g key={`g${i}-${n.midi}-${n.startSec}`}>
+                <rect
+                  data-note="guitar"
+                  x={x}
+                  y={y}
+                  width={w}
+                  height={h}
+                  fill={COLOR_GUITAR}
+                  opacity={0.9}
+                  rx={1}
+                  style={editMode ? { cursor: "pointer" } : undefined}
+                  onClick={(e) => handleNoteClick(e, "guitar", i)}
+                />
+                {editMode && onResizeNote && (
+                  <rect
+                    data-resize="guitar"
+                    x={x + Math.max(0, w - RESIZE_HANDLE_WIDTH)}
+                    y={y}
+                    width={RESIZE_HANDLE_WIDTH}
+                    height={h}
+                    fill="#fff"
+                    fillOpacity={0.001}
+                    style={{ cursor: "ew-resize" }}
+                    onMouseDown={(e) =>
+                      handleResizeMouseDown(e, "guitar", i, n.durationSec)
                     }
                   />
                 )}
