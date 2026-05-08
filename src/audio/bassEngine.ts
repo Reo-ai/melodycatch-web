@@ -1,38 +1,93 @@
 /**
- * ベース楽器 (Tone.js MonoSynth ベースのポリフォニック・サンセザイザ)。
+ * ベース楽器 (Tone.js MonoSynth ベースのポリフォニック・シンセ)。
  *
- * - 鋸波 + ローパスフィルタ + フィルタエンベロープで「ピチッ」とした
- *   低音シンセベースを作る。
- * - holdOn / holdOff で持続音、triggerNote で短いノートを鳴らせる。
- * - pianoEngine と独立しているので、ピアノ層と同時に鳴らしても干渉しない。
+ * フィンガー奏法のエレキ/アコースティックベースに近い「生音感」を狙った設計:
+ * - 三角波 (triangle) を採用。鋸波より倍音が大幅に少なく、丸く太い音になる。
+ * - フィルタエンベロープを「短いアタック → 速い decay」に設定し、指弾きの
+ *   「ボン」というプラックアタックを再現。
+ * - シグナルチェーン全体で:
+ *     HighPass(40Hz)   ※サブ帯のゴロつきカット
+ *   → 軽いチューブ歪み (Distortion 0.16)  ※倍音追加で芯を出す
+ *   → EQ3 (低+3 / 中-2 / 高-10dB)         ※耳障りなトレブル除去
+ *   → Compressor                          ※ダイナミクスを締める
+ *   → Reverb (decay 0.6, wet 0.04)        ※自然な部屋鳴り
+ *   → Destination
+ *
+ * holdOn/holdOff で持続音、triggerNote で短いノート、chordOn で和音発音。
  */
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 
 let bassSynth: Tone.PolySynth | null = null;
+let bassHighpass: Tone.Filter | null = null;
+let bassDistortion: Tone.Distortion | null = null;
+let bassEq: Tone.EQ3 | null = null;
+let bassCompressor: Tone.Compressor | null = null;
+let bassReverb: Tone.Reverb | null = null;
 
 function ensureBass() {
   if (bassSynth) return;
+
+  // 出力段から逆順に組み立て。
+  bassReverb = new Tone.Reverb({ decay: 0.6, wet: 0.04 }).toDestination();
+  bassCompressor = new Tone.Compressor({
+    threshold: -18,
+    ratio: 3.5,
+    attack: 0.006,
+    release: 0.12,
+    knee: 6,
+  }).connect(bassReverb);
+  // 低音をふくよかに / 中域は控えめ / 高域はバッサリ落として「指弾きベース」の質感に。
+  bassEq = new Tone.EQ3({
+    low: 3,
+    mid: -2,
+    high: -10,
+    lowFrequency: 200,
+    highFrequency: 2200,
+  }).connect(bassCompressor);
+  // チューブアンプ的な軽い歪みで、芯になる倍音を追加。
+  bassDistortion = new Tone.Distortion({
+    distortion: 0.16,
+    oversample: "2x",
+    wet: 0.45,
+  }).connect(bassEq);
+  // 40Hz 未満のサブ帯をカット (低音の濁りを取る)。
+  bassHighpass = new Tone.Filter({
+    frequency: 40,
+    type: "highpass",
+    Q: 0.7,
+  }).connect(bassDistortion);
+
   bassSynth = new Tone.PolySynth(Tone.MonoSynth, {
-    oscillator: { type: "sawtooth" },
-    filter: { Q: 1.5, type: "lowpass", rolloff: -24 },
+    oscillator: {
+      // 三角波 → 倍音が少なく、フィンガーベースらしい丸い基音。
+      type: "triangle",
+    },
+    filter: {
+      Q: 2.2,
+      type: "lowpass",
+      rolloff: -24,
+    },
     envelope: {
-      attack: 0.005,
-      decay: 0.25,
-      sustain: 0.45,
-      release: 0.6,
+      // 指弾きの短いアタック → そこそこサステイン → 自然な余韻。
+      attack: 0.008,
+      decay: 0.35,
+      sustain: 0.55,
+      release: 0.9,
     },
     filterEnvelope: {
-      attack: 0.001,
-      decay: 0.5,
-      sustain: 0.15,
-      release: 0.6,
-      baseFrequency: 180,
-      octaves: 2.4,
+      // フィルタを「開いて瞬時に閉じる」= 「ボン」というプラック感。
+      attack: 0.002,
+      decay: 0.16,
+      sustain: 0.22,
+      release: 0.45,
+      baseFrequency: 90,
+      octaves: 3.6,
     },
-    volume: -8,
-  }).toDestination();
+    volume: -6,
+  });
+  bassSynth.connect(bassHighpass);
 }
 
 export function bassHoldOn(midi: number, velocity = 0.85): void {

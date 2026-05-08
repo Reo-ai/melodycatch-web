@@ -77,6 +77,7 @@ import type { Scale } from "../music/scale";
 import {
   chordLabelJa,
   chordSymbol,
+  chordVoicing,
   diatonicTriads,
   type HarmonicChord,
 } from "../music/chord";
@@ -531,6 +532,41 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     },
     [arm, scale, scheduleRefresh],
   );
+
+  // ---- Z〜M でコードパレットの I〜vii° を発音 -----------------------------
+  // QWERTY 下段の Z X C V B N M を 7 つのダイアトニックコードにマッピング。
+  // 修飾キー (Cmd/Ctrl/Alt) が押されているときは無視する (undo 等と衝突しないように)。
+  // フォーム要素 (input/textarea/select/contentEditable) にフォーカスがあるときも無視。
+  useEffect(() => {
+    const KEY_TO_INDEX: Record<string, number> = {
+      z: 0,
+      x: 1,
+      c: 2,
+      v: 3,
+      b: 4,
+      n: 5,
+      m: 6,
+    };
+    function onKey(e: KeyboardEvent) {
+      if (e.repeat) return; // 押しっぱなしで連打しない
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (target.isContentEditable) return;
+      }
+      const idx = KEY_TO_INDEX[e.key.toLowerCase()];
+      if (idx === undefined) return;
+      const triads = diatonicTriads(scale);
+      const chord = triads[idx];
+      if (!chord) return;
+      e.preventDefault();
+      onPaletteChord(chord, chordVoicing(chord, 48));
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [scale, onPaletteChord]);
 
   // ---- 進行プリセット --------------------------------------------------------
   const onProgressionChord = useCallback(
