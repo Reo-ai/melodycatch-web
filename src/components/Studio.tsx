@@ -935,6 +935,69 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   );
 
   /**
+   * 一括リサイズ。targets のノートそれぞれに対し、ドラッグ開始時の origStart/origDuration から
+   * deltaSec を加減算する (右端=durationSec を増減 / 左端=startSec を増減して終端維持)。
+   *
+   * 単発リサイズ用 onResizeNote と異なり、各ターゲットのオリジナル値を毎フレーム参照するため、
+   * ドラッグ中に「累積エラー」が起きない。
+   */
+  const handleResizeNotes = useCallback(
+    (
+      targets: {
+        layerId: LayerId;
+        index: number;
+        origStartSec: number;
+        origDurationSec: number;
+      }[],
+      deltaSec: number,
+      side: "left" | "right",
+    ) => {
+      if (targets.length === 0) return;
+      if (!resizePushedRef.current) {
+        pushHistory();
+        resizePushedRef.current = true;
+      }
+      const byLayer = new Map<
+        LayerId,
+        Map<number, { origStartSec: number; origDurationSec: number }>
+      >();
+      for (const t of targets) {
+        if (!byLayer.has(t.layerId)) byLayer.set(t.layerId, new Map());
+        byLayer.get(t.layerId)!.set(t.index, {
+          origStartSec: t.origStartSec,
+          origDurationSec: t.origDurationSec,
+        });
+      }
+      const buildUpdate = (lid: LayerId) => (cur: Layer): Layer => {
+        const map = byLayer.get(lid);
+        if (!map) return cur;
+        return {
+          ...cur,
+          notes: cur.notes.map((n, i) => {
+            const orig = map.get(i);
+            if (!orig) return n;
+            if (side === "left") {
+              const end = orig.origStartSec + orig.origDurationSec;
+              const newDur = Math.max(0.05, orig.origDurationSec - deltaSec);
+              const newStart = Math.max(0, end - newDur);
+              return { ...n, startSec: newStart, durationSec: end - newStart };
+            }
+            const newDur = Math.max(0.05, orig.origDurationSec + deltaSec);
+            return { ...n, durationSec: newDur };
+          }),
+        };
+      };
+      if (byLayer.has("melody")) setMelody(buildUpdate("melody"));
+      if (byLayer.has("chord")) setChord(buildUpdate("chord"));
+      if (byLayer.has("bass")) setBass(buildUpdate("bass"));
+      if (byLayer.has("synth")) setSynth(buildUpdate("synth"));
+      if (byLayer.has("guitar")) setGuitar(buildUpdate("guitar"));
+      if (byLayer.has("drum")) setDrum(buildUpdate("drum"));
+    },
+    [pushHistory],
+  );
+
+  /**
    * 一括移動。selections のノートを (deltaSec, deltaMidi) だけずらす。
    * - deltaMidi はドラム層では無視される (キット番号を変えると音色が変わるため)。
    * - インデックス番号は移動中もずれない (ドラッグ開始時のスナップショットに対応)
@@ -1380,9 +1443,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         {editMode && (
           <div className="mb-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">
             ✎ 編集モード: 空の場所をドラッグで範囲選択 / クリックで <b>{armedLabel}層</b> にノート追加 (長さ <b>{noteLength}</b>、ドラムは 1 ヒット)。
-            ノートをドラッグで自由に移動 (時間 + 音程)。両端を掴むと長さ調整。
+            ノートをドラッグで自由に移動 (時間 + 音程)。両端を掴むと長さ調整 (範囲選択中は全ノートが同じ量だけ伸縮)。
             選択中に <b>Delete</b>/<b>Backspace</b> で一括削除、<b>Esc</b> で選択解除。
-            移動は BPM のグリッドにスナップ (Alt キー押しながらでスナップ無効)。
+            移動・リサイズは小節グリッドへスナップ (右上のセレクタで分解能を変更)。
+            <b>Cmd</b> / <b>Ctrl</b> を押しながら操作するとスナップを一時的に無効化。
           </div>
         )}
         <PianoRoll
@@ -1401,6 +1465,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           onAddNote={handleAddNote}
           onDeleteNote={handleDeleteNote}
           onResizeNote={handleResizeNote}
+          onResizeNotes={handleResizeNotes}
           onDeleteNotes={handleDeleteNotes}
           onMoveNotes={handleMoveNotes}
         />
