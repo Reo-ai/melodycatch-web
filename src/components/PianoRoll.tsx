@@ -397,11 +397,16 @@ export default function PianoRoll({
       const e = n.startSec + n.durationSec;
       if (e > last) last = e;
     }
-    // 100 小節分の余白を確保 (BPM 未指定なら最低 8 秒)。
-    const minBars = bpm ? 100 * barSecOf(bpm) : MIN_DURATION_SEC;
-    const tot = Math.max(minBars, last + 1.5);
+    // 100 小節分の余白を確保 (BPM 未指定なら 100 BPM 換算で 240 秒)。
+    // bpm が 0/undefined でも必ず 100 小節を確保するために ?? 100 でフォールバック。
+    const minBars = 100 * barSecOf(bpm ?? 100);
+    // 末尾に余白 (右端見切れ対策) として 1 小節 + 1.5 秒を加える。
+    const trailing = barSecOf(bpm ?? 100) + 1.5;
+    const tot = Math.max(minBars, last + trailing, MIN_DURATION_SEC);
+    // 右端見切れ防止用の追加パディング (px)。最後の小節番号 + マージンが収まる幅。
+    const rightPadPx = 48;
     return {
-      width: tot * pxPerSec,
+      width: tot * pxPerSec + rightPadPx,
       pitchHeight: (pMax - pMin + 1) * rowHeight,
       pitchMin: pMin,
       pitchMax: pMax,
@@ -739,7 +744,19 @@ export default function PianoRoll({
         const dx = e.clientX - drag.startX;
         const snapEnabled = !isSnapBypass(e);
         const rawDeltaSec = dx / pxPerSec;
-        const deltaSec = snapEnabled ? snapSec(rawDeltaSec, true) : rawDeltaSec;
+        // 絶対位置スナップ: アンカー (= 最初の対象) のリサイズ対象エッジを
+        // 直接小節 / 拍ラインにスナップさせ、その deltaSec を全ターゲットに適用する。
+        // これにより「ノートの長さの端が小節線にぴったり合う」挙動になる。
+        const anchor = drag.targets[0];
+        const anchorOrigEdge =
+          drag.side === "right"
+            ? anchor.origStartSec + anchor.origDurationSec
+            : anchor.origStartSec;
+        const newAnchorEdgeAbs = anchorOrigEdge + rawDeltaSec;
+        const snappedAnchorEdgeAbs = snapEnabled
+          ? Math.max(0, snapSec(newAnchorEdgeAbs, true))
+          : newAnchorEdgeAbs;
+        const deltaSec = snappedAnchorEdgeAbs - anchorOrigEdge;
         // 一括リサイズ: targets 全部に同じ delta を当てる
         if (drag.targets.length > 1 && onResizeNotes) {
           onResizeNotes(drag.targets, deltaSec, drag.side);

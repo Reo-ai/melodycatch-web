@@ -1,30 +1,31 @@
 /**
- * ギター楽器 (ディストーションのかかったエレキギター / スタジアムロック想定)。
+ * ギター楽器 (ディストーションを強めにかけたハードロック系エレキギター)。
  *
- * 「シンセっぽい」という指摘を解消するため、コアの音源を
- * **Tone.PluckSynth (Karplus-Strong 物理モデル)** に変更。
- * Karplus-Strong は短いノイズバーストを遅延ループに通すことで
- * 撥弦楽器の倍音/減衰を物理的に再現するため、
- * fatsawtooth + envelope では出せない自然なピック感とディケイが得られる。
+ * 構成:
+ * - 音源は **Tone.PluckSynth (Karplus-Strong)** ボイスプール × 8。
+ *   撥弦の物理モデルなので、シンセサイザーらしい持続音が出ず、
+ *   ピックアタック → 自然減衰というギター本来の挙動になる。
+ * - 歪み段は **2 段重ね** (プリ Distortion + Chebyshev 倍音強調) で、
+ *   1 段だけでは出ない厚みのある倍音を追加。
+ * - キャビ EQ (HighPass + MidPeak + LowPass) で
+ *   実機ギターアンプ + キャビネットの音域に整形。
  *
  * シグナルチェーン:
- *   PluckSynth × N (ボイスプール)
- *     ──▶ Distortion(0.32)
- *     ──▶ HighPass(95Hz)
- *     ──▶ MidPeak(1.1kHz +3.5dB)
- *     ──▶ LowPass(5.2kHz, -24dB/oct)
+ *   PluckSynth × 8
+ *     ──▶ PreGain(+6dB)         ※歪みを稼ぐ
+ *     ──▶ Distortion(0.85, soft-clip)
+ *     ──▶ Chebyshev(order=12)   ※高次倍音
+ *     ──▶ HighPass(110Hz)
+ *     ──▶ MidPeak(1.4kHz +5dB)
+ *     ──▶ LowPass(4.8kHz, -24dB/oct)
  *     ──▶ Chorus(弱め)
- *     ──▶ Gain
- *     ──▶ Reverb(短め)
- *     ──▶ Destination
+ *     ──▶ Gain ──▶ Reverb(短め) ──▶ Destination
  *
  * 実装メモ:
  * - PluckSynth は Tone.js の PolySynth が要求する Monophonic<any> 型制約を
  *   満たさないため、自前で多重発音用のボイスプールを管理する。
- * - 同じ MIDI ノートが押された場合は前回のボイスを再利用 (再ピック)。
- * - dampening を 4200Hz, resonance を 0.92 に設定し、
- *   弦のブライトネスとサスティンを両立。
- * - Karplus-Strong は元音が太いので、歪みは 0.32 と控えめでよい。
+ * - PluckSynth.triggerAttack(Release) は velocity 引数を受け付けないため、
+ *   強弱は volume.value で表現する (= 約 ±8dB のレンジ)。
  */
 
 import * as Tone from "tone";
@@ -37,7 +38,9 @@ let guitarChorus: Tone.Chorus | null = null;
 let guitarLowpass: Tone.Filter | null = null;
 let guitarMidPeak: Tone.Filter | null = null;
 let guitarHighpass: Tone.Filter | null = null;
+let guitarChebyshev: Tone.Chebyshev | null = null;
 let guitarDistortion: Tone.Distortion | null = null;
+let guitarPreGain: Tone.Gain | null = null;
 let guitarGain: Tone.Gain | null = null;
 
 /** ラウンドロビンで使う PluckSynth ボイス。 */
@@ -49,7 +52,7 @@ const noteToVoice: Map<number, Tone.PluckSynth> = new Map();
 function ensureGuitar() {
   if (guitarVoices.length > 0) return;
   guitarReverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).toDestination();
-  guitarGain = new Tone.Gain(0.85).connect(guitarReverb);
+  guitarGain = new Tone.Gain(0.55).connect(guitarReverb);
   guitarChorus = new Tone.Chorus({
     frequency: 0.8,
     delayTime: 2.5,
@@ -59,26 +62,34 @@ function ensureGuitar() {
     .connect(guitarGain)
     .start();
   guitarLowpass = new Tone.Filter({
-    frequency: 5200,
+    frequency: 4800,
     type: "lowpass",
-    Q: 0.5,
+    Q: 0.6,
     rolloff: -24,
   }).connect(guitarChorus);
   guitarMidPeak = new Tone.Filter({
-    frequency: 1100,
+    frequency: 1400,
     type: "peaking",
-    Q: 1.0,
-    gain: 3.5,
+    Q: 1.1,
+    gain: 5,
   }).connect(guitarLowpass);
   guitarHighpass = new Tone.Filter({
-    frequency: 95,
+    frequency: 110,
     type: "highpass",
   }).connect(guitarMidPeak);
-  guitarDistortion = new Tone.Distortion({
-    distortion: 0.32,
-    oversample: "4x",
-    wet: 0.85,
+  // 2 段歪み: ハードクリップに近い Distortion → Chebyshev で高次倍音を加算。
+  // PluckSynth の素朴なノコギリ的成分を厚くしてハードロック感を出す。
+  guitarChebyshev = new Tone.Chebyshev({
+    order: 12,
+    wet: 0.45,
   }).connect(guitarHighpass);
+  guitarDistortion = new Tone.Distortion({
+    distortion: 0.85,
+    oversample: "4x",
+    wet: 1.0,
+  }).connect(guitarChebyshev);
+  // 歪み段を稼ぐためのプリゲイン (PluckSynth は素では大人しいので)
+  guitarPreGain = new Tone.Gain(2.0).connect(guitarDistortion);
 
   for (let i = 0; i < VOICE_COUNT; i++) {
     const v = new Tone.PluckSynth({
@@ -88,7 +99,7 @@ function ensureGuitar() {
       release: 0.6,
     });
     v.volume.value = -3;
-    v.connect(guitarDistortion);
+    v.connect(guitarPreGain);
     guitarVoices.push(v);
   }
 }
