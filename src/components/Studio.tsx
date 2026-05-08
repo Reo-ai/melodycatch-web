@@ -243,6 +243,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [spotlightLabel, setSpotlightLabel] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [playing, setPlaying] = useState(false);
+  /** Cubase 風シーク位置 (秒)。停止中の再生ヘッド位置を保持。
+   *  再生開始時はここから始まる。 */
+  const [seekedSec, setSeekedSec] = useState(0);
   const [chordRecCount, setChordRecCount] = useState(0);
   const [drumRecCount, setDrumRecCount] = useState(0);
   const [selectedChord, setSelectedChord] = useState<HarmonicChord | null>(null);
@@ -606,8 +609,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (playbackRef.current && playing) {
       return playbackRef.current.elapsedSec();
     }
-    return 0;
-  }, [playing]);
+    return seekedSec;
+  }, [playing, seekedSec]);
 
   // ---- 録音操作 -------------------------------------------------------------
   async function startRecord() {
@@ -747,9 +750,25 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       },
     });
     playbackRef.current = pb;
-    pb.start();
+    pb.start(seekedSec);
     setPlaying(true);
   }
+
+  /** PianoRoll の上部ルーラからシーク。再生中なら新位置から再開する。 */
+  const handleSeek = useCallback((sec: number) => {
+    const target = Math.max(0, sec);
+    setSeekedSec(target);
+    const pb = playbackRef.current;
+    if (pb && pb.isPlaying()) {
+      // 既存の再生を止めて、新位置から再開
+      pb.stop();
+      releaseAll();
+      bassReleaseAll();
+      synthReleaseAll();
+      guitarReleaseAll();
+      pb.start(target);
+    }
+  }, []);
 
   function stopPlayback() {
     if (playbackRef.current) playbackRef.current.stop();
@@ -1468,6 +1487,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           onResizeNotes={handleResizeNotes}
           onDeleteNotes={handleDeleteNotes}
           onMoveNotes={handleMoveNotes}
+          onSeek={handleSeek}
         />
       </section>
 

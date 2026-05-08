@@ -238,16 +238,29 @@ export class Playback {
     return this.playing;
   }
 
-  start() {
+  /**
+   * 再生を開始する。
+   * `offsetSec` を指定すると、その秒数からの途中再生になる。
+   * - offsetSec より前に終わるノートはスキップ
+   * - offsetSec の途中にあるノートは「残り時間ぶん」だけ鳴らす (即時 noteOn)
+   * - elapsedSec() は `offset + 経過時間` を返す (再生ヘッド連動)
+   */
+  start(offsetSec = 0) {
     this.stop();
     this.playing = true;
-    this.startedAt = performance.now();
+    const off = Math.max(0, offsetSec);
+    // performance.now() を offset ぶん過去に擬似的にずらすことで
+    // elapsedSec() がそのまま `offset + 経過` を返す
+    this.startedAt = performance.now() - off * 1000;
 
     let last = 0;
     for (const layer of this.layers) {
       for (const note of layer.notes) {
+        const noteEnd = note.startSec + note.durationSec;
         if (layer.id === "drum") {
-          // ドラムは percussive — トリガでアタック+リリースが完結する
+          // ドラムは一発もの。offset 後のヒットだけスケジュールする。
+          if (note.startSec < off - 1e-6) continue;
+          const delayMs = (note.startSec - off) * 1000;
           const tOn = window.setTimeout(() => {
             triggerDrumHit(note.midi, undefined, note.velocity);
             this.hooks?.onNoteOn?.(layer.id, note.midi);
@@ -255,42 +268,43 @@ export class Playback {
               () => this.hooks?.onNoteOff?.(layer.id, note.midi),
               120,
             );
-          }, note.startSec * 1000);
+          }, delayMs);
           this.timers.push(tOn);
           const end = note.startSec + 0.15;
           if (end > last) last = end;
           continue;
         }
-        // bass / synth / guitar はそれぞれ専用エンジン、それ以外 (melody/chord) は pianoEngine
+        // 持続音: offset より完全に前なら無視
+        if (noteEnd <= off + 1e-6) continue;
         const isBass = layer.id === "bass";
         const isSynth = layer.id === "synth";
         const isGuitar = layer.id === "guitar";
+        // offset 区間にまたがるノートは即時 noteOn (delay=0)
+        const startDelayMs = Math.max(0, (note.startSec - off) * 1000);
+        const offDelayMs = Math.max(20, (noteEnd - off) * 1000);
         const tOn = window.setTimeout(() => {
           if (isBass) bassHoldOn(note.midi, note.velocity);
           else if (isSynth) synthHoldOn(note.midi, note.velocity);
           else if (isGuitar) guitarHoldOn(note.midi, note.velocity);
           else holdOn(note.midi, note.velocity);
           this.hooks?.onNoteOn?.(layer.id, note.midi);
-        }, note.startSec * 1000);
-        const tOff = window.setTimeout(
-          () => {
-            if (isBass) bassHoldOff(note.midi);
-            else if (isSynth) synthHoldOff(note.midi);
-            else if (isGuitar) guitarHoldOff(note.midi);
-            else holdOff(note.midi);
-            this.hooks?.onNoteOff?.(layer.id, note.midi);
-          },
-          (note.startSec + note.durationSec) * 1000,
-        );
+        }, startDelayMs);
+        const tOff = window.setTimeout(() => {
+          if (isBass) bassHoldOff(note.midi);
+          else if (isSynth) synthHoldOff(note.midi);
+          else if (isGuitar) guitarHoldOff(note.midi);
+          else holdOff(note.midi);
+          this.hooks?.onNoteOff?.(layer.id, note.midi);
+        }, offDelayMs);
         this.timers.push(tOn, tOff);
-        const end = note.startSec + note.durationSec;
-        if (end > last) last = end;
+        if (noteEnd > last) last = noteEnd;
       }
     }
+    const endDelayMs = Math.max(80, (last - off) * 1000 + 80);
     const tEnd = window.setTimeout(() => {
       this.playing = false;
       this.hooks?.onEnd?.();
-    }, last * 1000 + 80);
+    }, endDelayMs);
     this.timers.push(tEnd);
   }
 

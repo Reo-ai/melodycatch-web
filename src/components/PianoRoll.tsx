@@ -83,6 +83,8 @@ interface PianoRollProps {
     deltaSec: number,
     deltaMidi: number,
   ) => void;
+  /** 上部ルーラ (再生バー) をクリック / ドラッグ → 指定秒へシーク */
+  onSeek?: (sec: number) => void;
 }
 
 const BASE_pxPerSec = 80;
@@ -97,6 +99,8 @@ const PITCH_PAD = 2;
 const MIN_PITCH_RANGE = 18;
 const MIN_DURATION_SEC = 8;
 
+/** 上部の Cubase 風タイムルーラ高さ。再生バー + 小節番号を描く。 */
+const TOP_RULER_HEIGHT = 22;
 const DRUM_LANE_HEIGHT = 16;
 const DRUM_LANES: { kind: DrumKind; midi: number; label: string; color: string }[] = [
   { kind: "hihat", midi: DRUM_HIHAT_MIDI, label: "HiHat", color: "#facc15" },
@@ -136,6 +140,21 @@ const SELECTION_OUTLINE = "#38bdf8";
 /** Cmd / Ctrl 押下中はスナップを一時的に無効化する。 */
 function isSnapBypass(e: PointerEvent | ReactPointerEvent | KeyboardEvent): boolean {
   return e.metaKey || e.ctrlKey;
+}
+
+/** MIDI 番号 → "C4", "C#4" など。半音含む全音名表記。 */
+const NOTE_NAMES = [
+  "C", "C#", "D", "D#", "E", "F",
+  "F#", "G", "G#", "A", "A#", "B",
+];
+function midiToName(midi: number): string {
+  const oct = Math.floor(midi / 12) - 1;
+  return `${NOTE_NAMES[((midi % 12) + 12) % 12]}${oct}`;
+}
+/** ピアノで黒鍵 (C#, D#, F#, G#, A#) かどうか。 */
+function isBlackKey(midi: number): boolean {
+  const m = ((midi % 12) + 12) % 12;
+  return m === 1 || m === 3 || m === 6 || m === 8 || m === 10;
 }
 
 /** 1 小節 = 4 拍 (4/4 を仮定)。BPM=120 なら 2.0s, BPM=90 なら 2.667s。 */
@@ -187,6 +206,10 @@ interface MoveDrag {
   startX: number;
   startY: number;
   selections: { layerId: LayerId; index: number }[];
+  /** drag 開始時のアンカー (= 押下されたノート) の元の startSec / midi。
+   *  これを基に「絶対位置をスナップ」して、deltaSec を逆算する。 */
+  anchorOrigStartSec: number;
+  anchorOrigMidi: number;
   /** ドラッグ開始時にすでに選択されていなかった場合 (= 単発ノートをドラッグ)、
    *  クリック扱いになったときに削除すべきか判定するためのターゲット */
   clickTarget?: { layerId: LayerId; index: number };
@@ -241,10 +264,14 @@ export default function PianoRoll({
   onResizeNotes,
   onDeleteNotes,
   onMoveNotes,
+  onSeek,
 }: PianoRollProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<SVGLineElement>(null);
+  const playheadMarkerRef = useRef<SVGPolygonElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  /** 上部ルーラのドラッグ中フラグ */
+  const seekDraggingRef = useRef(false);
 
   const [selection, setSelection] = useState<Set<SelKey>>(new Set());
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -372,8 +399,8 @@ export default function PianoRoll({
     };
   }, [melody.notes, chord.notes, drum.notes, bass.notes, synth.notes, guitar.notes, pxPerSec, rowHeight]);
 
-  const drumTop = 0;
-  const pitchTop = DRUM_TOTAL_HEIGHT + DRUM_PITCH_GAP;
+  const drumTop = TOP_RULER_HEIGHT;
+  const pitchTop = TOP_RULER_HEIGHT + DRUM_TOTAL_HEIGHT + DRUM_PITCH_GAP;
   const totalHeight = pitchTop + pitchHeight;
 
   function noteY(midi: number): number {
@@ -393,15 +420,9 @@ export default function PianoRoll({
     return Math.round(sec / unit) * unit;
   }
 
-  // 再生ヘッド rAF ループ
+  // 再生ヘッド rAF ループ。再生 / 録音中に限らず常時走らせ、
+  // 停止中は seek 位置を表示する。自動スクロール追尾は isActive のときだけ。
   useEffect(() => {
-    if (!isActive) {
-      if (playheadRef.current) {
-        playheadRef.current.setAttribute("x1", "0");
-        playheadRef.current.setAttribute("x2", "0");
-      }
-      return;
-    }
     let raf = 0;
     const loop = () => {
       const sec = getPlayheadSec();
@@ -410,20 +431,28 @@ export default function PianoRoll({
         playheadRef.current.setAttribute("x1", String(x));
         playheadRef.current.setAttribute("x2", String(x));
       }
-      const el = scrollRef.current;
-      if (el) {
-        const right = el.scrollLeft + el.clientWidth;
-        if (x > right - 100) {
-          el.scrollLeft = Math.max(0, x - el.clientWidth * 0.3);
-        } else if (x < el.scrollLeft) {
-          el.scrollLeft = Math.max(0, x - 40);
+      if (playheadMarkerRef.current) {
+        playheadMarkerRef.current.setAttribute(
+          "transform",
+          `translate(${x}, 0)`,
+        );
+      }
+      if (isActive) {
+        const el = scrollRef.current;
+        if (el) {
+          const right = el.scrollLeft + el.clientWidth;
+          if (x > right - 100) {
+            el.scrollLeft = Math.max(0, x - el.clientWidth * 0.3);
+          } else if (x < el.scrollLeft) {
+            el.scrollLeft = Math.max(0, x - 40);
+          }
         }
       }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [isActive, getPlayheadSec]);
+  }, [isActive, getPlayheadSec, pxPerSec]);
 
   // 拍 / 小節グリッド (BPM 指定時のみ)
   // 描画分解能は現在のスナップ単位に合わせる (off の場合は拍だけ)。
@@ -471,10 +500,11 @@ export default function PianoRoll({
     for (let s = 0; s <= Math.ceil(totalSec); s++) secTicks.push(s);
   }
 
-  const cLines: number[] = [];
-  for (let p = pitchMax; p >= pitchMin; p--) {
-    if (p % 12 === 0) cLines.push(p);
-  }
+  // 全 MIDI ピッチ (C, C#, D, ...) のリスト。グリッド線+ラベルに使う。
+  const allPitches: number[] = [];
+  for (let p = pitchMax; p >= pitchMin; p--) allPitches.push(p);
+  // ラベルは行高が小さい時は C のみ、大きい時は全音表示する。
+  const showAllLabels = rowHeight >= 7;
 
   const playheadColor = recordingLayerId ? COLOR_REC : COLOR_PLAY;
 
@@ -511,6 +541,35 @@ export default function PianoRoll({
     if (!svg) return null;
     const rect = svg.getBoundingClientRect();
     return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+
+  /** 上部ルーラのクリック / ドラッグでシーク。 */
+  function seekFromClient(clientX: number) {
+    if (!onSeek) return;
+    const pt = svgPoint(clientX, 0);
+    if (!pt) return;
+    const sec = Math.max(0, pt.x / pxPerSec);
+    // スナップが ON なら拍/小節にスナップ
+    const snapped = snapSec(sec, snapDiv !== "off");
+    onSeek(Math.max(0, snapped));
+  }
+
+  function handleTopRulerPointerDown(e: ReactPointerEvent) {
+    if (!onSeek) return;
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    e.stopPropagation();
+    seekDraggingRef.current = true;
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    seekFromClient(e.clientX);
+  }
+  function handleTopRulerPointerMove(e: ReactPointerEvent) {
+    if (!seekDraggingRef.current) return;
+    seekFromClient(e.clientX);
+  }
+  function handleTopRulerPointerUp(e: ReactPointerEvent) {
+    if (!seekDraggingRef.current) return;
+    seekDraggingRef.current = false;
+    (e.target as Element).releasePointerCapture?.(e.pointerId);
   }
 
   // ---- 編集モード: 空エリア pointer down ------------------------------------
@@ -565,11 +624,19 @@ export default function PianoRoll({
 
     (e.target as Element).setPointerCapture?.(e.pointerId);
 
+    // アンカー (= 押下されたノート) の元の位置をスナップ計算用に保持
+    const anchorLayer = layerOf(layerId);
+    const anchorNote = anchorLayer.notes[index];
+    const anchorOrigStartSec = anchorNote ? anchorNote.startSec : 0;
+    const anchorOrigMidi = anchorNote ? anchorNote.midi : 60;
+
     setDrag({
       kind: "move",
       startX: e.clientX,
       startY: e.clientY,
       selections: [...activeSelection].map(parseSel),
+      anchorOrigStartSec,
+      anchorOrigMidi,
       clickTarget: !selection.has(key) && !e.shiftKey
         ? { layerId, index }
         : undefined,
@@ -634,7 +701,14 @@ export default function PianoRoll({
         if (moved && onMoveNotes) {
           const snapEnabled = !isSnapBypass(e);
           const rawDeltaSec = dx / pxPerSec;
-          const deltaSec = snapEnabled ? snapSec(rawDeltaSec, true) : rawDeltaSec;
+          // 絶対位置スナップ: アンカーの新しい startSec をグリッドに合わせ、
+          // そこから deltaSec を逆算する → 全選択ノートが「相対位置を保ったまま
+          // アンカーがグリッドに合う」形で動く。
+          const newAnchorAbs = drag.anchorOrigStartSec + rawDeltaSec;
+          const snappedAnchorAbs = snapEnabled
+            ? Math.max(0, snapSec(newAnchorAbs, true))
+            : newAnchorAbs;
+          const deltaSec = snappedAnchorAbs - drag.anchorOrigStartSec;
           const deltaMidi = -Math.round(dy / rowHeight);
           const last = lastDeltaRef.current;
           const stepSec = deltaSec - last.sec;
@@ -1082,6 +1156,78 @@ export default function PianoRoll({
           }}
           onPointerDown={handleSvgPointerDown}
         >
+          {/* === 上部 Cubase 風タイムルーラ (再生バー) === */}
+          <rect
+            data-top-ruler="1"
+            x={0}
+            y={0}
+            width={width}
+            height={TOP_RULER_HEIGHT}
+            fill={COLOR_RULER_BG}
+            style={{ cursor: onSeek ? "pointer" : "default" }}
+            onPointerDown={handleTopRulerPointerDown}
+            onPointerMove={handleTopRulerPointerMove}
+            onPointerUp={handleTopRulerPointerUp}
+            onPointerCancel={handleTopRulerPointerUp}
+          />
+          {/* 上部ルーラ下の境界線 */}
+          <line
+            x1={0}
+            y1={TOP_RULER_HEIGHT}
+            x2={width}
+            y2={TOP_RULER_HEIGHT}
+            stroke={COLOR_DIVIDER}
+            strokeOpacity={0.4}
+            strokeWidth={1}
+          />
+          {/* 上部ルーラ: 小節番号 + 拍ティック */}
+          {bpm
+            ? barNumbers.map((b) => (
+                <g key={`tbn${b.n}`} pointerEvents="none">
+                  <line
+                    x1={b.sec * pxPerSec}
+                    y1={TOP_RULER_HEIGHT - 8}
+                    x2={b.sec * pxPerSec}
+                    y2={TOP_RULER_HEIGHT}
+                    stroke={COLOR_GRID_BAR}
+                    strokeWidth={1}
+                    opacity={0.85}
+                  />
+                  <text
+                    x={b.sec * pxPerSec + 3}
+                    y={TOP_RULER_HEIGHT - 9}
+                    fontSize="11"
+                    fill={COLOR_LABEL}
+                    fontFamily="ui-monospace, monospace"
+                    fontWeight={700}
+                  >
+                    {b.n}
+                  </text>
+                </g>
+              ))
+            : secTicks.map((s) => (
+                <g key={`tst${s}`} pointerEvents="none">
+                  <line
+                    x1={s * pxPerSec}
+                    y1={TOP_RULER_HEIGHT - 6}
+                    x2={s * pxPerSec}
+                    y2={TOP_RULER_HEIGHT}
+                    stroke={s % 4 === 0 ? COLOR_GRID_BAR : COLOR_GRID_SUB}
+                    strokeWidth={s % 4 === 0 ? 1 : 0.5}
+                    opacity={s % 4 === 0 ? 0.7 : 0.4}
+                  />
+                  <text
+                    x={s * pxPerSec + 3}
+                    y={TOP_RULER_HEIGHT - 8}
+                    fontSize="10"
+                    fill={COLOR_LABEL_SUB}
+                    fontFamily="ui-monospace, monospace"
+                  >
+                    {s}s
+                  </text>
+                </g>
+              ))}
+
           {/* ドラムレーン背景 */}
           {DRUM_LANES.map((lane, idx) => (
             <g key={`dl${lane.kind}`}>
@@ -1116,7 +1262,7 @@ export default function PianoRoll({
             strokeWidth={1}
           />
 
-          {/* 拍 / 小節 / 細分グリッド (BPM 指定時) */}
+          {/* 拍 / 小節 / 細分グリッド (BPM 指定時) — 上部ルーラの下から */}
           {gridLines.map((g, i) => {
             const stroke =
               g.kind === "bar"
@@ -1130,7 +1276,7 @@ export default function PianoRoll({
               <line
                 key={`gl${i}-${g.kind}`}
                 x1={g.sec * pxPerSec}
-                y1={0}
+                y1={TOP_RULER_HEIGHT}
                 x2={g.sec * pxPerSec}
                 y2={totalHeight}
                 stroke={stroke}
@@ -1146,7 +1292,7 @@ export default function PianoRoll({
               <line
                 key={`st${s}`}
                 x1={s * pxPerSec}
-                y1={0}
+                y1={TOP_RULER_HEIGHT}
                 x2={s * pxPerSec}
                 y2={totalHeight}
                 stroke={s % 4 === 0 ? COLOR_GRID_BAR : COLOR_GRID_SUB}
@@ -1155,29 +1301,50 @@ export default function PianoRoll({
               />
             ))}
 
-          {/* C ライン (オクターブ目印) */}
-          {cLines.map((p) => (
-            <g key={`p${p}`}>
-              <line
-                x1={0}
-                y1={noteY(p)}
-                x2={width}
-                y2={noteY(p)}
-                stroke={COLOR_C_LINE}
-                strokeWidth={1}
-                opacity={0.5}
+          {/* 黒鍵レーン背景 (C#, D#, F#, G#, A# の行を薄くシェード) */}
+          {allPitches.map((p) =>
+            isBlackKey(p) ? (
+              <rect
+                key={`bk${p}`}
+                x={0}
+                y={noteY(p)}
+                width={width}
+                height={Math.max(1, rowHeight)}
+                fill="#0d1325"
+                opacity={0.55}
               />
-              <text
-                x={4}
-                y={noteY(p) - 1}
-                fontSize="9"
-                fill={COLOR_LABEL_SUB}
-                fontFamily="ui-monospace, monospace"
-              >
-                C{Math.floor(p / 12) - 1}
-              </text>
-            </g>
-          ))}
+            ) : null,
+          )}
+          {/* 全音グリッド線 + ラベル。C 行は太く明るく、半音は細く暗く。 */}
+          {allPitches.map((p) => {
+            const isC = ((p % 12) + 12) % 12 === 0;
+            return (
+              <g key={`p${p}`}>
+                <line
+                  x1={0}
+                  y1={noteY(p)}
+                  x2={width}
+                  y2={noteY(p)}
+                  stroke={isC ? COLOR_C_LINE : COLOR_GRID_SUB}
+                  strokeWidth={isC ? 1 : 0.4}
+                  opacity={isC ? 0.55 : 0.35}
+                />
+                {(isC || showAllLabels) && (
+                  <text
+                    x={4}
+                    y={noteY(p) + Math.max(8, rowHeight - 1)}
+                    fontSize={showAllLabels ? "8" : "9"}
+                    fill={isC ? COLOR_LABEL : COLOR_LABEL_SUB}
+                    fontFamily="ui-monospace, monospace"
+                    fontWeight={isC ? 600 : 400}
+                    opacity={isC ? 0.95 : 0.7}
+                  >
+                    {midiToName(p)}
+                  </text>
+                )}
+              </g>
+            );
+          })}
 
           {/* タイムルーラ (下部) — 小節番号 or 秒 */}
           <rect
@@ -1288,17 +1455,26 @@ export default function PianoRoll({
             />
           )}
 
-          {/* 再生ヘッド */}
+          {/* 再生ヘッド (縦線) — 常に表示。停止中は seek 位置を示す */}
           <line
             ref={playheadRef}
             x1={0}
-            y1={0}
+            y1={TOP_RULER_HEIGHT}
             x2={0}
             y2={totalHeight}
             stroke={playheadColor}
             strokeWidth={2}
             strokeDasharray={recordingLayerId ? "4 2" : undefined}
-            style={{ display: isActive ? "block" : "none" }}
+            pointerEvents="none"
+          />
+          {/* 上部ルーラの▼マーカー (Cubase 風) */}
+          <polygon
+            ref={playheadMarkerRef}
+            points={`-6,${TOP_RULER_HEIGHT - 12} 6,${TOP_RULER_HEIGHT - 12} 0,${TOP_RULER_HEIGHT - 1}`}
+            fill={playheadColor}
+            stroke="#0b1020"
+            strokeWidth={0.5}
+            pointerEvents="none"
           />
         </svg>
       </div>
