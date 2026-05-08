@@ -87,10 +87,20 @@ interface PianoRollProps {
   onSeek?: (sec: number) => void;
 }
 
-const BASE_pxPerSec = 80;
+const BASE_pxPerSec = 64;
 const BASE_rowHeight = 5;
 const ZOOM_X_MIN = 0.25;
 const ZOOM_X_MAX = 6;
+/** SVG の最大幅 (px)。Safari の SVG 幅上限 (~16384px) を考慮した安全値。
+ *  これを超えると iOS / macOS Safari で右端が描画されない不具合が出るので、
+ *  100 小節 × pxPerSec が SAFE_MAX_SVG_WIDTH を超える場合は自動的に
+ *  小節数 (= minBars 秒) を縮めて、SVG が常に SAFE_MAX_SVG_WIDTH 以内に収まるようにする。 */
+const SAFE_MAX_SVG_WIDTH = 16000;
+/** 右端見切れ防止用の追加パディング (px)。 */
+const RIGHT_PAD_PX = 48;
+/** 標準で見せたい小節数。100 小節をターゲットにするが、
+ *  SAFE_MAX_SVG_WIDTH を超えるときは縮める。 */
+const TARGET_BARS = 100;
 const ZOOM_Y_MIN = 0.6;
 const ZOOM_Y_MAX = 4;
 const ZOOM_X_STEP = 1.25;
@@ -397,16 +407,22 @@ export default function PianoRoll({
       const e = n.startSec + n.durationSec;
       if (e > last) last = e;
     }
-    // 100 小節分の余白を確保 (BPM 未指定なら 100 BPM 換算で 240 秒)。
-    // bpm が 0/undefined でも必ず 100 小節を確保するために ?? 100 でフォールバック。
-    const minBars = 100 * barSecOf(bpm ?? 100);
+    // 標準で TARGET_BARS (=100) 小節分の余白を確保する。
+    // ただし `pxPerSec * TARGET_BARS * barSec` が SAFE_MAX_SVG_WIDTH を超えると
+    // Safari で SVG 右端が描画されなくなるため、収まる範囲まで小節数を自動縮小する。
+    // bpm が 0/undefined でも必ず確保するために ?? 100 でフォールバック。
+    const barSec = barSecOf(bpm ?? 100);
+    const idealMinBarsSec = TARGET_BARS * barSec;
+    const maxAffordableSec = Math.max(
+      barSec * 8, // 最低 8 小節は確保
+      (SAFE_MAX_SVG_WIDTH - RIGHT_PAD_PX) / Math.max(1, pxPerSec),
+    );
+    const minBars = Math.min(idealMinBarsSec, maxAffordableSec);
     // 末尾に余白 (右端見切れ対策) として 1 小節 + 1.5 秒を加える。
-    const trailing = barSecOf(bpm ?? 100) + 1.5;
+    const trailing = barSec + 1.5;
     const tot = Math.max(minBars, last + trailing, MIN_DURATION_SEC);
-    // 右端見切れ防止用の追加パディング (px)。最後の小節番号 + マージンが収まる幅。
-    const rightPadPx = 48;
     return {
-      width: tot * pxPerSec + rightPadPx,
+      width: tot * pxPerSec + RIGHT_PAD_PX,
       pitchHeight: (pMax - pMin + 1) * rowHeight,
       pitchMin: pMin,
       pitchMax: pMax,

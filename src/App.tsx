@@ -21,17 +21,26 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-ink-50 text-ink-900">
-      <header className="sticky top-0 z-10 border-b border-ink-200 bg-white/90 backdrop-blur">
+      <header className="sticky top-0 z-10 border-b border-ink-200 bg-gradient-to-r from-violet-950 via-fuchsia-900 to-violet-950 text-white shadow-md backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
           <div>
-            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">
-              Melody Catch
-              <span className="ml-2 text-xs font-normal text-ink-500 sm:text-sm">
+            <h1 className="flex flex-wrap items-center gap-x-3 gap-y-1 tracking-tight">
+              <span
+                className="bg-gradient-to-b from-yellow-200 via-amber-300 to-yellow-500 bg-clip-text text-2xl font-extrabold text-transparent sm:text-3xl"
+                style={{
+                  WebkitTextStroke: "1px rgba(91, 33, 182, 0.85)",
+                  filter:
+                    "drop-shadow(0 1px 0 rgba(255, 215, 0, 0.35)) drop-shadow(0 2px 6px rgba(0,0,0,0.45))",
+                }}
+              >
+                Melody Catch
+              </span>
+              <span className="inline-block rounded-full bg-gradient-to-r from-fuchsia-600 via-pink-500 to-fuchsia-600 px-3 py-0.5 text-[10px] font-bold uppercase tracking-wider text-yellow-100 shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_0_0_1px_rgba(253,224,71,0.5)] sm:text-xs">
                 ピアノ作曲・コード進行アシスタント
               </span>
             </h1>
-            <p className="mt-0.5 text-xs text-ink-500 sm:text-sm">
-              現在のキー: <span className="font-medium text-ink-900">{scaleName}</span>
+            <p className="mt-0.5 text-xs text-violet-200 sm:text-sm">
+              現在のキー: <span className="font-medium text-yellow-200">{scaleName}</span>
             </p>
           </div>
         </div>

@@ -512,10 +512,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setActiveChordIndex(null);
       }, PALETTE_CHORD_DURATION_SEC * 1000);
 
-      // コード層 / ギター層 を録音中なら記録
+      // コード層 / ギター層 / シンセ層 を録音中なら記録
       if (
         stateRef.current === "recording" &&
-        (armedRef.current === "chord" || armedRef.current === "guitar") &&
+        (armedRef.current === "chord" ||
+          armedRef.current === "guitar" ||
+          armedRef.current === "synth") &&
         sessionRef.current
       ) {
         sessionRef.current.recordChord(
@@ -557,7 +559,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setSelectedChord(c);
         if (
           stateRef.current === "recording" &&
-          (armedRef.current === "chord" || armedRef.current === "guitar") &&
+          (armedRef.current === "chord" ||
+            armedRef.current === "guitar" ||
+            armedRef.current === "synth") &&
           sessionRef.current
         ) {
           sessionRef.current.recordChord(midiNotes, durationSec, 0.8);

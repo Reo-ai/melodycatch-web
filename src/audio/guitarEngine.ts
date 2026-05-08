@@ -48,6 +48,16 @@ let guitarVoices: Tone.PluckSynth[] = [];
 let voiceCursor = 0;
 /** 同じ MIDI ノートが現在どのボイスで鳴っているか (HoldOff 用)。 */
 const noteToVoice: Map<number, Tone.PluckSynth> = new Map();
+/** 押しっぱなし時に「再ピック」するための setTimeout ハンドル。
+ *  Karplus-Strong は撥弦モデルなので 1 回弾くと自然減衰する。
+ *  長押し中は一定間隔で再ピックすることで、ギターの「サステイン強奏」
+ *  (短いトレモロ的な持続) を再現する。 */
+const noteToRepluckTimer: Map<number, number> = new Map();
+/** 自動再ピックの初回ディレイ (ms)。
+ *  短すぎると単音が tremolo 的になるので、自然減衰がそろそろ消えかける頃合い (~1.1 秒) に設定。 */
+const REPLUCK_DELAY_MS = 1100;
+/** 各回の再ピックの音量減衰 (dB)。少しずつ弱くして自然なフェード感に。 */
+const REPLUCK_DECAY_DB = -2;
 
 function ensureGuitar() {
   if (guitarVoices.length > 0) return;
@@ -95,7 +105,8 @@ function ensureGuitar() {
     const v = new Tone.PluckSynth({
       attackNoise: 1.8,
       dampening: 4200,
-      resonance: 0.92,
+      // resonance を上げて 1 回のピックの減衰時間を延ばす (より「伸び」のある音)。
+      resonance: 0.97,
       release: 0.6,
     });
     v.volume.value = -3;
@@ -115,19 +126,54 @@ function nextVoice(): Tone.PluckSynth {
   return v;
 }
 
+/** 既存のリプラックタイマーをクリア。 */
+function clearRepluckTimer(midi: number): void {
+  const t = noteToRepluckTimer.get(midi);
+  if (t !== undefined) {
+    window.clearTimeout(t);
+    noteToRepluckTimer.delete(midi);
+  }
+}
+
+/** 押しっぱなし中の自動再ピックを再帰的にスケジュール。 */
+function scheduleRepluck(midi: number, baseVolumeDb: number, step: number): void {
+  const handle = window.setTimeout(() => {
+    // ノートが解放されていたら何もしない。
+    const v = noteToVoice.get(midi);
+    if (!v) {
+      noteToRepluckTimer.delete(midi);
+      return;
+    }
+    // 段階的に音量を下げて自然なフェード感を出す (下限は -16dB)。
+    const decayed = Math.max(baseVolumeDb + REPLUCK_DECAY_DB * step, -16);
+    v.volume.value = decayed;
+    v.triggerAttack(midiToNoteString(midi));
+    // 次の再ピックをスケジュール。
+    scheduleRepluck(midi, baseVolumeDb, step + 1);
+  }, REPLUCK_DELAY_MS);
+  noteToRepluckTimer.set(midi, handle);
+}
+
 export function guitarHoldOn(midi: number, velocity = 0.85): void {
   ensureGuitar();
+  // 同じ音が既に鳴っていたらタイマーをクリア (重複再ピック防止)。
+  clearRepluckTimer(midi);
   const v = nextVoice();
   noteToVoice.set(midi, v);
   // PluckSynth は撥弦モデルなので triggerAttack で 1 回ピックする。
   // (押しっぱなしでも自然減衰する = ギターの挙動として正しい)
   // PluckSynth.triggerAttack は (note, time?) のみで velocity を受け付けないため、
   // 強弱は volume で表現する。
-  v.volume.value = -3 + (clamp01(velocity) - 0.85) * 8;
+  const baseVolumeDb = -3 + (clamp01(velocity) - 0.85) * 8;
+  v.volume.value = baseVolumeDb;
   v.triggerAttack(midiToNoteString(midi));
+  // 押しっぱなしで「伸ばす」ためのリプラックを予約。
+  scheduleRepluck(midi, baseVolumeDb, 1);
 }
 
 export function guitarHoldOff(midi: number): void {
+  // リプラックタイマーは必ずクリア (キーが離れたら再ピックしない)。
+  clearRepluckTimer(midi);
   const v = noteToVoice.get(midi);
   if (!v) return;
   noteToVoice.delete(midi);
@@ -172,6 +218,11 @@ export function guitarChordOn(
 }
 
 export function guitarReleaseAll(): void {
+  // 全リプラックタイマーをクリア。
+  for (const handle of noteToRepluckTimer.values()) {
+    window.clearTimeout(handle);
+  }
+  noteToRepluckTimer.clear();
   noteToVoice.clear();
   for (const v of guitarVoices) {
     v.triggerRelease();
