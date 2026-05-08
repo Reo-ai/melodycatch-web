@@ -1201,7 +1201,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   return (
     <div className="flex flex-col gap-6">
       {/* ① キー / スケール */}
-      <section className="rounded-2xl border border-ink-200 bg-white p-4 shadow-sm">
+      <section className="rounded-2xl border border-ink-200 bg-pink-50 p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink-700">
             ① 曲のキーとスケールを選ぶ
@@ -1220,7 +1220,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       {/* ② ドラム */}
       <section
         className={[
-          "rounded-2xl border bg-white p-4 shadow-sm transition",
+          "rounded-2xl border bg-cyan-50 p-4 shadow-sm transition",
           armed === "drum" ? "border-accent-300" : "border-ink-200",
         ].join(" ")}
       >
@@ -1264,7 +1264,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       </section>
 
       {/* ③ 録音トラック (ピアノロールの上に配置: ピアノロールを見ながら録音できるように) */}
-      <section className="rounded-2xl border border-ink-200 bg-white p-4 shadow-sm">
+      <section className="rounded-2xl border border-ink-200 bg-blue-50 p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink-700">
             ③ 録音トラック (録音したい時だけ使う)
@@ -1354,25 +1354,6 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             <button
               type="button"
               onClick={stopRecord}
-              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
-            >
-              ■ 停止
-            </button>
-          )}
-
-          {!playing ? (
-            <button
-              type="button"
-              onClick={startPlayback}
-              disabled={state === "recording" || !hasAnything}
-              className="rounded-full bg-accent-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-accent-600 disabled:opacity-40"
-            >
-              ▶ 同時再生 (全層)
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={stopPlayback}
               className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
             >
               ■ 停止
@@ -1532,12 +1513,33 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           onMoveNotes={handleMoveNotes}
           onSeek={handleSeek}
         />
+        {/* 再生コントロール (ピアノロール直下) */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {!playing ? (
+            <button
+              type="button"
+              onClick={startPlayback}
+              disabled={state === "recording" || !hasAnything}
+              className="rounded-full bg-accent-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-accent-600 disabled:opacity-40"
+            >
+              ▶ 再生
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={stopPlayback}
+              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
+            >
+              ■ 停止
+            </button>
+          )}
+        </div>
       </section>
 
       {/* ⑤ 入力カルーセル: コードパレット → スケールミニピアノ → 88鍵ピアノ */}
       <section
         className={[
-          "rounded-2xl border bg-white p-4 shadow-sm transition",
+          "rounded-2xl border bg-lime-50 p-4 shadow-sm transition",
           armed === "chord" ? "border-accent-300" : "border-ink-200",
         ].join(" ")}
       >
@@ -1646,7 +1648,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       {/* ⑥ 進行プリセット */}
       <section
         className={[
-          "rounded-2xl border bg-white p-4 shadow-sm transition",
+          "rounded-2xl border bg-orange-50 p-4 shadow-sm transition",
           armed === "chord"
             ? "border-accent-300"
             : "border-ink-200",

@@ -127,7 +127,7 @@ const COLOR_LANE_B = "#1b2238";
 const COLOR_DIVIDER = "#cbd5e1";
 const COLOR_GRID_BAR = "#cbd5e1"; // 小節線 (太・明るい)
 const COLOR_GRID_BEAT = "#475569"; // 拍線
-const COLOR_GRID_SUB = "#334155"; // 細分線
+const COLOR_GRID_SUB = "#e2e8f0"; // 拍内 1/16 細分線 (薄白)
 const COLOR_C_LINE = "#64748b";
 const COLOR_LABEL = "#e2e8f0";
 const COLOR_LABEL_SUB = "#94a3b8";
@@ -505,11 +505,18 @@ export default function PianoRoll({
       if (Math.abs((s / bar) - Math.round(s / bar)) < 1e-6) continue;
       out.push({ sec: s, kind: "beat" });
     }
-    // 細分線 (1/8, 1/16 などスナップが拍より細かいとき)
-    if (subUnit > 0 && subUnit < beat - 1e-6) {
+    // 拍内 4 分割 (1/16) の細分線は常に描画。
+    // ユーザのスナップ設定によらず「拍を視覚的に 4 分割」する。
+    const sub16 = beat / 4;
+    for (let s = 0; s <= totalSec + 0.0001; s += sub16) {
+      // 拍 / 小節の位置はスキップ (描画コスト削減)
+      if (Math.abs((s / beat) - Math.round(s / beat)) < 1e-6) continue;
+      out.push({ sec: s, kind: "sub" });
+    }
+    // 更にスナップが 1/16 より細かい場合 (1/32 など) は追加で細分線を引く。
+    if (subUnit > 0 && subUnit < sub16 - 1e-6) {
       for (let s = 0; s <= totalSec + 0.0001; s += subUnit) {
-        // 拍 / 小節の位置はスキップ
-        if (Math.abs((s / beat) - Math.round(s / beat)) < 1e-6) continue;
+        if (Math.abs((s / sub16) - Math.round(s / sub16)) < 1e-6) continue;
         out.push({ sec: s, kind: "sub" });
       }
     }
@@ -536,8 +543,10 @@ export default function PianoRoll({
   // 全 MIDI ピッチ (C, C#, D, ...) のリスト。グリッド線+ラベルに使う。
   const allPitches: number[] = [];
   for (let p = pitchMax; p >= pitchMin; p--) allPitches.push(p);
-  // ラベルは行高が小さい時は C のみ、大きい時は全音表示する。
-  const showAllLabels = rowHeight >= 7;
+  // ラベル表示ルール:
+  //  - 自然音 (白鍵 C/D/E/F/G/A/B) は常にオクターブ付き (例: C5/D5/E5) で表示。
+  //  - 半音 (黒鍵 C#/D#/F#/G#/A#) は行高が大きいとき (>= 8px) のみ表示。
+  const showSharpLabels = rowHeight >= 8;
 
   const playheadColor = recordingLayerId ? COLOR_REC : COLOR_PLAY;
 
@@ -1188,8 +1197,13 @@ export default function PianoRoll({
 
       <div
         ref={scrollRef}
-        className="overflow-x-auto rounded-xl border border-ink-800 shadow-inner"
-        style={{ minHeight: 200, backgroundColor: COLOR_BG }}
+        className="overflow-auto rounded-xl border border-ink-800 shadow-inner"
+        style={{
+          minHeight: 200,
+          // 縦方向にもスクロール可能にする。画面高に合わせた上限を設ける。
+          maxHeight: "min(70vh, 560px)",
+          backgroundColor: COLOR_BG,
+        }}
       >
         <svg
           ref={svgRef}
@@ -1318,7 +1332,8 @@ export default function PianoRoll({
                   ? COLOR_GRID_BEAT
                   : COLOR_GRID_SUB;
             const sw = g.kind === "bar" ? 1 : g.kind === "beat" ? 0.6 : 0.4;
-            const op = g.kind === "bar" ? 0.7 : g.kind === "beat" ? 0.55 : 0.35;
+            // sub (1/16) は薄白でうっすら見せる程度に opacity を抑える。
+            const op = g.kind === "bar" ? 0.7 : g.kind === "beat" ? 0.55 : 0.18;
             return (
               <line
                 key={`gl${i}-${g.kind}`}
@@ -1362,9 +1377,13 @@ export default function PianoRoll({
               />
             ) : null,
           )}
-          {/* 全音グリッド線 + ラベル。C 行は太く明るく、半音は細く暗く。 */}
+          {/* 全音グリッド線 + ラベル。C 行は太く明るく、半音は細く暗く。
+              ラベルは白鍵すべてにオクターブ付きで表示 (C5/D5/E5/...) し、
+              黒鍵は行高が大きいときのみ表示する。 */}
           {allPitches.map((p) => {
             const isC = ((p % 12) + 12) % 12 === 0;
+            const isBlack = isBlackKey(p);
+            const showLabel = !isBlack || showSharpLabels;
             return (
               <g key={`p${p}`}>
                 <line
@@ -1374,17 +1393,17 @@ export default function PianoRoll({
                   y2={noteY(p)}
                   stroke={isC ? COLOR_C_LINE : COLOR_GRID_SUB}
                   strokeWidth={isC ? 1 : 0.4}
-                  opacity={isC ? 0.55 : 0.35}
+                  opacity={isC ? 0.55 : 0.25}
                 />
-                {(isC || showAllLabels) && (
+                {showLabel && (
                   <text
                     x={4}
                     y={noteY(p) + Math.max(8, rowHeight - 1)}
-                    fontSize={showAllLabels ? "8" : "9"}
+                    fontSize={isC ? "9" : "8"}
                     fill={isC ? COLOR_LABEL : COLOR_LABEL_SUB}
                     fontFamily="ui-monospace, monospace"
-                    fontWeight={isC ? 600 : 400}
-                    opacity={isC ? 0.95 : 0.7}
+                    fontWeight={isC ? 600 : 500}
+                    opacity={isC ? 0.95 : isBlack ? 0.55 : 0.8}
                   >
                     {midiToName(p)}
                   </text>
