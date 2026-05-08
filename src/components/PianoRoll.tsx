@@ -291,6 +291,14 @@ export default function PianoRoll({
     }
   }, [editMode]);
 
+  // 初回マウント時に左端 (時刻 0) を表示するようにスクロール位置を初期化。
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollLeft = 0;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** ズーム適用 (X)。anchorClientX を中心に拡大して、スクロール位置を補正。 */
   function applyZoomX(factor: number, anchorClientX?: number) {
     const el = scrollRef.current;
@@ -389,7 +397,9 @@ export default function PianoRoll({
       const e = n.startSec + n.durationSec;
       if (e > last) last = e;
     }
-    const tot = Math.max(MIN_DURATION_SEC, last + 1.5);
+    // 100 小節分の余白を確保 (BPM 未指定なら最低 8 秒)。
+    const minBars = bpm ? 100 * barSecOf(bpm) : MIN_DURATION_SEC;
+    const tot = Math.max(minBars, last + 1.5);
     return {
       width: tot * pxPerSec,
       pitchHeight: (pMax - pMin + 1) * rowHeight,
@@ -397,7 +407,7 @@ export default function PianoRoll({
       pitchMax: pMax,
       totalSec: tot,
     };
-  }, [melody.notes, chord.notes, drum.notes, bass.notes, synth.notes, guitar.notes, pxPerSec, rowHeight]);
+  }, [melody.notes, chord.notes, drum.notes, bass.notes, synth.notes, guitar.notes, pxPerSec, rowHeight, bpm]);
 
   const drumTop = TOP_RULER_HEIGHT;
   const pitchTop = TOP_RULER_HEIGHT + DRUM_TOTAL_HEIGHT + DRUM_PITCH_GAP;
@@ -437,13 +447,15 @@ export default function PianoRoll({
           `translate(${x}, 0)`,
         );
       }
-      if (isActive) {
+      // 再生バーが画面外に出たら追尾。再生中だけでなく seek 中も追尾する。
+      // ただし上部ルーラを掴んでドラッグ中はユーザの操作を妨げないよう一時停止。
+      if (!seekDraggingRef.current) {
         const el = scrollRef.current;
         if (el) {
           const right = el.scrollLeft + el.clientWidth;
           if (x > right - 100) {
             el.scrollLeft = Math.max(0, x - el.clientWidth * 0.3);
-          } else if (x < el.scrollLeft) {
+          } else if (x < el.scrollLeft + 40) {
             el.scrollLeft = Math.max(0, x - 40);
           }
         }
@@ -808,11 +820,13 @@ export default function PianoRoll({
           const pt = svgPoint(e.clientX, e.clientY);
           if (pt) {
             const sec = snapSec(Math.max(0, pt.x / pxPerSec), !isSnapBypass(e));
-            if (pt.y < DRUM_TOTAL_HEIGHT) {
-              const laneIdx = Math.floor(pt.y / DRUM_LANE_HEIGHT);
+            // 上部ルーラ領域 (y<TOP_RULER_HEIGHT) はノート追加対象外。
+            // ドラムレーンは [TOP_RULER_HEIGHT, TOP_RULER_HEIGHT+DRUM_TOTAL_HEIGHT)
+            if (pt.y >= TOP_RULER_HEIGHT && pt.y < TOP_RULER_HEIGHT + DRUM_TOTAL_HEIGHT) {
+              const laneIdx = Math.floor((pt.y - TOP_RULER_HEIGHT) / DRUM_LANE_HEIGHT);
               const lane = DRUM_LANES[laneIdx];
               if (lane) onAddNote("drum", lane.midi, sec);
-            } else if (armedLayer !== "drum") {
+            } else if (armedLayer !== "drum" && pt.y >= pitchTop) {
               const yInPitch = pt.y - pitchTop;
               const row = Math.floor(yInPitch / rowHeight);
               const midi = pitchMax - row;

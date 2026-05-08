@@ -253,7 +253,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [quantizeGrid, setQuantizeGrid] = useState<QuantizeGrid>("1/16");
   const [editMode, setEditMode] = useState(false);
   const [noteLength, setNoteLength] = useState<NoteLength>("1/8");
-  const [metronomeOn, setMetronomeOn] = useState(false);
+  const [metronomeOn, setMetronomeOn] = useState(true);
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
   const audioReady = useRef(false);
@@ -685,12 +685,15 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   function stopRecord() {
     if (sessionRef.current) {
       const finished = sessionRef.current.end();
-      if (finished.id === "melody") setMelody({ ...finished });
-      else if (finished.id === "chord") setChord({ ...finished });
-      else if (finished.id === "bass") setBass({ ...finished });
-      else if (finished.id === "synth") setSynth({ ...finished });
-      else if (finished.id === "guitar") setGuitar({ ...finished });
-      else setDrum({ ...finished });
+      // 録音直後に自動でクオンタイズして小節線にスナップさせる。
+      // 他の楽器と合わせやすいように手弾きの揺れを補正する目的。
+      const quantized = quantizeLayer({ ...finished }, quantizeGrid, bpm);
+      if (quantized.id === "melody") setMelody(quantized);
+      else if (quantized.id === "chord") setChord(quantized);
+      else if (quantized.id === "bass") setBass(quantized);
+      else if (quantized.id === "synth") setSynth(quantized);
+      else if (quantized.id === "guitar") setGuitar(quantized);
+      else setDrum(quantized);
     }
     sessionRef.current = null;
     if (overdubRef.current) {

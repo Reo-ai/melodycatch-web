@@ -1,24 +1,36 @@
 /**
  * ギター楽器 (ディストーションのかかったエレキギター / スタジアムロック想定)。
  *
- * シグナルチェーン:
- *   PolySynth(MonoSynth, fatsawtooth ×2) ──▶ Distortion(控えめ)
- *     ──▶ HighPass(90Hz) ──▶ MidPeak(850Hz +4dB) ──▶ LowPass(4.2kHz, -24dB/oct)
- *     ──▶ Chorus(弱め) ──▶ Gain ──▶ Reverb(短め) ──▶ Destination
+ * 「シンセっぽい」という指摘を解消するため、コアの音源を
+ * **Tone.PluckSynth (Karplus-Strong 物理モデル)** に変更。
+ * Karplus-Strong は短いノイズバーストを遅延ループに通すことで
+ * 撥弦楽器の倍音/減衰を物理的に再現するため、
+ * fatsawtooth + envelope では出せない自然なピック感とディケイが得られる。
  *
- * 「シンセ感を抑える」ための主な調整:
- * - fatsawtooth で 2 オシレータをデチューン → 単一 saw のピーキーさを和らげ、弦の太さを再現
- * - エンベロープの sustain を 0.78 → 0.34 に大きく下げ、ピックで弾いた直後に減衰させる
- *   (持続的な "uuuu" というシンセ的な伸びがなくなる)
- * - 中域 850Hz をピーキングで +4dB → ギターキャビネットらしい "鼻にかかった" 音圧
- * - LowPass を 4.2kHz/-24dB に変更し、シンセの高域ジャリつきを減衰
- * - ディストーションを 0.85 → 0.55 に。歪ませすぎるとサスティンが強調されてシンセに戻る
- * - Chorus の wet/depth を控えめに (0.32→0.12 / 0.45→0.18)。ハードロック系では弱めが自然
- * - Reverb の decay を短く (2.6→1.6s)。スタジアム感は残しつつクリアさを確保
+ * シグナルチェーン:
+ *   PluckSynth × N (ボイスプール)
+ *     ──▶ Distortion(0.32)
+ *     ──▶ HighPass(95Hz)
+ *     ──▶ MidPeak(1.1kHz +3.5dB)
+ *     ──▶ LowPass(5.2kHz, -24dB/oct)
+ *     ──▶ Chorus(弱め)
+ *     ──▶ Gain
+ *     ──▶ Reverb(短め)
+ *     ──▶ Destination
+ *
+ * 実装メモ:
+ * - PluckSynth は Tone.js の PolySynth が要求する Monophonic<any> 型制約を
+ *   満たさないため、自前で多重発音用のボイスプールを管理する。
+ * - 同じ MIDI ノートが押された場合は前回のボイスを再利用 (再ピック)。
+ * - dampening を 4200Hz, resonance を 0.92 に設定し、
+ *   弦のブライトネスとサスティンを両立。
+ * - Karplus-Strong は元音が太いので、歪みは 0.32 と控えめでよい。
  */
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
+
+const VOICE_COUNT = 8;
 
 let guitarReverb: Tone.Reverb | null = null;
 let guitarChorus: Tone.Chorus | null = null;
@@ -27,83 +39,89 @@ let guitarMidPeak: Tone.Filter | null = null;
 let guitarHighpass: Tone.Filter | null = null;
 let guitarDistortion: Tone.Distortion | null = null;
 let guitarGain: Tone.Gain | null = null;
-let guitarPoly: Tone.PolySynth<Tone.MonoSynth> | null = null;
+
+/** ラウンドロビンで使う PluckSynth ボイス。 */
+let guitarVoices: Tone.PluckSynth[] = [];
+let voiceCursor = 0;
+/** 同じ MIDI ノートが現在どのボイスで鳴っているか (HoldOff 用)。 */
+const noteToVoice: Map<number, Tone.PluckSynth> = new Map();
 
 function ensureGuitar() {
-  if (guitarPoly) return;
-  guitarReverb = new Tone.Reverb({ decay: 1.6, wet: 0.18 }).toDestination();
-  guitarGain = new Tone.Gain(0.6).connect(guitarReverb);
+  if (guitarVoices.length > 0) return;
+  guitarReverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).toDestination();
+  guitarGain = new Tone.Gain(0.85).connect(guitarReverb);
   guitarChorus = new Tone.Chorus({
-    frequency: 0.6,
+    frequency: 0.8,
     delayTime: 2.5,
-    depth: 0.18,
-    wet: 0.12,
+    depth: 0.15,
+    wet: 0.1,
   })
     .connect(guitarGain)
     .start();
   guitarLowpass = new Tone.Filter({
-    frequency: 4200,
+    frequency: 5200,
     type: "lowpass",
-    Q: 0.6,
+    Q: 0.5,
     rolloff: -24,
   }).connect(guitarChorus);
   guitarMidPeak = new Tone.Filter({
-    frequency: 850,
+    frequency: 1100,
     type: "peaking",
-    Q: 0.9,
-    gain: 4,
+    Q: 1.0,
+    gain: 3.5,
   }).connect(guitarLowpass);
   guitarHighpass = new Tone.Filter({
-    frequency: 90,
+    frequency: 95,
     type: "highpass",
   }).connect(guitarMidPeak);
   guitarDistortion = new Tone.Distortion({
-    distortion: 0.55,
+    distortion: 0.32,
     oversample: "4x",
-    wet: 1,
+    wet: 0.85,
   }).connect(guitarHighpass);
-  guitarPoly = new Tone.PolySynth(Tone.MonoSynth, {
-    // fatsawtooth: 2 osc detune で弦の太さを表現
-    oscillator: { type: "fatsawtooth", count: 2, spread: 14 } as Partial<
-      Tone.MonoSynthOptions["oscillator"]
-    >,
-    envelope: {
-      attack: 0.004,
-      decay: 0.32,
-      // ピック型: sustain を低くして自然な減衰
-      sustain: 0.34,
-      release: 0.45,
-    },
-    filter: { type: "lowpass", Q: 1.6 },
-    filterEnvelope: {
-      attack: 0.003,
-      decay: 0.2,
-      sustain: 0.45,
-      release: 0.5,
-      baseFrequency: 280,
-      octaves: 3.6,
-    },
-  });
-  guitarPoly.connect(guitarDistortion);
-  guitarPoly.volume.value = -9;
+
+  for (let i = 0; i < VOICE_COUNT; i++) {
+    const v = new Tone.PluckSynth({
+      attackNoise: 1.8,
+      dampening: 4200,
+      resonance: 0.92,
+      release: 0.6,
+    });
+    v.volume.value = -3;
+    v.connect(guitarDistortion);
+    guitarVoices.push(v);
+  }
 }
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
+/** 次に使うボイスを取得 (ラウンドロビン)。 */
+function nextVoice(): Tone.PluckSynth {
+  const v = guitarVoices[voiceCursor];
+  voiceCursor = (voiceCursor + 1) % guitarVoices.length;
+  return v;
+}
+
 export function guitarHoldOn(midi: number, velocity = 0.85): void {
   ensureGuitar();
-  guitarPoly!.triggerAttack(
-    midiToNoteString(midi),
-    undefined,
-    clamp01(velocity),
-  );
+  const v = nextVoice();
+  noteToVoice.set(midi, v);
+  // PluckSynth は撥弦モデルなので triggerAttack で 1 回ピックする。
+  // (押しっぱなしでも自然減衰する = ギターの挙動として正しい)
+  // PluckSynth.triggerAttack は (note, time?) のみで velocity を受け付けないため、
+  // 強弱は volume で表現する。
+  v.volume.value = -3 + (clamp01(velocity) - 0.85) * 8;
+  v.triggerAttack(midiToNoteString(midi));
 }
 
 export function guitarHoldOff(midi: number): void {
-  if (!guitarPoly) return;
-  guitarPoly.triggerRelease(midiToNoteString(midi));
+  const v = noteToVoice.get(midi);
+  if (!v) return;
+  noteToVoice.delete(midi);
+  // 撥弦楽器は元々減衰するので release は短くフェードさせる。
+  v.triggerRelease();
 }
 
 export function guitarTriggerNote(
@@ -113,11 +131,13 @@ export function guitarTriggerNote(
   time?: number,
 ): void {
   ensureGuitar();
-  guitarPoly!.triggerAttackRelease(
+  const v = nextVoice();
+  // PluckSynth.triggerAttackRelease は (note, duration, time?) のみ。
+  v.volume.value = -3 + (clamp01(velocity) - 0.85) * 8;
+  v.triggerAttackRelease(
     midiToNoteString(midi),
     Math.max(0.05, durationSec),
     time,
-    clamp01(velocity),
   );
 }
 
@@ -141,6 +161,8 @@ export function guitarChordOn(
 }
 
 export function guitarReleaseAll(): void {
-  if (!guitarPoly) return;
-  guitarPoly.releaseAll();
+  noteToVoice.clear();
+  for (const v of guitarVoices) {
+    v.triggerRelease();
+  }
 }
