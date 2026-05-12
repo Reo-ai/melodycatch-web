@@ -126,8 +126,8 @@ const COLOR_LANE_A = "#161c2e";
 const COLOR_LANE_B = "#1b2238";
 const COLOR_DIVIDER = "#cbd5e1";
 const COLOR_GRID_BAR = "#cbd5e1"; // 小節線 (太・明るい)
-const COLOR_GRID_BEAT = "#475569"; // 拍線
-const COLOR_GRID_SUB = "#e2e8f0"; // 拍内 1/16 細分線 (薄白)
+const COLOR_GRID_BEAT = "#cbd5e1"; // 拍線 (薄白・小節線より少し弱め)
+const COLOR_GRID_SUB = "#e2e8f0"; // 拍内 1/16 細分線 (より薄白)
 const COLOR_C_LINE = "#64748b";
 const COLOR_LABEL = "#e2e8f0";
 const COLOR_LABEL_SUB = "#94a3b8";
@@ -543,10 +543,12 @@ export default function PianoRoll({
   // 全 MIDI ピッチ (C, C#, D, ...) のリスト。グリッド線+ラベルに使う。
   const allPitches: number[] = [];
   for (let p = pitchMax; p >= pitchMin; p--) allPitches.push(p);
-  // ラベル表示ルール:
-  //  - 自然音 (白鍵 C/D/E/F/G/A/B) は常にオクターブ付き (例: C5/D5/E5) で表示。
-  //  - 半音 (黒鍵 C#/D#/F#/G#/A#) は行高が大きいとき (>= 8px) のみ表示。
-  const showSharpLabels = rowHeight >= 8;
+  // ラベル表示ルール (重なり防止のため zoom 段階別に表示密度を変える):
+  //  - rowHeight < 9px : C のみ (例: C4, C5)
+  //  - rowHeight >= 9 : 自然音 (白鍵 C/D/E/F/G/A/B) を全て表示
+  //  - rowHeight >= 14: 半音 (黒鍵) も表示
+  const showNaturalLabels = rowHeight >= 9;
+  const showSharpLabels = rowHeight >= 14;
 
   const playheadColor = recordingLayerId ? COLOR_REC : COLOR_PLAY;
 
@@ -1331,9 +1333,9 @@ export default function PianoRoll({
                 : g.kind === "beat"
                   ? COLOR_GRID_BEAT
                   : COLOR_GRID_SUB;
-            const sw = g.kind === "bar" ? 1 : g.kind === "beat" ? 0.6 : 0.4;
-            // sub (1/16) は薄白でうっすら見せる程度に opacity を抑える。
-            const op = g.kind === "bar" ? 0.7 : g.kind === "beat" ? 0.55 : 0.18;
+            const sw = g.kind === "bar" ? 1.2 : g.kind === "beat" ? 0.9 : 0.4;
+            // 小節線 > 拍線 > 1/16 線 の順で視認性を段階的に弱める。
+            const op = g.kind === "bar" ? 0.85 : g.kind === "beat" ? 0.5 : 0.16;
             return (
               <line
                 key={`gl${i}-${g.kind}`}
@@ -1383,7 +1385,13 @@ export default function PianoRoll({
           {allPitches.map((p) => {
             const isC = ((p % 12) + 12) % 12 === 0;
             const isBlack = isBlackKey(p);
-            const showLabel = !isBlack || showSharpLabels;
+            const showLabel = isC || (!isBlack && showNaturalLabels) || (isBlack && showSharpLabels);
+            const labelText = midiToName(p);
+            const fs = isC ? 9 : 8;
+            // ラベル中央が行中央に来るように baseline を計算 (text の y は baseline)。
+            const labelY = noteY(p) + rowHeight / 2 + fs * 0.35;
+            // ラベル幅の概算 (mono font: 約 0.6 * fontSize per char)
+            const labelW = labelText.length * fs * 0.62 + 4;
             return (
               <g key={`p${p}`}>
                 <line
@@ -1396,17 +1404,29 @@ export default function PianoRoll({
                   opacity={isC ? 0.55 : 0.25}
                 />
                 {showLabel && (
-                  <text
-                    x={4}
-                    y={noteY(p) + Math.max(8, rowHeight - 1)}
-                    fontSize={isC ? "9" : "8"}
-                    fill={isC ? COLOR_LABEL : COLOR_LABEL_SUB}
-                    fontFamily="ui-monospace, monospace"
-                    fontWeight={isC ? 600 : 500}
-                    opacity={isC ? 0.95 : isBlack ? 0.55 : 0.8}
-                  >
-                    {midiToName(p)}
-                  </text>
+                  <g pointerEvents="none">
+                    {/* ラベル下地 (ノートと重なっても読めるように薄い暗色の pill) */}
+                    <rect
+                      x={2}
+                      y={labelY - fs}
+                      width={labelW}
+                      height={fs + 3}
+                      fill="#0b1020"
+                      opacity={0.7}
+                      rx={2}
+                    />
+                    <text
+                      x={4}
+                      y={labelY}
+                      fontSize={fs}
+                      fill={isC ? COLOR_LABEL : COLOR_LABEL_SUB}
+                      fontFamily="ui-monospace, monospace"
+                      fontWeight={isC ? 600 : 500}
+                      opacity={isC ? 1 : isBlack ? 0.7 : 0.9}
+                    >
+                      {labelText}
+                    </text>
+                  </g>
                 )}
               </g>
             );

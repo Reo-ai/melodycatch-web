@@ -1201,7 +1201,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   return (
     <div className="flex flex-col gap-6">
       {/* ① キー / スケール */}
-      <section className="rounded-2xl border border-ink-200 bg-pink-50 p-4 shadow-sm">
+      <section className="rounded-2xl border border-ink-200 bg-pink-100 p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink-700">
             ① 曲のキーとスケールを選ぶ
@@ -1220,7 +1220,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       {/* ② ドラム */}
       <section
         className={[
-          "rounded-2xl border bg-cyan-50 p-4 shadow-sm transition",
+          "rounded-2xl border bg-cyan-100 p-4 shadow-sm transition",
           armed === "drum" ? "border-accent-300" : "border-ink-200",
         ].join(" ")}
       >
@@ -1264,7 +1264,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       </section>
 
       {/* ③ 録音トラック (ピアノロールの上に配置: ピアノロールを見ながら録音できるように) */}
-      <section className="rounded-2xl border border-ink-200 bg-blue-50 p-4 shadow-sm">
+      <section className="rounded-2xl border border-ink-200 bg-blue-100 p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink-700">
             ③ 録音トラック (録音したい時だけ使う)
@@ -1340,38 +1340,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           })}
         </div>
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          {state === "idle" ? (
-            <button
-              type="button"
-              onClick={startRecord}
-              disabled={playing}
-              className="rounded-full bg-rose-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-600 disabled:opacity-40"
-            >
-              ● {armedLabel} を録音
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={stopRecord}
-              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
-            >
-              ■ 停止
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={exportMidi}
-            disabled={!hasAnything}
-            className="rounded-full border border-ink-300 bg-white px-5 py-2 text-sm font-semibold text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-40"
-          >
-            ⤓ MIDIファイル書き出し
-          </button>
-        </div>
-
         <p className="mt-3 text-xs text-ink-500">
-          録音せずただ弾くだけでも OK。録音中は録音対象以外のレイヤが同時再生されます (DAW 風オーバーダブ)。
+          層を選んでピアノロール下の「録音」ボタンで録音開始 / 停止。録音中は録音対象以外のレイヤが同時再生されます (DAW 風オーバーダブ)。
           ドラム層を録音中はドラムループも自動で回ります。下のピアノロールを見ながら録音できます。
         </p>
       </section>
@@ -1513,7 +1483,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           onMoveNotes={handleMoveNotes}
           onSeek={handleSeek}
         />
-        {/* 再生コントロール (ピアノロール直下) */}
+        {/* 再生 / 録音 / 書き出し (ピアノロール直下) */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {!playing ? (
             <button
@@ -1533,13 +1503,39 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               ■ 停止
             </button>
           )}
+          {state === "idle" ? (
+            <button
+              type="button"
+              onClick={startRecord}
+              disabled={playing}
+              className="rounded-full bg-rose-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-600 disabled:opacity-40"
+            >
+              ● {armedLabel} を録音
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={stopRecord}
+              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
+            >
+              ■ 停止
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={exportMidi}
+            disabled={!hasAnything}
+            className="rounded-full border border-ink-300 bg-white px-5 py-2 text-sm font-semibold text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-40"
+          >
+            ⤓ MIDIファイル書き出し
+          </button>
         </div>
       </section>
 
       {/* ⑤ 入力カルーセル: コードパレット → スケールミニピアノ → 88鍵ピアノ */}
       <section
         className={[
-          "rounded-2xl border bg-lime-50 p-4 shadow-sm transition",
+          "rounded-2xl border bg-lime-100 p-4 shadow-sm transition",
           armed === "chord" ? "border-accent-300" : "border-ink-200",
         ].join(" ")}
       >
@@ -1648,7 +1644,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       {/* ⑥ 進行プリセット */}
       <section
         className={[
-          "rounded-2xl border bg-orange-50 p-4 shadow-sm transition",
+          "rounded-2xl border bg-orange-100 p-4 shadow-sm transition",
           armed === "chord"
             ? "border-accent-300"
             : "border-ink-200",
