@@ -22,7 +22,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Piano from "./Piano";
-import ChordPalette from "./ChordPalette";
+import ChordPalette, { type ChordPatternId } from "./ChordPalette";
 import ChordTonePiano from "./ChordTonePiano";
 import ProgressionList from "./ProgressionList";
 import PianoRoll from "./PianoRoll";
@@ -46,6 +46,7 @@ import {
   ensureAudio,
   holdOff,
   holdOn,
+  noteOn,
   releaseAll,
 } from "../audio/pianoEngine";
 import {
@@ -65,6 +66,7 @@ import {
   guitarHoldOff,
   guitarHoldOn,
   guitarReleaseAll,
+  guitarTriggerNote,
 } from "../audio/guitarEngine";
 import {
   setMetronomeBpm,
@@ -531,6 +533,130 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       }
     },
     [arm, scale, scheduleRefresh],
+  );
+
+  // ---- コードパレット: 楽器別サブパターン -----------------------------------
+  // ChordPalette の各コードボタンの真下に出る補助ボタンから呼ばれる。
+  // - guitar8th: ギター armed 時のみ表示。1 小節 (= 4 拍) を 8 分音符 × 8 ヒットで
+  //   コードトーンを順に上下行 (1-2-3-4-5-4-3-2 風) させる、いわゆる「8 ビートアルペジオ」。
+  //   現在の BPM から 8 分音符長を算出し、`guitarTriggerNote` を `setTimeout` で連射。
+  // - piano1〜5: コード (ピアノ) armed 時のみ表示する 5 種類のピアノ伴奏パターン。
+  //   1=ブロック / 2=上行アルペジオ / 3=下行アルペジオ / 4=アルベルティ / 5=ベース+和音。
+  // 録音中は onPaletteChord と同じく、現在の armed 楽器が
+  // chord / guitar / synth のいずれかなら、コードイベントとして 1 個記録する
+  // (個々のノートではなく「コードを 1 回鳴らした」という単位で残す)。
+  const onPaletteChordPattern = useCallback(
+    async (
+      chord: HarmonicChord,
+      midiNotes: number[],
+      pattern: ChordPatternId,
+    ) => {
+      await arm();
+      const beatSec = 60 / Math.max(1, bpm);
+      const eighthSec = beatSec / 2; // 8 分音符の長さ (秒)
+
+      // コードトーンを昇順にソート (パターン処理しやすくするため)。
+      const sorted = [...midiNotes].sort((a, b) => a - b);
+      const root = sorted[0] ?? 48;
+      const third = sorted[1] ?? root + 4;
+      const fifth = sorted[2] ?? root + 7;
+
+      if (pattern === "guitar8th") {
+        // 8 分音符 × 8 ヒット、1 小節分。最低 3 音が必要なのでパディング。
+        const tones = sorted.length >= 3 ? sorted : [root, third, fifth];
+        // 上行 (root → high) → 下行 (high → root) を組み合わせて 8 ヒットに。
+        const up = tones;
+        const down = [...tones].reverse().slice(1, tones.length - 1);
+        const seq = [...up, ...down, ...up].slice(0, 8);
+        seq.forEach((m, i) => {
+          window.setTimeout(
+            () => guitarTriggerNote(m, eighthSec * 0.9, 0.85),
+            i * eighthSec * 1000,
+          );
+        });
+      } else if (pattern === "piano1") {
+        // ブロックコード: 全音同時。
+        chordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
+      } else if (pattern === "piano2") {
+        // 上行アルペジオ (root → 3rd → 5th → octave-root → ...) 8 ヒット。
+        const tones = [root, third, fifth, root + 12];
+        const seq = [...tones, ...tones];
+        seq.forEach((m, i) => {
+          window.setTimeout(
+            () => noteOn(m, 0.8, eighthSec * 0.95),
+            i * eighthSec * 1000,
+          );
+        });
+      } else if (pattern === "piano3") {
+        // 下行アルペジオ。
+        const tones = [root + 12, fifth, third, root];
+        const seq = [...tones, ...tones];
+        seq.forEach((m, i) => {
+          window.setTimeout(
+            () => noteOn(m, 0.8, eighthSec * 0.95),
+            i * eighthSec * 1000,
+          );
+        });
+      } else if (pattern === "piano4") {
+        // アルベルティ・バス: root - 5th - 3rd - 5th を 2 回繰り返し。
+        const tones = [root, fifth, third, fifth];
+        const seq = [...tones, ...tones];
+        seq.forEach((m, i) => {
+          window.setTimeout(
+            () => noteOn(m, 0.8, eighthSec * 0.95),
+            i * eighthSec * 1000,
+          );
+        });
+      } else if (pattern === "piano5") {
+        // ベース+和音: 1 拍目に低音 root、2-4 拍目で上声 (3rd+5th+octave) を鳴らす
+        // ピアノ伴奏で頻出の「ボン・ジャッ・ジャッ・ジャッ」パターン。
+        const bass = root - 12;
+        const upper = [third, fifth, root + 12];
+        // 1拍目: 低音
+        noteOn(bass, 0.85, beatSec * 0.95);
+        // 2-4拍目: 上声 (1 拍ごと)
+        for (let i = 1; i < 4; i++) {
+          window.setTimeout(
+            () => chordOn(upper, 0.7, beatSec * 0.9),
+            i * beatSec * 1000,
+          );
+        }
+      }
+
+      // ハイライト更新 (onPaletteChord と同じロジック)。
+      const triads = diatonicTriads(scale);
+      const idx = triads.findIndex(
+        (t) =>
+          t.rootPitchClass === chord.rootPitchClass &&
+          t.quality === chord.quality,
+      );
+      setActiveChordIndex(idx >= 0 ? idx : null);
+      setSpotlightLabel(`${chordSymbol(chord)}  ${chordLabelJa(chord)}`);
+      setPlaybackHighlight(new Set(midiNotes));
+      setSelectedChord(chord);
+      window.setTimeout(() => {
+        setPlaybackHighlight(new Set());
+        setActiveChordIndex(null);
+      }, PALETTE_CHORD_DURATION_SEC * 1000);
+
+      // 録音: コード単位で 1 イベントだけ記録 (パターン内部の各ヒットは記録しない)。
+      if (
+        stateRef.current === "recording" &&
+        (armedRef.current === "chord" ||
+          armedRef.current === "guitar" ||
+          armedRef.current === "synth") &&
+        sessionRef.current
+      ) {
+        sessionRef.current.recordChord(
+          midiNotes,
+          PALETTE_CHORD_DURATION_SEC,
+          0.8,
+        );
+        setChordRecCount((n) => n + 1);
+        scheduleRefresh();
+      }
+    },
+    [arm, scale, scheduleRefresh, bpm],
   );
 
   // ---- Z〜M でコードパレットの I〜vii° を発音 -----------------------------
@@ -1584,6 +1710,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                   <ChordPalette
                     scale={scale}
                     onPlayChord={onPaletteChord}
+                    onPlayPattern={onPaletteChordPattern}
+                    armedLayer={armed}
                     activeIndex={activeChordIndex}
                   />
                   <p className="mt-3 text-xs text-ink-500">

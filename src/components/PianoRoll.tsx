@@ -88,7 +88,11 @@ interface PianoRollProps {
 }
 
 const BASE_pxPerSec = 64;
-const BASE_rowHeight = 5;
+// デフォルト行高さ。8 px あれば fontSize=8 のラベルが行内にちょうど収まり、
+// 自然音 (C/D/E/F/G/A/B) のラベルを overlap なく表示できる。
+// 旧 5 px はラベル (高さ 7-8px) が行 (高さ 5px) からはみ出して
+// 隣の行のラベルと衝突し、結果として大半のラベルを非表示にせざるを得なかった。
+const BASE_rowHeight = 8;
 const ZOOM_X_MIN = 0.25;
 const ZOOM_X_MAX = 6;
 /** SVG の最大幅 (px)。Safari の SVG 幅上限 (~16384px) を考慮した安全値。
@@ -399,6 +403,11 @@ export default function PianoRoll({
     }
     pMin -= PITCH_PAD;
     pMax += PITCH_PAD;
+    // 必ず C1 (MIDI 24) まで下方向に表示する。低音域も最初から見える状態にして
+    // ベース層のノートが下にあっても自動スクロールなしで把握できるようにする。
+    pMin = Math.min(pMin, 24);
+    // 上方向は最低でも C6 (MIDI 84) まで確保 (メロディ層の上限想定)。
+    pMax = Math.max(pMax, 84);
     while (pMax - pMin < MIN_PITCH_RANGE) {
       pMax++;
       pMin--;
@@ -544,11 +553,12 @@ export default function PianoRoll({
   const allPitches: number[] = [];
   for (let p = pitchMax; p >= pitchMin; p--) allPitches.push(p);
   // ラベル表示ルール (重なり防止のため zoom 段階別に表示密度を変える):
-  //  - rowHeight < 9px : C のみ (例: C4, C5)
-  //  - rowHeight >= 9 : 自然音 (白鍵 C/D/E/F/G/A/B) を全て表示
-  //  - rowHeight >= 14: 半音 (黒鍵) も表示
-  const showNaturalLabels = rowHeight >= 9;
-  const showSharpLabels = rowHeight >= 14;
+  //  - rowHeight < 7px : C のみ (例: C4, C5)
+  //  - rowHeight >= 7 : 自然音 (白鍵 C/D/E/F/G/A/B) を全て表示
+  //  - rowHeight >= 13: 半音 (黒鍵) も表示
+  // デフォルト rowHeight=8 なら自然音まで表示される。
+  const showNaturalLabels = rowHeight >= 7;
+  const showSharpLabels = rowHeight >= 13;
 
   const playheadColor = recordingLayerId ? COLOR_REC : COLOR_PLAY;
 
