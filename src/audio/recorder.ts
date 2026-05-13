@@ -13,8 +13,16 @@ import { triggerDrumHit } from "./drums";
 import { bassHoldOff, bassHoldOn } from "./bassEngine";
 import { synthHoldOff, synthHoldOn } from "./synthEngine";
 import { guitarHoldOff, guitarHoldOn } from "./guitarEngine";
+import { acousticHoldOff, acousticHoldOn } from "./acousticGuitarEngine";
 
-export type LayerId = "melody" | "chord" | "drum" | "bass" | "synth" | "guitar";
+export type LayerId =
+  | "melody"
+  | "chord"
+  | "drum"
+  | "bass"
+  | "synth"
+  | "guitar"
+  | "acoustic";
 
 export interface NoteEvent {
   midi: number;
@@ -302,6 +310,7 @@ export class Playback {
         const isBass = layer.id === "bass";
         const isSynth = layer.id === "synth";
         const isGuitar = layer.id === "guitar";
+        const isAcoustic = layer.id === "acoustic";
         // offset 区間にまたがるノートは即時 noteOn (delay=0)
         const startDelayMs = Math.max(0, (note.startSec - off) * 1000);
         const offDelayMs = Math.max(20, (noteEnd - off) * 1000);
@@ -309,6 +318,7 @@ export class Playback {
           if (isBass) bassHoldOn(note.midi, note.velocity);
           else if (isSynth) synthHoldOn(note.midi, note.velocity);
           else if (isGuitar) guitarHoldOn(note.midi, note.velocity);
+          else if (isAcoustic) acousticHoldOn(note.midi, note.velocity);
           else holdOn(note.midi, note.velocity);
           this.hooks?.onNoteOn?.(layer.id, note.midi);
         }, startDelayMs);
@@ -316,6 +326,7 @@ export class Playback {
           if (isBass) bassHoldOff(note.midi);
           else if (isSynth) synthHoldOff(note.midi);
           else if (isGuitar) guitarHoldOff(note.midi);
+          else if (isAcoustic) acousticHoldOff(note.midi);
           else holdOff(note.midi);
           this.hooks?.onNoteOff?.(layer.id, note.midi);
         }, offDelayMs);

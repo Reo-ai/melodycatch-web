@@ -70,6 +70,13 @@ import {
   guitarTriggerNote,
 } from "../audio/guitarEngine";
 import {
+  acousticChordOn,
+  acousticHoldOff,
+  acousticHoldOn,
+  acousticReleaseAll,
+  acousticTriggerNote,
+} from "../audio/acousticGuitarEngine";
+import {
   setMetronomeBpm,
   startMetronome,
   stopMetronome,
@@ -103,9 +110,10 @@ const PALETTE_CHORD_DURATION_SEC = 1.4;
 const HISTORY_LIMIT = 50;
 
 /** コードパッド/進行プリセットを armed 楽器ごとにどのレイヤーへ流すか。 */
-type PaletteTarget = "chord" | "bass" | "synth" | "guitar";
+type PaletteTarget = "chord" | "bass" | "synth" | "guitar" | "acoustic";
 function paletteTargetForArmed(a: LayerId): PaletteTarget {
   if (a === "guitar") return "guitar";
+  if (a === "acoustic") return "acoustic";
   if (a === "synth") return "synth";
   if (a === "bass") return "bass";
   // melody / chord / drum armed のときは「コード」層に流す。
@@ -140,16 +148,17 @@ function buildPatternEvents(
   const push1 = (m: number, s: number, d: number, v = 0.8) => {
     out.push({ midi: m, startSec: s, durationSec: Math.max(0.05, d), velocity: v });
   };
-  if (pattern === "guitar8th") {
+  if (pattern === "guitar8th" || pattern === "acoustic8th") {
     const tones = sorted.length >= 3 ? sorted : [root, third, fifth];
     const up = tones;
     const down = [...tones].reverse().slice(1, tones.length - 1);
     const seq = [...up, ...down, ...up].slice(0, 8);
     seq.forEach((m, i) => push1(m, baseSec + i * eighthSec, eighthSec * 0.9, 0.85));
-  } else if (pattern === "guitar8thChord") {
+  } else if (pattern === "guitar8thChord" || pattern === "acoustic8thChord") {
     pushBlock(midiNotes, baseSec, eighthSec, 0.85);
   } else if (pattern === "piano1") {
-    pushBlock(midiNotes, baseSec, PALETTE_CHORD_DURATION_SEC, 0.8);
+    // 1 小節 (4 拍) ピッタリのブロックコード。BPM が変わってもグリッドに合う。
+    pushBlock(midiNotes, baseSec, beatSec * 4 * 0.98, 0.8);
   } else if (pattern === "piano2") {
     const tones = [root, third, fifth, root + 12];
     [...tones, ...tones].forEach((m, i) =>
@@ -188,8 +197,10 @@ function buildPatternEvents(
       pushBlock(midiNotes, baseSec + b * beatSec, eighthSec * 2, 0.78),
     );
   } else if (pattern === "piano10") {
+    // チャールストン: 最終ヒット (3.5 拍) + duration が 4 拍を超えないように、
+    // 8 分音符 × 0.9 (= eighthSec * 0.9) に縮める。3.5 + 0.45 = 3.95 < 4 拍。
     [0, 1.5, 2, 3.5].forEach((b) =>
-      pushBlock(midiNotes, baseSec + b * beatSec, eighthSec * 1.5, 0.78),
+      pushBlock(midiNotes, baseSec + b * beatSec, eighthSec * 0.9, 0.78),
     );
   }
   return out;
@@ -202,6 +213,7 @@ interface Snapshot {
   bass: Layer;
   synth: Layer;
   guitar: Layer;
+  acoustic: Layer;
 }
 
 /** 編集モード時の追加ノート長。"free" は 0.5 秒固定。 */
@@ -339,6 +351,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [bass, setBass] = useState<Layer>(() => emptyLayer("bass", "ベース"));
   const [synth, setSynth] = useState<Layer>(() => emptyLayer("synth", "シンセ"));
   const [guitar, setGuitar] = useState<Layer>(() => emptyLayer("guitar", "ギター"));
+  const [acoustic, setAcoustic] = useState<Layer>(() => emptyLayer("acoustic", "アコギ"));
   const [armed, setArmed] = useState<LayerId>("melody");
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
@@ -405,11 +418,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         bass,
         synth,
         guitar,
+        acoustic,
       };
       writeCurrent(snap);
     }, 250);
     return () => window.clearTimeout(handle);
-  }, [bpm, scale.rootPitchClass, scale.kind, melody, chord, drum, bass, synth, guitar]);
+  }, [bpm, scale.rootPitchClass, scale.kind, melody, chord, drum, bass, synth, guitar, acoustic]);
 
   // Library タブから「このスロットをロードして」と依頼されたら受け取る。
   // - マウント時に既存の loadIntent を消費 (Library で先にボタンを押されたケース)
@@ -453,6 +467,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setSynth((cur) => ({ ...cur, notes }));
       } else if (armedRef.current === "guitar") {
         setGuitar((cur) => ({ ...cur, notes }));
+      } else if (armedRef.current === "acoustic") {
+        setAcoustic((cur) => ({ ...cur, notes }));
       } else {
         setDrum((cur) => ({ ...cur, notes }));
       }
@@ -475,43 +491,45 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // ---- Undo/Redo: 破壊的操作の前にスナップショット保存 -----------------------
   const pushHistory = useCallback(() => {
     setPast((p) => {
-      const snap: Snapshot = { melody, chord, drum, bass, synth, guitar };
+      const snap: Snapshot = { melody, chord, drum, bass, synth, guitar, acoustic };
       const next = [...p, snap];
       if (next.length > HISTORY_LIMIT) next.shift();
       return next;
     });
     setFuture([]);
-  }, [melody, chord, drum, bass, synth, guitar]);
+  }, [melody, chord, drum, bass, synth, guitar, acoustic]);
 
   const undo = useCallback(() => {
     setPast((p) => {
       if (p.length === 0) return p;
       const prev = p[p.length - 1];
-      setFuture((f) => [...f, { melody, chord, drum, bass, synth, guitar }]);
+      setFuture((f) => [...f, { melody, chord, drum, bass, synth, guitar, acoustic }]);
       setMelody(prev.melody);
       setChord(prev.chord);
       setDrum(prev.drum);
       setBass(prev.bass);
       setSynth(prev.synth);
       setGuitar(prev.guitar);
+      setAcoustic(prev.acoustic);
       return p.slice(0, -1);
     });
-  }, [melody, chord, drum, bass, synth, guitar]);
+  }, [melody, chord, drum, bass, synth, guitar, acoustic]);
 
   const redo = useCallback(() => {
     setFuture((f) => {
       if (f.length === 0) return f;
       const next = f[f.length - 1];
-      setPast((p) => [...p, { melody, chord, drum, bass, synth, guitar }]);
+      setPast((p) => [...p, { melody, chord, drum, bass, synth, guitar, acoustic }]);
       setMelody(next.melody);
       setChord(next.chord);
       setDrum(next.drum);
       setBass(next.bass);
       setSynth(next.synth);
       setGuitar(next.guitar);
+      setAcoustic(next.acoustic);
       return f.slice(0, -1);
     });
-  }, [melody, chord, drum, bass, synth, guitar]);
+  }, [melody, chord, drum, bass, synth, guitar, acoustic]);
 
   // Cmd+Z / Ctrl+Z = undo, Cmd+Shift+Z / Ctrl+Y = redo
   useEffect(() => {
@@ -579,6 +597,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         synthHoldOn(midi, velocity);
       } else if (armedRef.current === "guitar") {
         guitarHoldOn(midi, velocity);
+      } else if (armedRef.current === "acoustic") {
+        acousticHoldOn(midi, velocity);
       } else {
         holdOn(midi, velocity);
       }
@@ -602,6 +622,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       bassHoldOff(midi);
       synthHoldOff(midi);
       guitarHoldOff(midi);
+      acousticHoldOff(midi);
       setActiveNotes((cur) => {
         if (!cur.has(midi)) return cur;
         const next = new Set(cur);
@@ -655,16 +676,6 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     }
   }, [playing, state, seekedSec]);
 
-  /** events の終端を計算 (max(start+duration)) */
-  function eventsEndSec(events: NoteEvent[]): number {
-    let end = 0;
-    for (const e of events) {
-      const t = e.startSec + e.durationSec;
-      if (t > end) end = t;
-    }
-    return end;
-  }
-
   /** BPM の拍境界に最も近い位置に丸める (前方丸め: 次の拍頭)。 */
   function snapToNextBeat(sec: number, bpmVal: number): number {
     const beat = 60 / Math.max(1, bpmVal);
@@ -680,6 +691,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const reflectEventsToTarget = useCallback(
     (events: NoteEvent[], target: PaletteTarget) => {
       if (events.length === 0) return;
+      // 録音中で、armed 楽器がそのレイヤーに対応している時だけ実際に書き込む。
+      // 録音外では「鳴らすだけ」で PianoRoll には反映しない (= 勝手に保存されない)。
       if (
         stateRef.current === "recording" &&
         armedRef.current === target &&
@@ -687,28 +700,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       ) {
         sessionRef.current.addEvents(events);
         scheduleRefresh();
-        return;
-      }
-      pushHistory();
-      if (target === "guitar") {
-        setGuitar((cur) => ({ ...cur, notes: [...cur.notes, ...events] }));
-      } else if (target === "synth") {
-        setSynth((cur) => ({ ...cur, notes: [...cur.notes, ...events] }));
-      } else if (target === "bass") {
-        setBass((cur) => ({ ...cur, notes: [...cur.notes, ...events] }));
-      } else {
-        setChord((cur) => ({ ...cur, notes: [...cur.notes, ...events] }));
-      }
-      // ライブ書き込みヘッドを events の終端まで進める。
-      // 録音/再生中はそちらが元々時間を進めているので動かさない。
-      if (stateRef.current !== "recording" && !playing) {
-        const end = eventsEndSec(events);
-        if (end > livePlayheadSecRef.current) {
-          livePlayheadSecRef.current = end;
-        }
       }
     },
-    [pushHistory, scheduleRefresh, playing],
+    [scheduleRefresh],
   );
 
   // ---- コードパレット --------------------------------------------------------
@@ -725,6 +719,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (a === "bass") bassChordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
       else if (a === "synth") synthChordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
       else if (a === "guitar") guitarChordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
+      else if (a === "acoustic") acousticChordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
       else chordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
 
       const triads = diatonicTriads(scale);
@@ -820,9 +815,26 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         for (const m of midiNotes) {
           guitarTriggerNote(m, eighthSec * 0.9, 0.85);
         }
+      } else if (pattern === "acoustic8th") {
+        // アコギ版 8 分音符アルペジオ (ギターと同じパターンを acousticTriggerNote で)。
+        const tones = sorted.length >= 3 ? sorted : [root, third, fifth];
+        const up = tones;
+        const down = [...tones].reverse().slice(1, tones.length - 1);
+        const seq = [...up, ...down, ...up].slice(0, 8);
+        seq.forEach((m, i) => {
+          window.setTimeout(
+            () => acousticTriggerNote(m, eighthSec * 0.9, 0.85),
+            i * eighthSec * 1000,
+          );
+        });
+      } else if (pattern === "acoustic8thChord") {
+        // アコギ版 8 分音符長コード一発 (ジャラ感ゼロで同時発音)。
+        for (const m of midiNotes) {
+          acousticTriggerNote(m, eighthSec * 0.9, 0.85);
+        }
       } else if (pattern === "piano1") {
-        // ブロックコード: 全音同時。
-        chordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
+        // ブロックコード: 1 小節 (4 拍) ピッタリ全音同時。BPM 変動にも対応。
+        chordOn(midiNotes, 0.8, beatSec * 4 * 0.98);
       } else if (pattern === "piano2") {
         // 上行アルペジオ (root → 3rd → 5th → octave-root → ...) 8 ヒット。
         const tones = [root, third, fifth, root + 12];
@@ -903,11 +915,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         });
       } else if (pattern === "piano10") {
         // チャールストン: 1 拍目 / 2 拍目の裏 / 3 拍目 / 4 拍目の裏 の 4 ヒット。
-        // ジャズ/シティポップで頻出のシンコペーションパターン。
+        // 最終ヒットが 4 拍を超えないように duration を 8 分音符 × 0.9 に縮める。
         const hits = [0, 1.5, 2, 3.5];
         hits.forEach((b) => {
           window.setTimeout(
-            () => chordOn(midiNotes, 0.78, eighthSec * 1.5),
+            () => chordOn(midiNotes, 0.78, eighthSec * 0.9),
             b * beatSec * 1000,
           );
         });
@@ -995,6 +1007,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         if (a === "bass") bassChordOn(midiNotes, 0.8, durationSec);
         else if (a === "synth") synthChordOn(midiNotes, 0.8, durationSec);
         else if (a === "guitar") guitarChordOn(midiNotes, 0.8, durationSec);
+        else if (a === "acoustic") acousticChordOn(midiNotes, 0.8, durationSec);
         else chordOn(midiNotes, 0.8, durationSec);
 
         setSpotlightLabel(`${chordSymbol(c)}  ${chordLabelJa(c)}`);
@@ -1085,7 +1098,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               ? synth
               : armed === "guitar"
                 ? guitar
-                : drum;
+                : armed === "acoustic"
+                  ? acoustic
+                  : drum;
 
     sessionRef.current = new RecordingSession(layer, {
       preserveExistingNotes: true,
@@ -1101,6 +1116,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (armed !== "bass" && bass.notes.length > 0) otherLayers.push(bass);
     if (armed !== "synth" && synth.notes.length > 0) otherLayers.push(synth);
     if (armed !== "guitar" && guitar.notes.length > 0) otherLayers.push(guitar);
+    if (armed !== "acoustic" && acoustic.notes.length > 0) otherLayers.push(acoustic);
     if (armed !== "drum" && drum.notes.length > 0) otherLayers.push(drum);
     if (otherLayers.length > 0) {
       const overdub = new Playback(otherLayers, {
@@ -1141,6 +1157,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (quantized.id === "bass") setBass(quantized);
       else if (quantized.id === "synth") setSynth(quantized);
       else if (quantized.id === "guitar") setGuitar(quantized);
+      else if (quantized.id === "acoustic") setAcoustic(quantized);
       else setDrum(quantized);
     }
     sessionRef.current = null;
@@ -1155,6 +1172,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       bassHoldOff(m);
       synthHoldOff(m);
       guitarHoldOff(m);
+      acousticHoldOff(m);
     });
     setActiveNotes(new Set());
     setPlaybackHighlight(new Set());
@@ -1167,6 +1185,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     else if (id === "bass") setBass(emptyLayer("bass", "ベース"));
     else if (id === "synth") setSynth(emptyLayer("synth", "シンセ"));
     else if (id === "guitar") setGuitar(emptyLayer("guitar", "ギター"));
+    else if (id === "acoustic") setAcoustic(emptyLayer("acoustic", "アコギ"));
     else setDrum(emptyLayer("drum", "ドラム"));
   }
 
@@ -1186,7 +1205,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         drum.notes.length > 0 ||
         bass.notes.length > 0 ||
         synth.notes.length > 0 ||
-        guitar.notes.length > 0;
+        guitar.notes.length > 0 ||
+        acoustic.notes.length > 0;
       if (
         currentlyHasAnything &&
         typeof window !== "undefined" &&
@@ -1203,9 +1223,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       setBass(data.bass);
       setSynth(data.synth);
       setGuitar(data.guitar);
+      setAcoustic(data.acoustic ?? emptyLayer("acoustic", "アコギ"));
       setBpm(data.bpm);
     },
-    [melody, chord, drum, bass, synth, guitar, pushHistory],
+    [melody, chord, drum, bass, synth, guitar, acoustic, pushHistory],
   );
 
   // storage イベントから常に最新の loadSlotIntoStudio を呼べるよう ref に同期。
@@ -1224,7 +1245,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (!hasAnything) return;
     if (typeof window !== "undefined") {
       const ok = window.confirm(
-        "全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / ドラム) の譜面を削除します。よろしいですか？ (元に戻る で復元可)",
+        "全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / アコギ / ドラム) の譜面を削除します。よろしいですか？ (元に戻る で復元可)",
       );
       if (!ok) return;
     }
@@ -1234,6 +1255,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setBass(emptyLayer("bass", "ベース"));
     setSynth(emptyLayer("synth", "シンセ"));
     setGuitar(emptyLayer("guitar", "ギター"));
+    setAcoustic(emptyLayer("acoustic", "アコギ"));
     setDrum(emptyLayer("drum", "ドラム"));
   }
 
@@ -1244,7 +1266,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     cancelProgressionTimers();
     // 録音した内容を再生する間はライブ DrumLoop を止める (二重発音防止)
     if (drumPadRef.current?.isPlaying()) drumPadRef.current.stop();
-    const layers = [melody, chord, bass, synth, guitar, drum].filter(
+    const layers = [melody, chord, bass, synth, guitar, acoustic, drum].filter(
       (l) => l.notes.length > 0,
     );
     if (layers.length === 0) return;
@@ -1284,6 +1306,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       bassReleaseAll();
       synthReleaseAll();
       guitarReleaseAll();
+      acousticReleaseAll();
       pb.start(target);
     }
   }, []);
@@ -1297,6 +1320,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     bassReleaseAll();
     synthReleaseAll();
     guitarReleaseAll();
+    acousticReleaseAll();
   }
 
   function cancelProgressionTimers() {
@@ -1319,10 +1343,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setBass((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setSynth((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setGuitar((cur) => quantizeLayer(cur, quantizeGrid, bpm));
+    setAcoustic((cur) => quantizeLayer(cur, quantizeGrid, bpm));
   }
 
   function exportMidi() {
-    const layers = [melody, chord, bass, synth, guitar, drum].filter(
+    const layers = [melody, chord, bass, synth, guitar, acoustic, drum].filter(
       (l) => l.notes.length > 0,
     );
     if (layers.length === 0) return;
@@ -1343,6 +1368,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     bassReleaseAll();
     synthReleaseAll();
     guitarReleaseAll();
+    acousticReleaseAll();
     setActiveNotes(new Set());
     setPlaybackHighlight(new Set());
     setActiveChordIndex(null);
@@ -1366,6 +1392,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "bass") setBass(update);
       else if (layerId === "synth") setSynth(update);
       else if (layerId === "guitar") setGuitar(update);
+      else if (layerId === "acoustic") setAcoustic(update);
       else setDrum(update);
     },
     [pushHistory, noteLength, bpm],
@@ -1383,6 +1410,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "bass") setBass(update);
       else if (layerId === "synth") setSynth(update);
       else if (layerId === "guitar") setGuitar(update);
+      else if (layerId === "acoustic") setAcoustic(update);
       else setDrum(update);
     },
     [pushHistory],
@@ -1426,6 +1454,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "bass") setBass(update);
       else if (layerId === "synth") setSynth(update);
       else if (layerId === "guitar") setGuitar(update);
+      else if (layerId === "acoustic") setAcoustic(update);
       else setDrum(update);
     },
     [pushHistory],
@@ -1466,6 +1495,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (byLayer.has("bass")) setBass(buildUpdate("bass"));
       if (byLayer.has("synth")) setSynth(buildUpdate("synth"));
       if (byLayer.has("guitar")) setGuitar(buildUpdate("guitar"));
+      if (byLayer.has("acoustic")) setAcoustic(buildUpdate("acoustic"));
       if (byLayer.has("drum")) setDrum(buildUpdate("drum"));
     },
     [pushHistory],
@@ -1529,6 +1559,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (byLayer.has("bass")) setBass(buildUpdate("bass"));
       if (byLayer.has("synth")) setSynth(buildUpdate("synth"));
       if (byLayer.has("guitar")) setGuitar(buildUpdate("guitar"));
+      if (byLayer.has("acoustic")) setAcoustic(buildUpdate("acoustic"));
       if (byLayer.has("drum")) setDrum(buildUpdate("drum"));
     },
     [pushHistory],
@@ -1577,6 +1608,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (byLayer.has("bass")) setBass(buildUpdate("bass"));
       if (byLayer.has("synth")) setSynth(buildUpdate("synth"));
       if (byLayer.has("guitar")) setGuitar(buildUpdate("guitar"));
+      if (byLayer.has("acoustic")) setAcoustic(buildUpdate("acoustic"));
       if (byLayer.has("drum")) setDrum(buildUpdate("drum"));
     },
     [pushHistory],
@@ -1604,6 +1636,38 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (metronomeOn) setMetronomeBpm(bpm);
   }, [bpm, metronomeOn]);
 
+  // ---- BPM 変更時に既存ノートを再スケール ---------------------------------
+  // ある BPM で録音した内容を BPM 変更後に再生すると元のテンポのままになってしまうため、
+  // BPM 比に応じて startSec / durationSec をスケールし直す。
+  // 録音中・再生中はテンポずれの原因になるのでスキップ。
+  const prevBpmRef = useRef(bpm);
+  useEffect(() => {
+    const prev = prevBpmRef.current;
+    if (prev === bpm) return;
+    if (state === "recording" || playing) {
+      prevBpmRef.current = bpm;
+      return;
+    }
+    const scale = prev / bpm; // 新 BPM が速いほど時間は短くなる
+    const rescale = (layer: Layer): Layer => ({
+      ...layer,
+      notes: layer.notes.map((n) => ({
+        ...n,
+        startSec: n.startSec * scale,
+        durationSec: n.durationSec * scale,
+      })),
+    });
+    setMelody(rescale);
+    setChord(rescale);
+    setBass(rescale);
+    setSynth(rescale);
+    setGuitar(rescale);
+    setAcoustic(rescale);
+    setDrum(rescale);
+    prevBpmRef.current = bpm;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bpm]);
+
   // ---- アンマウント時クリーンアップ ----------------------------------------
   useEffect(() => {
     return () => {
@@ -1614,6 +1678,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       bassReleaseAll();
       synthReleaseAll();
       guitarReleaseAll();
+      acousticReleaseAll();
       stopMetronome();
     };
   }, []);
@@ -1625,6 +1690,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const bassDur = useMemo(() => layerDuration(bass), [bass]);
   const synthDur = useMemo(() => layerDuration(synth), [synth]);
   const guitarDur = useMemo(() => layerDuration(guitar), [guitar]);
+  const acousticDur = useMemo(() => layerDuration(acoustic), [acoustic]);
   const totalDur = Math.max(
     melodyDur,
     chordDur,
@@ -1632,6 +1698,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     bassDur,
     synthDur,
     guitarDur,
+    acousticDur,
   );
   const hasAnything =
     melody.notes.length > 0 ||
@@ -1639,7 +1706,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     drum.notes.length > 0 ||
     bass.notes.length > 0 ||
     synth.notes.length > 0 ||
-    guitar.notes.length > 0;
+    guitar.notes.length > 0 ||
+    acoustic.notes.length > 0;
   const overdubPlaying =
     state === "recording" &&
     ((armed !== "melody" && melody.notes.length > 0) ||
@@ -1647,6 +1715,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       (armed !== "bass" && bass.notes.length > 0) ||
       (armed !== "synth" && synth.notes.length > 0) ||
       (armed !== "guitar" && guitar.notes.length > 0) ||
+      (armed !== "acoustic" && acoustic.notes.length > 0) ||
       (armed !== "drum" && drum.notes.length > 0));
   const isActive = state === "recording" || playing;
   const recordingLayerId: LayerId | null =
@@ -1657,6 +1726,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     { id: "bass", layer: bass, label: "🎸 ベース層" },
     { id: "synth", layer: synth, label: "🎹 シンセ層" },
     { id: "guitar", layer: guitar, label: "🎸 ギター層" },
+    { id: "acoustic", layer: acoustic, label: "🎸 アコギ層" },
     { id: "drum", layer: drum, label: "🥁 ドラム層" },
   ];
   const armedLabel =
@@ -1670,7 +1740,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             ? "シンセ"
             : armed === "guitar"
               ? "ギター"
-              : "ドラム";
+              : armed === "acoustic"
+                ? "アコギ"
+                : "ドラム";
   const progressionGapSec = (60 * 4) / Math.max(40, Math.min(220, bpm));
 
   return (
@@ -1911,7 +1983,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               type="button"
               onClick={clearAllLayers}
               disabled={state === "recording" || playing || !hasAnything}
-              title="全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / ドラム) の譜面を一気に削除します。「元に戻る」で復元できます。"
+              title="全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / アコギ / ドラム) の譜面を一気に削除します。「元に戻る」で復元できます。"
               className="rounded-full border border-rose-300 bg-white px-3 py-0.5 text-xs font-semibold text-rose-600 shadow-sm hover:bg-rose-50 disabled:opacity-40"
             >
               🗑 譜面を削除
@@ -2005,6 +2077,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           bass={bass}
           synth={synth}
           guitar={guitar}
+          acoustic={acoustic}
           isActive={isActive}
           recordingLayerId={recordingLayerId}
           getPlayheadSec={getPlayheadSec}
@@ -2099,6 +2172,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             {armed === "guitar" && state === "recording" && (
               <span className="ml-2 text-rose-500">
                 🎸 ギター層に録音中 (+{chordRecCount} コード)
+              </span>
+            )}
+            {armed === "acoustic" && state === "recording" && (
+              <span className="ml-2 text-rose-500">
+                🎸 アコギ層に録音中 (+{chordRecCount} コード)
               </span>
             )}
           </h2>

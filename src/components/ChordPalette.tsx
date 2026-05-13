@@ -26,6 +26,9 @@ export type ChordPatternId =
   // ギター系
   | "guitar8th" // 8 分音符アルペジオ (コードトーンを上下行)
   | "guitar8thChord" // 8 分音符長の短いストロークを 1 回
+  // アコギ系 (歪みなし、ギターと同じパターン)
+  | "acoustic8th" // 8 分音符アルペジオ (アコギ)
+  | "acoustic8thChord" // 8 分音符長の短いストロークを 1 回 (アコギ)
   // ピアノ系 — アルペジオ / 分散和音
   | "piano1" // ブロック (全音同時 × 1 回)
   | "piano2" // 上行アルペジオ
@@ -49,7 +52,14 @@ interface ChordPaletteProps {
     pattern: ChordPatternId,
   ) => void;
   /** Currently armed layer; used to decide which sub-buttons to render. */
-  armedLayer?: "melody" | "chord" | "bass" | "synth" | "guitar" | "drum";
+  armedLayer?:
+    | "melody"
+    | "chord"
+    | "bass"
+    | "synth"
+    | "guitar"
+    | "drum"
+    | "acoustic";
   /** Index of the chord currently spotlighted (e.g. last played). */
   activeIndex?: number | null;
 }
@@ -93,6 +103,7 @@ export default function ChordPalette({
 }: ChordPaletteProps) {
   const triads = diatonicTriads(scale);
   const isGuitar = armedLayer === "guitar";
+  const isAcoustic = armedLayer === "acoustic";
   const isPiano = armedLayer === "chord";
 
   return (
@@ -162,7 +173,29 @@ export default function ChordPalette({
                   title="8 分音符長の短いコードストロークを 1 回鳴らす"
                   className="rounded-md border border-amber-500 bg-amber-100 px-0.5 py-1 text-[10px] font-semibold text-amber-800 shadow-sm hover:bg-amber-200 active:scale-95"
                 >
-                  ♫ コード
+                  ♫ 8 分
+                </button>
+              </div>
+            )}
+
+            {/* アコギ: ギターと同じ 2 個のボタン (歪みなしクリーン版) */}
+            {isAcoustic && onPlayPattern && (
+              <div className="grid grid-cols-2 gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => onPlayPattern(chord, voicing, "acoustic8th")}
+                  title="アコギ: 8 分音符でアルペジオを 1 小節分鳴らす"
+                  className="rounded-md border border-orange-400 bg-orange-50 px-0.5 py-1 text-[10px] font-semibold text-orange-700 shadow-sm hover:bg-orange-100 active:scale-95"
+                >
+                  ♪ アルペ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onPlayPattern(chord, voicing, "acoustic8thChord")}
+                  title="アコギ: 8 分音符長の短いコードストロークを 1 回鳴らす"
+                  className="rounded-md border border-orange-500 bg-orange-100 px-0.5 py-1 text-[10px] font-semibold text-orange-800 shadow-sm hover:bg-orange-200 active:scale-95"
+                >
+                  ♫ 8 分
                 </button>
               </div>
             )}
