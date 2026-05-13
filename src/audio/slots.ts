@@ -98,6 +98,94 @@ export function buildPlayerUrl(slot: number): string {
   return url.toString();
 }
 
+// ---- Studio ↔ Library タブ間共有 ------------------------------------------
+//
+// 「保存パネル」を別タブ (?library=1) に移すため、Studio タブの作業状態を
+// localStorage に写し続け、Library タブからその写しを読み出して保存スロットに
+// 書き込む。また、Library タブから Studio タブへ「このスロットをロードして」と
+// 指示するための loadIntent キーも用意する (Studio は storage イベントで検知)。
+
+/** Studio が今鳴らしている作業状態の写し。Library タブはこれを保存源にする。 */
+const CURRENT_KEY = "melodycatch.current";
+
+/** Library → Studio に「このスロットをロードして」と通知するキー (storage イベント駆動)。 */
+const LOAD_INTENT_KEY = "melodycatch.loadIntent";
+
+export interface CurrentSnapshot {
+  bpm: number;
+  scaleRoot: number;
+  scaleKind: string;
+  updatedAt: number;
+  melody: Layer;
+  chord: Layer;
+  drum: Layer;
+  bass: Layer;
+  synth: Layer;
+  guitar: Layer;
+}
+
+export function writeCurrent(snap: CurrentSnapshot): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CURRENT_KEY, JSON.stringify(snap));
+  } catch {
+    /* localStorage quota など。サイレントに失敗。 */
+  }
+}
+
+export function readCurrent(): CurrentSnapshot | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(CURRENT_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as CurrentSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+/** Library タブから Studio タブにスロット N のロードを依頼する。 */
+export function writeLoadIntent(slot: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    // 同じ値を続けて書いても storage イベントが発火するように、毎回 timestamp を含める。
+    window.localStorage.setItem(
+      LOAD_INTENT_KEY,
+      JSON.stringify({ slot, ts: Date.now() }),
+    );
+  } catch {
+    /* noop */
+  }
+}
+
+/** Studio が読み取った後にクリアする。 */
+export function consumeLoadIntent(): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LOAD_INTENT_KEY);
+    if (!raw) return null;
+    window.localStorage.removeItem(LOAD_INTENT_KEY);
+    const parsed = JSON.parse(raw) as { slot?: number };
+    if (typeof parsed.slot === "number" && Number.isInteger(parsed.slot)) {
+      return parsed.slot;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** 別タブで Library を開くための URL を組み立てる。 */
+export function buildLibraryUrl(): string {
+  if (typeof window === "undefined") return "?library=1";
+  const url = new URL(window.location.href);
+  url.searchParams.set("library", "1");
+  url.searchParams.delete("player");
+  url.searchParams.delete("slot");
+  url.hash = "";
+  return url.toString();
+}
+
 /** スロットの簡易ラベル (空 / 名前 + ノート数 + 保存日) */
 export function slotLabel(slot: number, data: SlotData | null): string {
   if (!data) return `スロット ${slot}: 空`;

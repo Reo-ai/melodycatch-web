@@ -39,6 +39,7 @@ import {
   RecordingSession,
   type Layer,
   type LayerId,
+  type NoteEvent,
   type QuantizeGrid,
 } from "../audio/recorder";
 import {
@@ -77,13 +78,11 @@ import { useComputerKeyboard } from "../input/useComputerKeyboard";
 import { useWebMIDI } from "../input/useWebMIDI";
 import type { Scale } from "../music/scale";
 import {
-  SLOT_COUNT,
-  buildPlayerUrl,
-  deleteSlot,
-  listSlots,
+  buildLibraryUrl,
+  consumeLoadIntent,
   loadSlot,
-  saveSlot,
-  type SlotData,
+  writeCurrent,
+  type CurrentSnapshot,
 } from "../audio/slots";
 import {
   chordLabelJa,
@@ -102,6 +101,99 @@ type ArmState = "idle" | "recording";
 
 const PALETTE_CHORD_DURATION_SEC = 1.4;
 const HISTORY_LIMIT = 50;
+
+/** コードパッド/進行プリセットを armed 楽器ごとにどのレイヤーへ流すか。 */
+type PaletteTarget = "chord" | "bass" | "synth" | "guitar";
+function paletteTargetForArmed(a: LayerId): PaletteTarget {
+  if (a === "guitar") return "guitar";
+  if (a === "synth") return "synth";
+  if (a === "bass") return "bass";
+  // melody / chord / drum armed のときは「コード」層に流す。
+  return "chord";
+}
+
+/**
+ * コードパッドの各パターン (アルペジオ / 全弾きリズム等) を、実際に鳴っている
+ * リズムそのまま「絶対時刻つき NoteEvent[]」に展開する。
+ * - baseSec: 開始時刻 (秒)
+ * - bpm: 8 分音符・4 分音符の長さ計算に使う
+ * これを PianoRoll に流すと、鳴っている音をそのままピアノロールで見られる。
+ */
+function buildPatternEvents(
+  pattern: ChordPatternId,
+  midiNotes: number[],
+  baseSec: number,
+  bpm: number,
+): NoteEvent[] {
+  const beatSec = 60 / Math.max(1, bpm);
+  const eighthSec = beatSec / 2;
+  const sorted = [...midiNotes].sort((a, b) => a - b);
+  const root = sorted[0] ?? 48;
+  const third = sorted[1] ?? root + 4;
+  const fifth = sorted[2] ?? root + 7;
+  const out: NoteEvent[] = [];
+  const pushBlock = (ms: number[], s: number, d: number, v = 0.8) => {
+    for (const m of ms) {
+      out.push({ midi: m, startSec: s, durationSec: Math.max(0.05, d), velocity: v });
+    }
+  };
+  const push1 = (m: number, s: number, d: number, v = 0.8) => {
+    out.push({ midi: m, startSec: s, durationSec: Math.max(0.05, d), velocity: v });
+  };
+  if (pattern === "guitar8th") {
+    const tones = sorted.length >= 3 ? sorted : [root, third, fifth];
+    const up = tones;
+    const down = [...tones].reverse().slice(1, tones.length - 1);
+    const seq = [...up, ...down, ...up].slice(0, 8);
+    seq.forEach((m, i) => push1(m, baseSec + i * eighthSec, eighthSec * 0.9, 0.85));
+  } else if (pattern === "guitar8thChord") {
+    pushBlock(midiNotes, baseSec, eighthSec, 0.85);
+  } else if (pattern === "piano1") {
+    pushBlock(midiNotes, baseSec, PALETTE_CHORD_DURATION_SEC, 0.8);
+  } else if (pattern === "piano2") {
+    const tones = [root, third, fifth, root + 12];
+    [...tones, ...tones].forEach((m, i) =>
+      push1(m, baseSec + i * eighthSec, eighthSec * 0.95, 0.8),
+    );
+  } else if (pattern === "piano3") {
+    const tones = [root + 12, fifth, third, root];
+    [...tones, ...tones].forEach((m, i) =>
+      push1(m, baseSec + i * eighthSec, eighthSec * 0.95, 0.8),
+    );
+  } else if (pattern === "piano4") {
+    const tones = [root, fifth, third, fifth];
+    [...tones, ...tones].forEach((m, i) =>
+      push1(m, baseSec + i * eighthSec, eighthSec * 0.95, 0.8),
+    );
+  } else if (pattern === "piano5") {
+    push1(root - 12, baseSec, beatSec * 0.95, 0.85);
+    const upper = [third, fifth, root + 12];
+    for (let i = 1; i < 4; i++) {
+      pushBlock(upper, baseSec + i * beatSec, beatSec * 0.9, 0.7);
+    }
+  } else if (pattern === "piano6") {
+    for (let i = 0; i < 8; i++) {
+      pushBlock(midiNotes, baseSec + i * eighthSec, eighthSec * 0.9, 0.7);
+    }
+  } else if (pattern === "piano7") {
+    for (let i = 0; i < 4; i++) {
+      pushBlock(midiNotes, baseSec + i * beatSec, beatSec * 0.9, 0.75);
+    }
+  } else if (pattern === "piano8") {
+    for (let i = 0; i < 2; i++) {
+      pushBlock(midiNotes, baseSec + i * beatSec * 2, beatSec * 2 * 0.95, 0.75);
+    }
+  } else if (pattern === "piano9") {
+    [0, 1.5, 3].forEach((b) =>
+      pushBlock(midiNotes, baseSec + b * beatSec, eighthSec * 2, 0.78),
+    );
+  } else if (pattern === "piano10") {
+    [0, 1.5, 2, 3.5].forEach((b) =>
+      pushBlock(midiNotes, baseSec + b * beatSec, eighthSec * 1.5, 0.78),
+    );
+  }
+  return out;
+}
 
 interface Snapshot {
   melody: Layer;
@@ -266,9 +358,6 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [editMode, setEditMode] = useState(false);
   const [eraserMode, setEraserMode] = useState(false);
   const [noteLength, setNoteLength] = useState<NoteLength>("1/8");
-  // 保存スロット: マウント時と保存/削除/ロード操作後に listSlots() を再評価
-  const [slots, setSlots] = useState<(SlotData | null)[]>(() => listSlots());
-  const refreshSlots = useCallback(() => setSlots(listSlots()), []);
   const [metronomeOn, setMetronomeOn] = useState(true);
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
@@ -297,6 +386,47 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setActiveChordIndex(null);
     setSpotlightLabel(null);
   }, [scale.rootPitchClass, scale.kind]);
+
+  // ---- Library タブとの同期 -------------------------------------------------
+  // Studio の現在状態を localStorage に写し続け、別タブの保存ライブラリから
+  // 保存ボタンを押せるようにする。Studio の操作中に書き込みが多発しないよう
+  // 軽く debounce する。
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handle = window.setTimeout(() => {
+      const snap: CurrentSnapshot = {
+        bpm,
+        scaleRoot: scale.rootPitchClass,
+        scaleKind: scale.kind,
+        updatedAt: Date.now(),
+        melody,
+        chord,
+        drum,
+        bass,
+        synth,
+        guitar,
+      };
+      writeCurrent(snap);
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [bpm, scale.rootPitchClass, scale.kind, melody, chord, drum, bass, synth, guitar]);
+
+  // Library タブから「このスロットをロードして」と依頼されたら受け取る。
+  // - マウント時に既存の loadIntent を消費 (Library で先にボタンを押されたケース)
+  // - 以降は storage イベントで他タブからの書き込みを検知。
+  const loadSlotRef = useRef<((slot: number) => void) | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const initial = consumeLoadIntent();
+    if (initial != null) loadSlotRef.current?.(initial);
+    function onStorage(e: StorageEvent) {
+      if (e.key !== "melodycatch.loadIntent") return;
+      const slot = consumeLoadIntent();
+      if (slot != null) loadSlotRef.current?.(slot);
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   // ---- 録音中レイヤを React に通知 (PianoRoll 即時更新用) ------------------
   // sessionRef から `snapshotNotes()` で確定 + 押しっぱなし両方のスナップショットを取り、
@@ -498,13 +628,96 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     onNoteOff: handleNoteOff,
   });
 
+  // ---- ライブ用 (非録音/非再生中) のピアノロール書き込みヘッド ---------------
+  // 録音も再生もしていないときに「コードパッドの連打」を t=0 に重ねないよう、
+  // ここに「次に書く位置」を保持し、イベントを書くたびに自動で進める。
+  // 録音/再生が始まったら無視され、開始時にリセットする。
+  const livePlayheadSecRef = useRef(0);
+
+  // ---- PianoRoll の再生ヘッド用 getter -------------------------------------
+  // 録音中はセッションの elapsed、再生中は Playback の elapsed。
+  // それ以外は livePlayheadSec (ライブ書き込み用カーソル) を、ユーザーが
+  // ルーラを直接クリックしたときは seekedSec を返す。
+  const getPlayheadSec = useCallback(() => {
+    if (sessionRef.current && stateRef.current === "recording") {
+      return sessionRef.current.elapsedSec();
+    }
+    if (playbackRef.current && playing) {
+      return playbackRef.current.elapsedSec();
+    }
+    return Math.max(seekedSec, livePlayheadSecRef.current);
+  }, [playing, seekedSec]);
+
+  // 再生/録音が止まったら、ライブ書き込みヘッドを seekedSec に戻す。
+  useEffect(() => {
+    if (!playing && state !== "recording") {
+      livePlayheadSecRef.current = seekedSec;
+    }
+  }, [playing, state, seekedSec]);
+
+  /** events の終端を計算 (max(start+duration)) */
+  function eventsEndSec(events: NoteEvent[]): number {
+    let end = 0;
+    for (const e of events) {
+      const t = e.startSec + e.durationSec;
+      if (t > end) end = t;
+    }
+    return end;
+  }
+
+  /** BPM の拍境界に最も近い位置に丸める (前方丸め: 次の拍頭)。 */
+  function snapToNextBeat(sec: number, bpmVal: number): number {
+    const beat = 60 / Math.max(1, bpmVal);
+    return Math.ceil((sec - 1e-6) / beat) * beat;
+  }
+
+  // ---- 鳴っているコード/パターンを target レイヤーへ流し込む -----------------
+  // 「コードパッドや進行プリセットで鳴っている音を、リアルタイムにピアノロールへ
+  //  反映する」ためのユーティリティ。
+  // 録音中で armed===target のときはレコーダーセッションの layer.notes に直接 push
+  // して scheduleRefresh、それ以外のときは React state を直接 append する。
+  // 非録音/非再生時はライブ書き込みヘッドを events の終端まで進める。
+  const reflectEventsToTarget = useCallback(
+    (events: NoteEvent[], target: PaletteTarget) => {
+      if (events.length === 0) return;
+      if (
+        stateRef.current === "recording" &&
+        armedRef.current === target &&
+        sessionRef.current
+      ) {
+        sessionRef.current.addEvents(events);
+        scheduleRefresh();
+        return;
+      }
+      pushHistory();
+      if (target === "guitar") {
+        setGuitar((cur) => ({ ...cur, notes: [...cur.notes, ...events] }));
+      } else if (target === "synth") {
+        setSynth((cur) => ({ ...cur, notes: [...cur.notes, ...events] }));
+      } else if (target === "bass") {
+        setBass((cur) => ({ ...cur, notes: [...cur.notes, ...events] }));
+      } else {
+        setChord((cur) => ({ ...cur, notes: [...cur.notes, ...events] }));
+      }
+      // ライブ書き込みヘッドを events の終端まで進める。
+      // 録音/再生中はそちらが元々時間を進めているので動かさない。
+      if (stateRef.current !== "recording" && !playing) {
+        const end = eventsEndSec(events);
+        if (end > livePlayheadSecRef.current) {
+          livePlayheadSecRef.current = end;
+        }
+      }
+    },
+    [pushHistory, scheduleRefresh, playing],
+  );
+
   // ---- コードパレット --------------------------------------------------------
   // armed されている楽器に合わせてコードを発音する。
   // - chord/melody/drum: ピアノ
   // - bass: ベース (ルートを 1oct 下げて重ねる)
   // - synth: シンセ
   // - guitar: ギター (ストロークっぽくずらして発音)
-  // 録音は「コード層」または「ギター層」が armed のときに行う。
+  // 鳴った音は録音中・録音外問わず、armed 楽器に対応する target レイヤーへ反映する。
   const onPaletteChord = useCallback(
     async (c: HarmonicChord, midiNotes: number[]) => {
       await arm();
@@ -528,31 +741,33 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setActiveChordIndex(null);
       }, PALETTE_CHORD_DURATION_SEC * 1000);
 
-      // コード層 / ギター層 / シンセ層 を録音中なら記録
-      if (
-        stateRef.current === "recording" &&
-        (armedRef.current === "chord" ||
-          armedRef.current === "guitar" ||
-          armedRef.current === "synth") &&
-        sessionRef.current
-      ) {
-        sessionRef.current.recordChord(
-          midiNotes,
-          PALETTE_CHORD_DURATION_SEC,
-          0.8,
-        );
+      // 鳴った音をピアノロールに反映 (録音中・録音外問わず target レイヤーへ追加)。
+      const target = paletteTargetForArmed(armedRef.current);
+      // 非録音/非再生中は拍境界に揃えて、見た目もリズムも綺麗に並ぶようにする。
+      const rawBase = getPlayheadSec();
+      const base =
+        stateRef.current === "recording" || playing
+          ? rawBase
+          : snapToNextBeat(rawBase, bpm);
+      const events: NoteEvent[] = midiNotes.map((m) => ({
+        midi: m,
+        startSec: base,
+        durationSec: PALETTE_CHORD_DURATION_SEC,
+        velocity: 0.8,
+      }));
+      reflectEventsToTarget(events, target);
+      if (stateRef.current === "recording" && armedRef.current === target) {
         setChordRecCount((n) => n + 1);
-        scheduleRefresh();
       }
     },
-    [arm, scale, scheduleRefresh],
+    [arm, scale, bpm, playing, getPlayheadSec, reflectEventsToTarget],
   );
 
   // ---- コードパレット: 楽器別サブパターン -----------------------------------
   // ChordPalette の各コードボタンの真下に出る補助ボタンから呼ばれる。
   // 【ギター armed】
   //   - guitar8th:      8 分音符アルペジオ (コードトーンを 1-2-3-4-5-4-3-2 風に)
-  //   - guitar8thChord: 8 分音符でコード全弾き × 8 (ジャカジャカ)
+  //   - guitar8thChord: コード全弾き 1 回 (8 分音符長・全弦完全同時。ストロークのずらしなし)
   // 【ピアノ (コード層) armed】
   //   アルペジオ系:
   //     - piano1:  ブロック (全音同時 × 1 回)
@@ -599,14 +814,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           );
         });
       } else if (pattern === "guitar8thChord") {
-        // 8 分音符でコード全弾き × 8 ヒット (= 1 小節分のストローク)。
-        // guitarChordOn はストロークっぽく 14ms ずつずらして発音するので、
-        // 8 分音符グリッドごとに 1 回呼べばギターらしい「ジャカジャカ」感が出る。
-        for (let i = 0; i < 8; i++) {
-          window.setTimeout(
-            () => guitarChordOn(midiNotes, 0.8, eighthSec * 0.9),
-            i * eighthSec * 1000,
-          );
+        // 8 分音符長で「コードを一回だけ」鳴らす。
+        // guitarChordOn だと弦ごとに 14ms ずつずれるため弱いアルペジオに聴こえる。
+        // ユーザー要望: ジャラ感ゼロで完全に同時に鳴らす → guitarTriggerNote を直接並列発音。
+        for (const m of midiNotes) {
+          guitarTriggerNote(m, eighthSec * 0.9, 0.85);
         }
       } else if (pattern === "piano1") {
         // ブロックコード: 全音同時。
@@ -717,24 +929,21 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setActiveChordIndex(null);
       }, PALETTE_CHORD_DURATION_SEC * 1000);
 
-      // 録音: コード単位で 1 イベントだけ記録 (パターン内部の各ヒットは記録しない)。
-      if (
-        stateRef.current === "recording" &&
-        (armedRef.current === "chord" ||
-          armedRef.current === "guitar" ||
-          armedRef.current === "synth") &&
-        sessionRef.current
-      ) {
-        sessionRef.current.recordChord(
-          midiNotes,
-          PALETTE_CHORD_DURATION_SEC,
-          0.8,
-        );
+      // 鳴ったパターンの各ヒットをそのまま PianoRoll に反映 (録音中/録音外問わず)。
+      // 非録音/非再生中は次の拍頭に揃えて、パターンが BPM のグリッドに沿うように。
+      const target = paletteTargetForArmed(armedRef.current);
+      const rawBase = getPlayheadSec();
+      const base =
+        stateRef.current === "recording" || playing
+          ? rawBase
+          : snapToNextBeat(rawBase, bpm);
+      const events = buildPatternEvents(pattern, midiNotes, base, bpm);
+      reflectEventsToTarget(events, target);
+      if (stateRef.current === "recording" && armedRef.current === target) {
         setChordRecCount((n) => n + 1);
-        scheduleRefresh();
       }
     },
-    [arm, scale, scheduleRefresh, bpm],
+    [arm, scale, bpm, playing, getPlayheadSec, reflectEventsToTarget],
   );
 
   // ---- Z〜M でコードパレットの I〜vii° を発音 -----------------------------
@@ -797,21 +1006,27 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setActiveChordIndex(idx >= 0 ? idx : null);
         setPlaybackHighlight(new Set(midiNotes));
         setSelectedChord(c);
-        if (
-          stateRef.current === "recording" &&
-          (armedRef.current === "chord" ||
-            armedRef.current === "guitar" ||
-            armedRef.current === "synth") &&
-          sessionRef.current
-        ) {
-          sessionRef.current.recordChord(midiNotes, durationSec, 0.8);
+        // 進行プリセットでも、鳴った瞬間の音をそのまま PianoRoll に反映する。
+        const target = paletteTargetForArmed(armedRef.current);
+        const rawBase = getPlayheadSec();
+        const base =
+          stateRef.current === "recording" || playing
+            ? rawBase
+            : snapToNextBeat(rawBase, bpm);
+        const events: NoteEvent[] = midiNotes.map((m) => ({
+          midi: m,
+          startSec: base,
+          durationSec,
+          velocity: 0.8,
+        }));
+        reflectEventsToTarget(events, target);
+        if (stateRef.current === "recording" && armedRef.current === target) {
           setChordRecCount((n) => n + 1);
-          scheduleRefresh();
         }
       }, delayMs);
       progressionTimersRef.current.push(t);
     },
-    [arm, scale, scheduleRefresh],
+    [arm, scale, bpm, playing, getPlayheadSec, reflectEventsToTarget],
   );
 
   const onProgressionEnd = useCallback(() => {
@@ -844,17 +1059,6 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       }
     };
   }, [state, playing]);
-
-  // ---- PianoRoll の再生ヘッド用 getter -------------------------------------
-  const getPlayheadSec = useCallback(() => {
-    if (sessionRef.current && stateRef.current === "recording") {
-      return sessionRef.current.elapsedSec();
-    }
-    if (playbackRef.current && playing) {
-      return playbackRef.current.elapsedSec();
-    }
-    return seekedSec;
-  }, [playing, seekedSec]);
 
   // ---- 録音操作 -------------------------------------------------------------
   async function startRecord() {
@@ -966,77 +1170,52 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     else setDrum(emptyLayer("drum", "ドラム"));
   }
 
-  /** 現在の譜面をスロット番号 N (1..10) に保存。 */
-  function handleSaveSlot(slot: number) {
-    const existing = loadSlot(slot);
-    const defaultName = existing?.name ?? `スロット ${slot}`;
-    const name =
-      typeof window !== "undefined"
-        ? window.prompt(
-            existing
-              ? `スロット ${slot} は既に使われています。上書きしますか？\n新しい名前を入力してください。`
-              : `スロット ${slot} に保存します。\n名前を入力してください。`,
-            defaultName,
-          )
-        : defaultName;
-    if (name == null) return; // キャンセル
-    const data: SlotData = {
-      name: name.trim() || `スロット ${slot}`,
-      savedAt: Date.now(),
-      bpm,
-      scaleRoot: scale.rootPitchClass,
-      scaleKind: scale.kind,
-      melody,
-      chord,
-      drum,
-      bass,
-      synth,
-      guitar,
-    };
-    const ok = saveSlot(slot, data);
-    if (!ok && typeof window !== "undefined") {
-      window.alert("保存に失敗しました (localStorage の容量超過の可能性)。");
-    }
-    refreshSlots();
-  }
+  /** Library タブからの「このスロットをロードして」依頼を受けて、現在のセッションに読み込む。 */
+  const loadSlotIntoStudio = useCallback(
+    (slot: number) => {
+      const data = loadSlot(slot);
+      if (!data) {
+        if (typeof window !== "undefined") {
+          window.alert(`スロット ${slot} は空です。`);
+        }
+        return;
+      }
+      const currentlyHasAnything =
+        melody.notes.length > 0 ||
+        chord.notes.length > 0 ||
+        drum.notes.length > 0 ||
+        bass.notes.length > 0 ||
+        synth.notes.length > 0 ||
+        guitar.notes.length > 0;
+      if (
+        currentlyHasAnything &&
+        typeof window !== "undefined" &&
+        !window.confirm(
+          `スロット ${slot}「${data.name?.trim() || `スロット ${slot}`}」を読み込みます。現在の譜面は失われます (元に戻る で復元可)。よろしいですか？`,
+        )
+      ) {
+        return;
+      }
+      pushHistory();
+      setMelody(data.melody);
+      setChord(data.chord);
+      setDrum(data.drum);
+      setBass(data.bass);
+      setSynth(data.synth);
+      setGuitar(data.guitar);
+      setBpm(data.bpm);
+    },
+    [melody, chord, drum, bass, synth, guitar, pushHistory],
+  );
 
-  /** スロットの内容を現在のセッションに読み込む (現在の作業内容は失われるので確認)。 */
-  function handleLoadSlot(slot: number) {
-    const data = loadSlot(slot);
-    if (!data) return;
-    if (
-      hasAnything &&
-      typeof window !== "undefined" &&
-      !window.confirm(
-        `スロット ${slot} を読み込みます。現在の譜面は失われます (元に戻る で復元可)。よろしいですか？`,
-      )
-    ) {
-      return;
-    }
-    pushHistory();
-    setMelody(data.melody);
-    setChord(data.chord);
-    setDrum(data.drum);
-    setBass(data.bass);
-    setSynth(data.synth);
-    setGuitar(data.guitar);
-    setBpm(data.bpm);
-  }
+  // storage イベントから常に最新の loadSlotIntoStudio を呼べるよう ref に同期。
+  useEffect(() => {
+    loadSlotRef.current = loadSlotIntoStudio;
+  }, [loadSlotIntoStudio]);
 
-  function handleDeleteSlot(slot: number) {
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm(`スロット ${slot} を削除します。よろしいですか？`)
-    ) {
-      return;
-    }
-    deleteSlot(slot);
-    refreshSlots();
-  }
-
-  function handleOpenSlotInNewTab(slot: number) {
+  function openLibraryTab() {
     if (typeof window === "undefined") return;
-    const url = buildPlayerUrl(slot);
+    const url = buildLibraryUrl();
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
@@ -1671,8 +1850,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             <button
               type="button"
               onClick={() => {
-                setEditMode((v) => !v);
-                setEraserMode(false);
+                setEditMode((v) => {
+                  const next = !v;
+                  // OFF にするときはサブモード (消しゴム) も解除。
+                  if (!next) setEraserMode(false);
+                  return next;
+                });
               }}
               disabled={state === "recording" || playing}
               title={`編集モード ON のときは、ピアノロール上をクリックしてノートを追加 / 既存ノートをドラッグで自由移動 / 両端ドラッグで長さ変更 / 空エリアをドラッグで範囲選択 → Delete で一括削除 / Esc で選択解除。${armedLabel}層が編集対象です。`}
@@ -1685,23 +1868,45 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             >
               ✎ 編集モード {editMode ? "ON" : "OFF"}
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEraserMode((v) => !v);
-                setEditMode(false);
-              }}
-              disabled={state === "recording" || playing}
-              title="消しゴムモード: ピアノロール上のノートをクリックすると即削除します。録音や再生はそのまま可。"
-              className={[
-                "rounded-full px-3 py-0.5 text-xs font-semibold shadow-sm disabled:opacity-40",
-                eraserMode
-                  ? "bg-amber-500 text-white hover:bg-amber-600"
-                  : "border border-ink-300 bg-white text-ink-700 hover:border-accent-300",
-              ].join(" ")}
-            >
-              🧽 消しゴム {eraserMode ? "ON" : "OFF"}
-            </button>
+            {/* 編集モード ON のときだけサブモード切り替え (通常 / 消しゴム) を表示。 */}
+            {editMode && (
+              <div
+                className="inline-flex items-center gap-0.5 rounded-full border border-ink-300 bg-white p-0.5 shadow-sm"
+                role="group"
+                aria-label="編集サブモード"
+              >
+                <button
+                  type="button"
+                  onClick={() => setEraserMode(false)}
+                  disabled={state === "recording" || playing}
+                  title="通常: クリックでノート追加 / ドラッグで移動・リサイズ・範囲選択。"
+                  className={[
+                    "rounded-full px-2.5 py-0.5 text-xs font-semibold transition disabled:opacity-40",
+                    !eraserMode
+                      ? "bg-rose-500 text-white"
+                      : "text-ink-700 hover:bg-ink-100",
+                  ].join(" ")}
+                  aria-pressed={!eraserMode}
+                >
+                  ✎ 通常
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEraserMode(true)}
+                  disabled={state === "recording" || playing}
+                  title="消しゴム: ピアノロール上のノートをクリックすると即削除します。"
+                  className={[
+                    "rounded-full px-2.5 py-0.5 text-xs font-semibold transition disabled:opacity-40",
+                    eraserMode
+                      ? "bg-amber-500 text-white"
+                      : "text-ink-700 hover:bg-ink-100",
+                  ].join(" ")}
+                  aria-pressed={eraserMode}
+                >
+                  🧽 消しゴム
+                </button>
+              </div>
+            )}
             <button
               type="button"
               onClick={clearAllLayers}
@@ -1778,13 +1983,19 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             </button>
           </div>
         </div>
-        {editMode && (
+        {editMode && !eraserMode && (
           <div className="mb-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">
-            ✎ 編集モード: 空の場所をドラッグで範囲選択 / クリックで <b>{armedLabel}層</b> にノート追加 (長さ <b>{noteLength}</b>、ドラムは 1 ヒット)。
+            ✎ 編集モード (通常): 空の場所をドラッグで範囲選択 / クリックで <b>{armedLabel}層</b> にノート追加 (長さ <b>{noteLength}</b>、ドラムは 1 ヒット)。
             ノートをドラッグで自由に移動 (時間 + 音程)。両端を掴むと長さ調整 (範囲選択中は全ノートが同じ量だけ伸縮)。
             選択中に <b>Delete</b>/<b>Backspace</b> で一括削除、<b>Esc</b> で選択解除。
             移動・リサイズは小節グリッドへスナップ (右上のセレクタで分解能を変更)。
             <b>Cmd</b> / <b>Ctrl</b> を押しながら操作するとスナップを一時的に無効化。
+          </div>
+        )}
+        {editMode && eraserMode && (
+          <div className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            🧽 編集モード (消しゴム): ピアノロール上のノートをクリックすると即削除します。
+            通常編集に戻すには上の <b>「✎ 通常」</b> を選択してください。
           </div>
         )}
         <PianoRoll
@@ -1857,102 +2068,6 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </button>
         </div>
 
-        {/* 保存スロット (10 個) */}
-        <div className="mt-4 rounded-xl border border-ink-200 bg-white p-3 shadow-sm">
-          <div className="mb-2 flex items-baseline justify-between">
-            <h3 className="text-sm font-semibold text-ink-700">
-              💾 保存スロット
-              <span className="ml-2 text-xs font-normal text-ink-500">
-                ({slots.filter((s) => s != null).length} / {SLOT_COUNT} 使用中)
-              </span>
-            </h3>
-            <span className="text-[11px] text-ink-500">
-              localStorage に保存 · 別タブで再生可
-            </span>
-          </div>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {slots.map((data, i) => {
-              const slot = i + 1;
-              const used = data != null;
-              const title = data?.name?.trim() || `スロット ${slot}`;
-              const noteTotal = data
-                ? data.melody.notes.length +
-                  data.chord.notes.length +
-                  data.drum.notes.length +
-                  data.bass.notes.length +
-                  data.synth.notes.length +
-                  data.guitar.notes.length
-                : 0;
-              return (
-                <div
-                  key={slot}
-                  className={[
-                    "flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2",
-                    used
-                      ? "border-emerald-200 bg-emerald-50"
-                      : "border-ink-200 bg-ink-50",
-                  ].join(" ")}
-                >
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-xs font-bold text-ink-700 shadow-sm">
-                    {slot}
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-xs font-semibold text-ink-800">
-                      {used ? title : "(空き)"}
-                    </span>
-                    {used && (
-                      <span className="text-[10px] text-ink-500">
-                        {noteTotal} ノート · BPM {data.bpm}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => handleSaveSlot(slot)}
-                      disabled={state === "recording" || playing}
-                      title={
-                        used
-                          ? "現在の譜面でこのスロットを上書きします"
-                          : "現在の譜面をこのスロットに保存します"
-                      }
-                      className="rounded-full bg-accent-500 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-accent-600 disabled:opacity-40"
-                    >
-                      {used ? "上書き保存" : "保存"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleLoadSlot(slot)}
-                      disabled={!used || state === "recording" || playing}
-                      title="このスロットの内容を Studio に読み込みます"
-                      className="rounded-full border border-ink-300 bg-white px-2 py-0.5 text-[11px] font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
-                    >
-                      ロード
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenSlotInNewTab(slot)}
-                      disabled={!used}
-                      title="別タブを開いてこのスロットを再生します"
-                      className="rounded-full border border-violet-300 bg-white px-2 py-0.5 text-[11px] font-medium text-violet-700 hover:bg-violet-50 disabled:opacity-40"
-                    >
-                      🎧 別タブで再生
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteSlot(slot)}
-                      disabled={!used || state === "recording" || playing}
-                      title="このスロットを削除します"
-                      className="rounded-full border border-rose-200 bg-white px-2 py-0.5 text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-40"
-                    >
-                      🗑
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
       </section>
 
       {/* ⑤ 入力カルーセル: コードパレット → スケールミニピアノ → 88鍵ピアノ */}
@@ -2088,6 +2203,28 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           BPM <b className="font-mono">{bpm}</b> 連動: 1 コード = 1 小節 (
           {progressionGapSec.toFixed(2)} 秒)。ドラム②の BPM を変えると進行も追従します。
         </p>
+      </section>
+
+      {/* ⑦ 保存ゾーン (画面の一番下) */}
+      <section className="rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-50 via-fuchsia-50 to-violet-50 p-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-ink-700">
+              💾 保存・ライブラリ
+            </h2>
+            <p className="mt-1 text-xs text-ink-500">
+              現在の譜面 (BPM・スケール・6 レイヤー) は自動的に別タブの保存ライブラリと同期しています。
+              スロットへの保存・読み込み・別タブ再生はライブラリで行えます。
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={openLibraryTab}
+            className="rounded-full bg-violet-600 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-violet-700"
+          >
+            📂 保存ライブラリを別タブで開く
+          </button>
+        </div>
       </section>
     </div>
   );

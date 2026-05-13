@@ -13,6 +13,7 @@
 import { useMemo, useState } from "react";
 import Studio from "./components/Studio";
 import SavedPlayer from "./components/SavedPlayer";
+import LibraryPage from "./components/LibraryPage";
 import { C_MAJOR, scaleDisplayName, type Scale } from "./music/scale";
 
 /** URL ?player=1 が付いていれば別タブ再生モード。 */
@@ -22,9 +23,17 @@ function isPlayerRoute(): boolean {
   return url.searchParams.get("player") === "1";
 }
 
+/** URL ?library=1 が付いていれば保存ライブラリモード。 */
+function isLibraryRoute(): boolean {
+  if (typeof window === "undefined") return false;
+  const url = new URL(window.location.href);
+  return url.searchParams.get("library") === "1";
+}
+
 export default function App() {
   const [scale, setScale] = useState<Scale>(C_MAJOR);
   const playerRoute = useMemo(() => isPlayerRoute(), []);
+  const libraryRoute = useMemo(() => isLibraryRoute(), []);
 
   const scaleName = useMemo(() => scaleDisplayName(scale, "ja"), [scale]);
 
@@ -52,6 +61,34 @@ export default function App() {
         </header>
         <main>
           <SavedPlayer />
+        </main>
+      </div>
+    );
+  }
+
+  if (libraryRoute) {
+    return (
+      <div className="min-h-screen bg-ink-50 text-ink-900">
+        <header className="border-b border-ink-200 bg-gradient-to-r from-violet-950 via-fuchsia-900 to-violet-950 text-white shadow-md">
+          <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-3">
+            <h1 className="text-lg font-extrabold tracking-tight">
+              Melody Catch · 保存ライブラリ
+            </h1>
+            <a
+              href={(() => {
+                if (typeof window === "undefined") return "/";
+                const u = new URL(window.location.href);
+                u.searchParams.delete("library");
+                return u.toString();
+              })()}
+              className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white hover:bg-white/20"
+            >
+              Studio を開く
+            </a>
+          </div>
+        </header>
+        <main>
+          <LibraryPage />
         </main>
       </div>
     );

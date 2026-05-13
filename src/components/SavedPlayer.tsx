@@ -8,9 +8,10 @@
  *   起動時のスナップショットを使う (リロードで最新化)。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Playback, type LayerId, type Layer } from "../audio/recorder";
+import { Playback, emptyLayer, type LayerId, type Layer } from "../audio/recorder";
 import { loadSlot, parsePlayerSlotFromLocation, type SlotData } from "../audio/slots";
 import { ensureAudio } from "../audio/pianoEngine";
+import PianoRoll from "./PianoRoll";
 
 const LAYER_LABEL: Record<LayerId, string> = {
   melody: "メロディ",
@@ -186,6 +187,29 @@ export default function SavedPlayer() {
           </span>
         </div>
       </header>
+
+      <section className="mb-6 rounded-2xl border border-ink-200 bg-white p-3 shadow-sm">
+        <div className="mb-2 flex items-baseline justify-between">
+          <h3 className="text-sm font-semibold text-ink-700">🎹 ピアノロール</h3>
+          <span className="text-[11px] text-ink-500">
+            読み取り専用 · 再生中はヘッドが動きます
+          </span>
+        </div>
+        <PianoRoll
+          melody={data.melody ?? emptyLayer("melody", "メロディ")}
+          chord={data.chord ?? emptyLayer("chord", "コード")}
+          drum={data.drum ?? emptyLayer("drum", "ドラム")}
+          bass={data.bass ?? emptyLayer("bass", "ベース")}
+          synth={data.synth ?? emptyLayer("synth", "シンセ")}
+          guitar={data.guitar ?? emptyLayer("guitar", "ギター")}
+          isActive={playing}
+          recordingLayerId={null}
+          getPlayheadSec={() =>
+            playbackRef.current ? playbackRef.current.elapsedSec() : 0
+          }
+          bpm={data.bpm}
+        />
+      </section>
 
       <section className="rounded-2xl border border-ink-200 bg-white p-5 shadow-sm">
         <h3 className="mb-3 text-sm font-semibold text-ink-700">トラック構成</h3>

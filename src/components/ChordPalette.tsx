@@ -25,7 +25,7 @@ import type { Scale } from "../music/scale";
 export type ChordPatternId =
   // ギター系
   | "guitar8th" // 8 分音符アルペジオ (コードトーンを上下行)
-  | "guitar8thChord" // 8 分音符でコード全弾き × 8 ヒット
+  | "guitar8thChord" // 8 分音符長の短いストロークを 1 回
   // ピアノ系 — アルペジオ / 分散和音
   | "piano1" // ブロック (全音同時 × 1 回)
   | "piano2" // 上行アルペジオ
@@ -145,7 +145,7 @@ export default function ChordPalette({
               </span>
             </button>
 
-            {/* ギター: 2 個の 8 分音符ボタン (アルペジオ / コード全弾き) */}
+            {/* ギター: 2 個の 8 分音符ボタン (アルペジオ / 短いコードストローク × 1 回) */}
             {isGuitar && onPlayPattern && (
               <div className="grid grid-cols-2 gap-0.5">
                 <button
@@ -159,7 +159,7 @@ export default function ChordPalette({
                 <button
                   type="button"
                   onClick={() => onPlayPattern(chord, voicing, "guitar8thChord")}
-                  title="8 分音符でコード全弾きを 1 小節分 (8 ヒット) 鳴らす"
+                  title="8 分音符長の短いコードストロークを 1 回鳴らす"
                   className="rounded-md border border-amber-500 bg-amber-100 px-0.5 py-1 text-[10px] font-semibold text-amber-800 shadow-sm hover:bg-amber-200 active:scale-95"
                 >
                   ♫ コード

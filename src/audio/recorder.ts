@@ -125,6 +125,17 @@ export class RecordingSession {
   }
 
   /**
+   * 既に絶対時刻 (startSec) を持ったノートイベント列を、現在のレイヤーに
+   * 直接差し込む。コードパッドのパターン (アルペジオ等) を「鳴っているまま」の
+   * リズムで PianoRoll に映したい場合に使う。
+   */
+  addEvents(events: NoteEvent[]) {
+    for (const e of events) {
+      this.layer.notes.push(e);
+    }
+  }
+
+  /**
    * 録音中の最新ノート列のスナップショットを返す (PianoRoll リアルタイム描画用)。
    * - 確定ノートに加えて、まだリリースされていない持続音 (active) も
    *   `現在時刻まで伸びた仮ノート` として含める。
