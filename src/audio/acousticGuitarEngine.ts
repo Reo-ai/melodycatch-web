@@ -2,16 +2,20 @@
  * アコースティックギター (歪みのない撥弦楽器)。
  *
  * 構成:
- * - 音源は **Tone.PluckSynth (Karplus-Strong)** ボイスプール × 8 (エレキと同じ仕組み)。
- * - ただしエレキとは違い、歪み (Distortion / Chebyshev) は **無し**。
- * - ボディの胴鳴り感を出すため、軽い EQ + 控えめなリバーブだけを通す。
+ * - 音源は **Tone.PluckSynth (Karplus-Strong)** ボイスプール × 8。
+ * - 歪み (Distortion / Chebyshev) は **無し**。
+ * - 木のボディの胴鳴り (低域共鳴) と弦の煌めき (高域ピーク) を EQ で作り込み、
+ *   さらに軽いコーラスで複数の弦が干渉するうねり感を演出する。
  *
  * シグナルチェーン:
- *   PluckSynth × 8
- *     ──▶ HighPass(80Hz)        ※ローカット (もたつき防止)
- *     ──▶ MidPeak(2.2kHz +3dB)  ※アコースティックらしい中高域の煌めき
- *     ──▶ LowPass(7.5kHz)       ※高域はそこまで暴れない
- *     ──▶ Gain ──▶ Reverb(やや長め) ──▶ Destination
+ *   PluckSynth × 8 (attackNoise 1.6, dampening 4500, resonance 0.99)
+ *     ──▶ HighPass(70Hz)               ※低域のもたつきを除去
+ *     ──▶ BodyPeak(140Hz, +5dB)        ※ボディ共鳴 (胴鳴り)
+ *     ──▶ MidPeak(2.2kHz, +2dB)        ※コードの輪郭
+ *     ──▶ PresencePeak(3.8kHz, +3dB)   ※ピックのアタック・煌めき
+ *     ──▶ LowPass(9kHz)                ※耳に痛い超高域だけカット
+ *     ──▶ Chorus(0.6Hz, depth 0.4, wet 0.18) ※弦同士の自然なうねり
+ *     ──▶ Gain ──▶ Reverb(decay 2.6, wet 0.26) ──▶ Destination
  */
 
 import * as Tone from "tone";
@@ -20,8 +24,11 @@ import { midiToNoteString } from "../music/pitch";
 const VOICE_COUNT = 8;
 
 let acReverb: Tone.Reverb | null = null;
+let acChorus: Tone.Chorus | null = null;
 let acLowpass: Tone.Filter | null = null;
+let acPresencePeak: Tone.Filter | null = null;
 let acMidPeak: Tone.Filter | null = null;
+let acBodyPeak: Tone.Filter | null = null;
 let acHighpass: Tone.Filter | null = null;
 let acGain: Tone.Gain | null = null;
 let acVoices: Tone.PluckSynth[] = [];
@@ -34,32 +41,55 @@ const REPLUCK_DECAY_DB = -2;
 
 function ensureAcoustic() {
   if (acVoices.length > 0) return;
-  acReverb = new Tone.Reverb({ decay: 2.2, wet: 0.22 }).toDestination();
-  acGain = new Tone.Gain(0.65).connect(acReverb);
-  acLowpass = new Tone.Filter({
-    frequency: 7500,
-    type: "lowpass",
-    Q: 0.6,
-    rolloff: -24,
+  acReverb = new Tone.Reverb({ decay: 2.6, wet: 0.26 }).toDestination();
+  acGain = new Tone.Gain(0.6).connect(acReverb);
+  acChorus = new Tone.Chorus({
+    frequency: 0.6,
+    delayTime: 3.5,
+    depth: 0.4,
+    type: "sine",
+    spread: 180,
+    wet: 0.18,
   }).connect(acGain);
+  acChorus.start();
+  acLowpass = new Tone.Filter({
+    frequency: 9000,
+    type: "lowpass",
+    Q: 0.5,
+    rolloff: -24,
+  }).connect(acChorus);
+  acPresencePeak = new Tone.Filter({
+    frequency: 3800,
+    type: "peaking",
+    Q: 0.8,
+    gain: 3,
+  }).connect(acLowpass);
   acMidPeak = new Tone.Filter({
     frequency: 2200,
     type: "peaking",
     Q: 1.0,
-    gain: 3,
-  }).connect(acLowpass);
-  acHighpass = new Tone.Filter({
-    frequency: 80,
-    type: "highpass",
+    gain: 2,
+  }).connect(acPresencePeak);
+  acBodyPeak = new Tone.Filter({
+    frequency: 140,
+    type: "peaking",
+    Q: 1.0,
+    gain: 5,
   }).connect(acMidPeak);
+  acHighpass = new Tone.Filter({
+    frequency: 70,
+    type: "highpass",
+  }).connect(acBodyPeak);
 
   for (let i = 0; i < VOICE_COUNT; i++) {
     const v = new Tone.PluckSynth({
-      attackNoise: 1.2,
-      // アコギは弦のダンピングが弱い → dampening を低めに (倍音が豊か)
-      dampening: 3200,
-      resonance: 0.985,
-      release: 0.8,
+      // ピックでの弾弦感をしっかり出すために noise を強めに。
+      attackNoise: 1.6,
+      // アコギは倍音が豊か → dampening を上げて高域が長く残るように。
+      dampening: 4500,
+      // サステインを長めに (鉄弦アコギは減衰がゆっくり)。
+      resonance: 0.99,
+      release: 1.0,
     });
     v.volume.value = -2;
     v.connect(acHighpass);

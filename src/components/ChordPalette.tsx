@@ -30,7 +30,7 @@ export type ChordPatternId =
   | "acoustic8th" // 8 分音符アルペジオ (アコギ)
   | "acoustic8thChord" // 8 分音符長の短いストロークを 1 回 (アコギ)
   // ピアノ系 — アルペジオ / 分散和音
-  | "piano1" // ブロック (全音同時 × 1 回)
+  | "piano1" // 4 分音符 1 発 (短いブロックコード)
   | "piano2" // 上行アルペジオ
   | "piano3" // 下行アルペジオ
   | "piano4" // アルベルティ
@@ -82,7 +82,7 @@ const PIANO_PATTERN_IDS = [
 ] as const;
 type PianoPatternId = (typeof PIANO_PATTERN_IDS)[number];
 const PIANO_PATTERN_LABELS: Record<PianoPatternId, { num: string; jp: string }> = {
-  piano1: { num: "1", jp: "ブロック" },
+  piano1: { num: "1", jp: "4 分音符 1 発 (短く)" },
   piano2: { num: "2", jp: "上行アルペジオ" },
   piano3: { num: "3", jp: "下行アルペジオ" },
   piano4: { num: "4", jp: "アルベルティ" },

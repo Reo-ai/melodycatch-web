@@ -157,8 +157,8 @@ function buildPatternEvents(
   } else if (pattern === "guitar8thChord" || pattern === "acoustic8thChord") {
     pushBlock(midiNotes, baseSec, eighthSec, 0.85);
   } else if (pattern === "piano1") {
-    // 1 小節 (4 拍) ピッタリのブロックコード。BPM が変わってもグリッドに合う。
-    pushBlock(midiNotes, baseSec, beatSec * 4 * 0.98, 0.8);
+    // 4 分音符 1 発 (短く弾く)。コードパッド (長押し) との差別化用。
+    pushBlock(midiNotes, baseSec, beatSec * 0.9, 0.8);
   } else if (pattern === "piano2") {
     const tones = [root, third, fifth, root + 12];
     [...tones, ...tones].forEach((m, i) =>
@@ -833,8 +833,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           acousticTriggerNote(m, eighthSec * 0.9, 0.85);
         }
       } else if (pattern === "piano1") {
-        // ブロックコード: 1 小節 (4 拍) ピッタリ全音同時。BPM 変動にも対応。
-        chordOn(midiNotes, 0.8, beatSec * 4 * 0.98);
+        // 4 分音符 1 発: 短いブロックコードを 1 回だけ。コードパッドとの差別化用。
+        chordOn(midiNotes, 0.8, beatSec * 0.9);
       } else if (pattern === "piano2") {
         // 上行アルペジオ (root → 3rd → 5th → octave-root → ...) 8 ヒット。
         const tones = [root, third, fifth, root + 12];
