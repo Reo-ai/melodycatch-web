@@ -51,6 +51,8 @@ interface PianoRollProps {
   bpm?: number;
   /** 編集モード: クリックでノート追加/削除 */
   editMode?: boolean;
+  /** 消しゴムモード: クリックでノートを削除のみ (追加・移動・選択はしない) */
+  eraserMode?: boolean;
   /** 編集モード時の追加対象レイヤ */
   armedLayer?: LayerId;
   /** 空白クリック → ノート追加 */
@@ -274,6 +276,7 @@ export default function PianoRoll({
   getPlayheadSec,
   bpm,
   editMode = false,
+  eraserMode = false,
   armedLayer,
   onAddNote,
   onDeleteNote,
@@ -661,6 +664,14 @@ export default function PianoRoll({
     layerId: LayerId,
     index: number,
   ) {
+    // 消しゴムモード: クリック即削除
+    if (eraserMode && onDeleteNote) {
+      if (e.button !== 0 && e.pointerType === "mouse") return;
+      e.stopPropagation();
+      e.preventDefault();
+      onDeleteNote(layerId, index);
+      return;
+    }
     if (!editMode) return;
     if (e.button !== 0 && e.pointerType === "mouse") return;
     e.stopPropagation();
@@ -968,7 +979,13 @@ export default function PianoRoll({
           fill={color}
           opacity={opacity}
           rx={1}
-          style={editMode ? { cursor: "grab" } : undefined}
+          style={
+            eraserMode
+              ? { cursor: "crosshair" }
+              : editMode
+                ? { cursor: "grab" }
+                : undefined
+          }
           onPointerDown={(e) => handleNotePointerDown(e, layerId, i)}
         />
         {sel && (
@@ -1512,7 +1529,13 @@ export default function PianoRoll({
                   fill={lane.color}
                   opacity={0.9}
                   rx={2}
-                  style={editMode ? { cursor: "grab" } : undefined}
+                  style={
+            eraserMode
+              ? { cursor: "crosshair" }
+              : editMode
+                ? { cursor: "grab" }
+                : undefined
+          }
                   onPointerDown={(e) => handleNotePointerDown(e, "drum", i)}
                 />
                 {sel && (

@@ -77,6 +77,15 @@ import { useComputerKeyboard } from "../input/useComputerKeyboard";
 import { useWebMIDI } from "../input/useWebMIDI";
 import type { Scale } from "../music/scale";
 import {
+  SLOT_COUNT,
+  buildPlayerUrl,
+  deleteSlot,
+  listSlots,
+  loadSlot,
+  saveSlot,
+  type SlotData,
+} from "../audio/slots";
+import {
   chordLabelJa,
   chordSymbol,
   chordVoicing,
@@ -255,7 +264,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [bpm, setBpm] = useState<number>(100);
   const [quantizeGrid, setQuantizeGrid] = useState<QuantizeGrid>("1/16");
   const [editMode, setEditMode] = useState(false);
+  const [eraserMode, setEraserMode] = useState(false);
   const [noteLength, setNoteLength] = useState<NoteLength>("1/8");
+  // 保存スロット: マウント時と保存/削除/ロード操作後に listSlots() を再評価
+  const [slots, setSlots] = useState<(SlotData | null)[]>(() => listSlots());
+  const refreshSlots = useCallback(() => setSlots(listSlots()), []);
   const [metronomeOn, setMetronomeOn] = useState(true);
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
@@ -849,9 +862,14 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     stopPlayback();
     cancelProgressionTimers();
 
-    // 録音は対象レイヤを上書きするので Undo 用にスナップショット
+    // 録音は対象レイヤに追記するので Undo 用にスナップショット
     pushHistory();
 
+    // 【オーバーダブ録音】
+    // 既存ノートを保持したまま、追加で録音する。
+    // 録音「やり直し」では前のテイクが消えないようにするため、
+    // emptyLayer に置き換えずに既存 Layer の参照をそのまま使う。
+    // 全消しは「譜面を削除」「消しゴム」を使う。
     const layer =
       armed === "melody"
         ? melody
@@ -864,15 +882,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               : armed === "guitar"
                 ? guitar
                 : drum;
-    const fresh = emptyLayer(armed, layer.name);
-    if (armed === "melody") setMelody(fresh);
-    else if (armed === "chord") setChord(fresh);
-    else if (armed === "bass") setBass(fresh);
-    else if (armed === "synth") setSynth(fresh);
-    else if (armed === "guitar") setGuitar(fresh);
-    else setDrum(fresh);
 
-    sessionRef.current = new RecordingSession(fresh);
+    sessionRef.current = new RecordingSession(layer, {
+      preserveExistingNotes: true,
+    });
     sessionRef.current.begin();
     setChordRecCount(0);
     setDrumRecCount(0);
@@ -951,6 +964,98 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     else if (id === "synth") setSynth(emptyLayer("synth", "シンセ"));
     else if (id === "guitar") setGuitar(emptyLayer("guitar", "ギター"));
     else setDrum(emptyLayer("drum", "ドラム"));
+  }
+
+  /** 現在の譜面をスロット番号 N (1..10) に保存。 */
+  function handleSaveSlot(slot: number) {
+    const existing = loadSlot(slot);
+    const defaultName = existing?.name ?? `スロット ${slot}`;
+    const name =
+      typeof window !== "undefined"
+        ? window.prompt(
+            existing
+              ? `スロット ${slot} は既に使われています。上書きしますか？\n新しい名前を入力してください。`
+              : `スロット ${slot} に保存します。\n名前を入力してください。`,
+            defaultName,
+          )
+        : defaultName;
+    if (name == null) return; // キャンセル
+    const data: SlotData = {
+      name: name.trim() || `スロット ${slot}`,
+      savedAt: Date.now(),
+      bpm,
+      scaleRoot: scale.rootPitchClass,
+      scaleKind: scale.kind,
+      melody,
+      chord,
+      drum,
+      bass,
+      synth,
+      guitar,
+    };
+    const ok = saveSlot(slot, data);
+    if (!ok && typeof window !== "undefined") {
+      window.alert("保存に失敗しました (localStorage の容量超過の可能性)。");
+    }
+    refreshSlots();
+  }
+
+  /** スロットの内容を現在のセッションに読み込む (現在の作業内容は失われるので確認)。 */
+  function handleLoadSlot(slot: number) {
+    const data = loadSlot(slot);
+    if (!data) return;
+    if (
+      hasAnything &&
+      typeof window !== "undefined" &&
+      !window.confirm(
+        `スロット ${slot} を読み込みます。現在の譜面は失われます (元に戻る で復元可)。よろしいですか？`,
+      )
+    ) {
+      return;
+    }
+    pushHistory();
+    setMelody(data.melody);
+    setChord(data.chord);
+    setDrum(data.drum);
+    setBass(data.bass);
+    setSynth(data.synth);
+    setGuitar(data.guitar);
+    setBpm(data.bpm);
+  }
+
+  function handleDeleteSlot(slot: number) {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(`スロット ${slot} を削除します。よろしいですか？`)
+    ) {
+      return;
+    }
+    deleteSlot(slot);
+    refreshSlots();
+  }
+
+  function handleOpenSlotInNewTab(slot: number) {
+    if (typeof window === "undefined") return;
+    const url = buildPlayerUrl(slot);
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  /** 全レイヤーのノートを一気にクリア。Undo で戻せる。 */
+  function clearAllLayers() {
+    if (!hasAnything) return;
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / ドラム) の譜面を削除します。よろしいですか？ (元に戻る で復元可)",
+      );
+      if (!ok) return;
+    }
+    pushHistory();
+    setMelody(emptyLayer("melody", "メロディ"));
+    setChord(emptyLayer("chord", "コード"));
+    setBass(emptyLayer("bass", "ベース"));
+    setSynth(emptyLayer("synth", "シンセ"));
+    setGuitar(emptyLayer("guitar", "ギター"));
+    setDrum(emptyLayer("drum", "ドラム"));
   }
 
   // ---- 再生 -----------------------------------------------------------------
@@ -1565,7 +1670,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             </button>
             <button
               type="button"
-              onClick={() => setEditMode((v) => !v)}
+              onClick={() => {
+                setEditMode((v) => !v);
+                setEraserMode(false);
+              }}
               disabled={state === "recording" || playing}
               title={`編集モード ON のときは、ピアノロール上をクリックしてノートを追加 / 既存ノートをドラッグで自由移動 / 両端ドラッグで長さ変更 / 空エリアをドラッグで範囲選択 → Delete で一括削除 / Esc で選択解除。${armedLabel}層が編集対象です。`}
               className={[
@@ -1576,6 +1684,32 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               ].join(" ")}
             >
               ✎ 編集モード {editMode ? "ON" : "OFF"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEraserMode((v) => !v);
+                setEditMode(false);
+              }}
+              disabled={state === "recording" || playing}
+              title="消しゴムモード: ピアノロール上のノートをクリックすると即削除します。録音や再生はそのまま可。"
+              className={[
+                "rounded-full px-3 py-0.5 text-xs font-semibold shadow-sm disabled:opacity-40",
+                eraserMode
+                  ? "bg-amber-500 text-white hover:bg-amber-600"
+                  : "border border-ink-300 bg-white text-ink-700 hover:border-accent-300",
+              ].join(" ")}
+            >
+              🧽 消しゴム {eraserMode ? "ON" : "OFF"}
+            </button>
+            <button
+              type="button"
+              onClick={clearAllLayers}
+              disabled={state === "recording" || playing || !hasAnything}
+              title="全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / ドラム) の譜面を一気に削除します。「元に戻る」で復元できます。"
+              className="rounded-full border border-rose-300 bg-white px-3 py-0.5 text-xs font-semibold text-rose-600 shadow-sm hover:bg-rose-50 disabled:opacity-40"
+            >
+              🗑 譜面を削除
             </button>
             <label className="flex items-center gap-1">
               <span className="font-medium text-ink-700">音の長さ</span>
@@ -1665,6 +1799,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           getPlayheadSec={getPlayheadSec}
           bpm={bpm}
           editMode={editMode}
+          eraserMode={eraserMode}
           armedLayer={armed}
           onAddNote={handleAddNote}
           onDeleteNote={handleDeleteNote}
@@ -1720,6 +1855,103 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           >
             ⤓ MIDIファイル書き出し
           </button>
+        </div>
+
+        {/* 保存スロット (10 個) */}
+        <div className="mt-4 rounded-xl border border-ink-200 bg-white p-3 shadow-sm">
+          <div className="mb-2 flex items-baseline justify-between">
+            <h3 className="text-sm font-semibold text-ink-700">
+              💾 保存スロット
+              <span className="ml-2 text-xs font-normal text-ink-500">
+                ({slots.filter((s) => s != null).length} / {SLOT_COUNT} 使用中)
+              </span>
+            </h3>
+            <span className="text-[11px] text-ink-500">
+              localStorage に保存 · 別タブで再生可
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {slots.map((data, i) => {
+              const slot = i + 1;
+              const used = data != null;
+              const title = data?.name?.trim() || `スロット ${slot}`;
+              const noteTotal = data
+                ? data.melody.notes.length +
+                  data.chord.notes.length +
+                  data.drum.notes.length +
+                  data.bass.notes.length +
+                  data.synth.notes.length +
+                  data.guitar.notes.length
+                : 0;
+              return (
+                <div
+                  key={slot}
+                  className={[
+                    "flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2",
+                    used
+                      ? "border-emerald-200 bg-emerald-50"
+                      : "border-ink-200 bg-ink-50",
+                  ].join(" ")}
+                >
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-xs font-bold text-ink-700 shadow-sm">
+                    {slot}
+                  </span>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-xs font-semibold text-ink-800">
+                      {used ? title : "(空き)"}
+                    </span>
+                    {used && (
+                      <span className="text-[10px] text-ink-500">
+                        {noteTotal} ノート · BPM {data.bpm}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleSaveSlot(slot)}
+                      disabled={state === "recording" || playing}
+                      title={
+                        used
+                          ? "現在の譜面でこのスロットを上書きします"
+                          : "現在の譜面をこのスロットに保存します"
+                      }
+                      className="rounded-full bg-accent-500 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-accent-600 disabled:opacity-40"
+                    >
+                      {used ? "上書き保存" : "保存"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleLoadSlot(slot)}
+                      disabled={!used || state === "recording" || playing}
+                      title="このスロットの内容を Studio に読み込みます"
+                      className="rounded-full border border-ink-300 bg-white px-2 py-0.5 text-[11px] font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
+                    >
+                      ロード
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenSlotInNewTab(slot)}
+                      disabled={!used}
+                      title="別タブを開いてこのスロットを再生します"
+                      className="rounded-full border border-violet-300 bg-white px-2 py-0.5 text-[11px] font-medium text-violet-700 hover:bg-violet-50 disabled:opacity-40"
+                    >
+                      🎧 別タブで再生
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSlot(slot)}
+                      disabled={!used || state === "recording" || playing}
+                      title="このスロットを削除します"
+                      className="rounded-full border border-rose-200 bg-white px-2 py-0.5 text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-40"
+                    >
+                      🗑
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </section>
 

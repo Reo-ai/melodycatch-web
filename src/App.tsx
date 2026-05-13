@@ -12,12 +12,50 @@
 
 import { useMemo, useState } from "react";
 import Studio from "./components/Studio";
+import SavedPlayer from "./components/SavedPlayer";
 import { C_MAJOR, scaleDisplayName, type Scale } from "./music/scale";
+
+/** URL ?player=1 が付いていれば別タブ再生モード。 */
+function isPlayerRoute(): boolean {
+  if (typeof window === "undefined") return false;
+  const url = new URL(window.location.href);
+  return url.searchParams.get("player") === "1";
+}
 
 export default function App() {
   const [scale, setScale] = useState<Scale>(C_MAJOR);
+  const playerRoute = useMemo(() => isPlayerRoute(), []);
 
   const scaleName = useMemo(() => scaleDisplayName(scale, "ja"), [scale]);
+
+  if (playerRoute) {
+    return (
+      <div className="min-h-screen bg-ink-50 text-ink-900">
+        <header className="border-b border-ink-200 bg-gradient-to-r from-violet-950 via-fuchsia-900 to-violet-950 text-white shadow-md">
+          <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
+            <h1 className="text-lg font-extrabold tracking-tight">
+              Melody Catch · 保存スロット再生
+            </h1>
+            <a
+              href={(() => {
+                if (typeof window === "undefined") return "/";
+                const u = new URL(window.location.href);
+                u.searchParams.delete("player");
+                u.searchParams.delete("slot");
+                return u.toString();
+              })()}
+              className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white hover:bg-white/20"
+            >
+              Studio を開く
+            </a>
+          </div>
+        </header>
+        <main>
+          <SavedPlayer />
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-ink-50 text-ink-900">

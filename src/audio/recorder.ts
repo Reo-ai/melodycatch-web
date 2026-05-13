@@ -39,19 +39,31 @@ export function emptyLayer(id: LayerId, name: string): Layer {
 /**
  * 録音セッション。`begin()` で時刻 0 を確定し、
  * `noteOn` / `noteOff` を呼ぶと Layer に追加する。
+ *
+ * 【重要: 既存ノート保持モード】
+ * `preserveExistingNotes = true` で開始すると、`begin()` が
+ * `layer.notes` を空にせず、既存ノートの上にオーバーダブ的に
+ * 追加する。録音の「やり直し」で前のテイクが消えないようにするための仕様。
+ * 既存ノートを完全に消したいときは「譜面を削除」「消しゴム」を使う。
  */
 export class RecordingSession {
   private startedAt: number | null = null;
   private active = new Map<number, { startSec: number; velocity: number }>();
   private layer: Layer;
-  constructor(layer: Layer) {
+  private preserveExistingNotes: boolean;
+  constructor(layer: Layer, opts?: { preserveExistingNotes?: boolean }) {
     this.layer = layer;
+    this.preserveExistingNotes = opts?.preserveExistingNotes ?? false;
   }
 
   begin() {
     this.startedAt = performance.now();
     this.active.clear();
-    this.layer.notes = [];
+    // preserveExistingNotes が立っていれば既存ノートをそのまま残す。
+    // (録音やり直しでも前のテイクが消えないようにするため)
+    if (!this.preserveExistingNotes) {
+      this.layer.notes = [];
+    }
   }
 
   isRecording() {
