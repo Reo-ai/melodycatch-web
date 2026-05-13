@@ -353,6 +353,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [guitar, setGuitar] = useState<Layer>(() => emptyLayer("guitar", "ギター"));
   const [acoustic, setAcoustic] = useState<Layer>(() => emptyLayer("acoustic", "アコギ"));
   const [armed, setArmed] = useState<LayerId>("melody");
+  /**
+   * 主アーム楽器とは別に、ドラム層も並行録音するか。
+   * `armed === "drum"` のときは無視 (ドラム自身が主録音対象)。
+   */
+  const [drumAlsoArmed, setDrumAlsoArmed] = useState<boolean>(false);
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
   const [playbackHighlight, setPlaybackHighlight] = useState<Set<number>>(new Set());
@@ -377,6 +382,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const audioReady = useRef(false);
 
   const sessionRef = useRef<RecordingSession | null>(null);
+  /**
+   * ドラム同時録音用の並列セッション。
+   * armed !== "drum" でも drumAlsoArmed=true のとき、メイン session と並行して
+   * ドラム層に hit を書き込むために使う。
+   */
+  const drumSessionRef = useRef<RecordingSession | null>(null);
   const playbackRef = useRef<Playback | null>(null);
   const overdubRef = useRef<Playback | null>(null);
   const tickRef = useRef<number | null>(null);
@@ -386,12 +397,16 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // ---- stale closure 対策: 常に最新の state/armed を参照する ref ---------
   const stateRef = useRef<ArmState>("idle");
   const armedRef = useRef<LayerId>("melody");
+  const drumAlsoArmedRef = useRef<boolean>(false);
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
   useEffect(() => {
     armedRef.current = armed;
   }, [armed]);
+  useEffect(() => {
+    drumAlsoArmedRef.current = drumAlsoArmed;
+  }, [drumAlsoArmed]);
 
   // スケール変更時はコード選択をリセット
   useEffect(() => {
@@ -560,21 +575,26 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // クオンタイズ設定が "off" のときは 1/16 をデフォルトのドラムグリッドとして使う。
   const handleDrumHit = useCallback(
     (midi: number, velocity: number) => {
-      if (
-        stateRef.current === "recording" &&
-        armedRef.current === "drum" &&
-        sessionRef.current
-      ) {
-        const beat = 60 / Math.max(1, bpm);
-        const snap =
-          quantizeGrid !== "off"
-            ? quantizeUnitSec(quantizeGrid, bpm)
-            : beat / 4; // 1/16 fallback
-        // ドラムは percussive: 短い固定 duration で 1 ヒットを記録 + 拍にスナップ
-        sessionRef.current.recordChord([midi], 0.05, velocity, snap);
-        setDrumRecCount((n) => n + 1);
-        scheduleRefresh();
+      if (stateRef.current !== "recording") return;
+      // 書き込み先セッションを決定:
+      //   ・armed === "drum" の場合はメイン sessionRef
+      //   ・それ以外で drumAlsoArmed === true の場合は drumSessionRef (並列録音)
+      let targetSession: RecordingSession | null = null;
+      if (armedRef.current === "drum") {
+        targetSession = sessionRef.current;
+      } else if (drumAlsoArmedRef.current) {
+        targetSession = drumSessionRef.current;
       }
+      if (!targetSession) return;
+      const beat = 60 / Math.max(1, bpm);
+      const snap =
+        quantizeGrid !== "off"
+          ? quantizeUnitSec(quantizeGrid, bpm)
+          : beat / 4; // 1/16 fallback
+      // ドラムは percussive: 短い固定 duration で 1 ヒットを記録 + 拍にスナップ
+      targetSession.recordChord([midi], 0.05, velocity, snap);
+      setDrumRecCount((n) => n + 1);
+      scheduleRefresh();
     },
     [scheduleRefresh, bpm, quantizeGrid],
   );
@@ -1152,10 +1172,25 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       preserveExistingNotes: true,
     });
     sessionRef.current.begin();
+
+    // 【ドラム同時録音】armed !== "drum" でも drumAlsoArmed が ON の場合は、
+    // ドラム層への並列録音セッションを作る。
+    const recordingDrumInParallel = armed !== "drum" && drumAlsoArmed;
+    if (recordingDrumInParallel) {
+      drumSessionRef.current = new RecordingSession(drum, {
+        preserveExistingNotes: true,
+      });
+      drumSessionRef.current.begin();
+    } else {
+      drumSessionRef.current = null;
+    }
+
     setChordRecCount(0);
     setDrumRecCount(0);
 
     // DAW 風オーバーダブ: 録音対象以外の既存レイヤを同時再生
+    // ドラム同時録音中は、ドラム層もオーバーダブ対象から外す (録音先として書き込み中なので)。
+    const drumIsRecordTarget = armed === "drum" || recordingDrumInParallel;
     const otherLayers: Layer[] = [];
     if (armed !== "melody" && melody.notes.length > 0) otherLayers.push(melody);
     if (armed !== "chord" && chord.notes.length > 0) otherLayers.push(chord);
@@ -1163,7 +1198,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (armed !== "synth" && synth.notes.length > 0) otherLayers.push(synth);
     if (armed !== "guitar" && guitar.notes.length > 0) otherLayers.push(guitar);
     if (armed !== "acoustic" && acoustic.notes.length > 0) otherLayers.push(acoustic);
-    if (armed !== "drum" && drum.notes.length > 0) otherLayers.push(drum);
+    if (!drumIsRecordTarget && drum.notes.length > 0) otherLayers.push(drum);
     if (otherLayers.length > 0) {
       const overdub = new Playback(otherLayers, {
         onNoteOn: (_id, m) =>
@@ -1184,8 +1219,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       overdub.start();
     }
 
-    // ドラム録音時は DrumLoop も自動で回し始める (鳴らした音がそのまま録音される)
-    if (armed === "drum" && drumPadRef.current && !drumPadRef.current.isPlaying()) {
+    // ドラム録音時は DrumLoop も自動で回し始める (鳴らした音がそのまま録音される)。
+    // 主アーム=drum でなくとも、ドラム同時録音 ON のときも DrumLoop を回す。
+    if (drumIsRecordTarget && drumPadRef.current && !drumPadRef.current.isPlaying()) {
       await drumPadRef.current.start();
     }
 
@@ -1207,6 +1243,13 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else setDrum(quantized);
     }
     sessionRef.current = null;
+    // 並列ドラムセッションの確定処理。
+    if (drumSessionRef.current) {
+      const finishedDrum = drumSessionRef.current.end();
+      const quantizedDrum = quantizeLayer({ ...finishedDrum }, quantizeGrid, bpm);
+      setDrum(quantizedDrum);
+    }
+    drumSessionRef.current = null;
     if (overdubRef.current) {
       overdubRef.current.stop();
       overdubRef.current = null;
@@ -1933,9 +1976,44 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           })}
         </div>
 
+        {/* ドラム同時録音トグル: 主アーム楽器とは別にドラム層へ並行録音できる */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <label
+            className={[
+              "inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition",
+              armed === "drum"
+                ? "cursor-not-allowed border-ink-200 bg-ink-50 text-ink-400"
+                : drumAlsoArmed
+                  ? "border-accent-500 bg-accent-50 text-accent-700"
+                  : "border-ink-200 bg-white text-ink-700 hover:border-accent-300",
+              state === "recording" ? "cursor-not-allowed opacity-60" : "",
+            ].join(" ")}
+            title={
+              armed === "drum"
+                ? "ドラムが主アーム楽器のため、同時録音オプションは不要です"
+                : "ON にすると、選択した楽器と一緒にドラムも同時に録音されます"
+            }
+          >
+            <input
+              type="checkbox"
+              checked={drumAlsoArmed && armed !== "drum"}
+              disabled={armed === "drum" || state === "recording"}
+              onChange={(e) => setDrumAlsoArmed(e.target.checked)}
+              className="h-3.5 w-3.5 accent-accent-500"
+            />
+            🥁 ドラムも同時に録音する
+          </label>
+          {drumAlsoArmed && armed !== "drum" && state === "recording" && (
+            <span className="text-xs font-medium text-accent-700">
+              + ドラム並行録音中 ({drumRecCount} ヒット)
+            </span>
+          )}
+        </div>
+
         <p className="mt-3 text-xs text-ink-500">
           層を選んでピアノロール下の「録音」ボタンで録音開始 / 停止。録音中は録音対象以外のレイヤが同時再生されます (DAW 風オーバーダブ)。
           ドラム層を録音中はドラムループも自動で回ります。下のピアノロールを見ながら録音できます。
+          「ドラムも同時に録音する」を ON にすると、選んだ楽器と一緒にドラム層へも並行録音できます。
         </p>
       </section>
 
