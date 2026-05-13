@@ -537,14 +537,25 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
 
   // ---- コードパレット: 楽器別サブパターン -----------------------------------
   // ChordPalette の各コードボタンの真下に出る補助ボタンから呼ばれる。
-  // - guitar8th: ギター armed 時のみ表示。1 小節 (= 4 拍) を 8 分音符 × 8 ヒットで
-  //   コードトーンを順に上下行 (1-2-3-4-5-4-3-2 風) させる、いわゆる「8 ビートアルペジオ」。
-  //   現在の BPM から 8 分音符長を算出し、`guitarTriggerNote` を `setTimeout` で連射。
-  // - piano1〜5: コード (ピアノ) armed 時のみ表示する 5 種類のピアノ伴奏パターン。
-  //   1=ブロック / 2=上行アルペジオ / 3=下行アルペジオ / 4=アルベルティ / 5=ベース+和音。
+  // 【ギター armed】
+  //   - guitar8th:      8 分音符アルペジオ (コードトーンを 1-2-3-4-5-4-3-2 風に)
+  //   - guitar8thChord: 8 分音符でコード全弾き × 8 (ジャカジャカ)
+  // 【ピアノ (コード層) armed】
+  //   アルペジオ系:
+  //     - piano1:  ブロック (全音同時 × 1 回)
+  //     - piano2:  上行アルペジオ (root→3rd→5th→oct)
+  //     - piano3:  下行アルペジオ
+  //     - piano4:  アルベルティ (root-5th-3rd-5th)
+  //     - piano5:  ベース+和音
+  //   コード全弾きリズム系 (全音同時に rhythmic pattern で叩く):
+  //     - piano6:  8 ビート連打 (8 分音符 × 8)
+  //     - piano7:  4 ビート連打 (4 分音符 × 4)
+  //     - piano8:  ハーフ (2 分音符 × 2)
+  //     - piano9:  シンコペ (1 / &2 / 4 の 3 ヒット)
+  //     - piano10: チャールストン (1 / &2 / 3 / &4 の 4 ヒット)
   // 録音中は onPaletteChord と同じく、現在の armed 楽器が
   // chord / guitar / synth のいずれかなら、コードイベントとして 1 個記録する
-  // (個々のノートではなく「コードを 1 回鳴らした」という単位で残す)。
+  // (個々のヒットではなく「コードを 1 回鳴らした」という単位で残す)。
   const onPaletteChordPattern = useCallback(
     async (
       chord: HarmonicChord,
@@ -574,6 +585,16 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             i * eighthSec * 1000,
           );
         });
+      } else if (pattern === "guitar8thChord") {
+        // 8 分音符でコード全弾き × 8 ヒット (= 1 小節分のストローク)。
+        // guitarChordOn はストロークっぽく 14ms ずつずらして発音するので、
+        // 8 分音符グリッドごとに 1 回呼べばギターらしい「ジャカジャカ」感が出る。
+        for (let i = 0; i < 8; i++) {
+          window.setTimeout(
+            () => guitarChordOn(midiNotes, 0.8, eighthSec * 0.9),
+            i * eighthSec * 1000,
+          );
+        }
       } else if (pattern === "piano1") {
         // ブロックコード: 全音同時。
         chordOn(midiNotes, 0.8, PALETTE_CHORD_DURATION_SEC);
@@ -621,6 +642,50 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             i * beatSec * 1000,
           );
         }
+      } else if (pattern === "piano6") {
+        // 8 ビート連打 (コード全弾き × 8): 1 小節を 8 分音符 × 8 でジャカ打ち。
+        for (let i = 0; i < 8; i++) {
+          window.setTimeout(
+            () => chordOn(midiNotes, 0.7, eighthSec * 0.9),
+            i * eighthSec * 1000,
+          );
+        }
+      } else if (pattern === "piano7") {
+        // 4 ビート連打 (コード全弾き × 4): 1 小節を 4 分音符 × 4 で。
+        for (let i = 0; i < 4; i++) {
+          window.setTimeout(
+            () => chordOn(midiNotes, 0.75, beatSec * 0.9),
+            i * beatSec * 1000,
+          );
+        }
+      } else if (pattern === "piano8") {
+        // ハーフ (2 分音符 × 2): 1 拍目と 3 拍目にコード全弾き、それぞれ 2 拍分ずつ伸ばす。
+        for (let i = 0; i < 2; i++) {
+          window.setTimeout(
+            () => chordOn(midiNotes, 0.75, beatSec * 2 * 0.95),
+            i * beatSec * 2 * 1000,
+          );
+        }
+      } else if (pattern === "piano9") {
+        // シンコペ: 1 拍目 / 2 拍目の裏 / 4 拍目の 3 ヒット。
+        // ポップス/ロック伴奏でよく出る「タン・タ・タン」のリズム。
+        const hits = [0, 1.5, 3]; // 拍 (0-indexed: 1 拍目=0, 2&=1.5, 4 拍目=3)
+        hits.forEach((b) => {
+          window.setTimeout(
+            () => chordOn(midiNotes, 0.78, eighthSec * 2),
+            b * beatSec * 1000,
+          );
+        });
+      } else if (pattern === "piano10") {
+        // チャールストン: 1 拍目 / 2 拍目の裏 / 3 拍目 / 4 拍目の裏 の 4 ヒット。
+        // ジャズ/シティポップで頻出のシンコペーションパターン。
+        const hits = [0, 1.5, 2, 3.5];
+        hits.forEach((b) => {
+          window.setTimeout(
+            () => chordOn(midiNotes, 0.78, eighthSec * 1.5),
+            b * beatSec * 1000,
+          );
+        });
       }
 
       // ハイライト更新 (onPaletteChord と同じロジック)。

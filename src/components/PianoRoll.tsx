@@ -88,11 +88,14 @@ interface PianoRollProps {
 }
 
 const BASE_pxPerSec = 64;
-// デフォルト行高さ。8 px あれば fontSize=8 のラベルが行内にちょうど収まり、
-// 自然音 (C/D/E/F/G/A/B) のラベルを overlap なく表示できる。
-// 旧 5 px はラベル (高さ 7-8px) が行 (高さ 5px) からはみ出して
-// 隣の行のラベルと衝突し、結果として大半のラベルを非表示にせざるを得なかった。
-const BASE_rowHeight = 8;
+// デフォルト行高さ。6 px は「縦に詰まっていない」見た目を優先しつつ、
+// オクターブごとの C ラベル (1 オクターブ = 12 行 = 72 px 間隔) は確実に
+// 表示できる値。自然音 (C/D/E/F/G/A/B) や半音のラベルは
+// `showNaturalLabels` (rowHeight ≥ 7) / `showSharpLabels` (≥ 13) で
+// 行高さがあるときだけ追加表示される。ユーザーは Y ズームで拡大できる。
+// 旧 5 px は C ラベルの背景 pill (高さ ~12 px) が隣の行とぶつかってやや窮屈だったため 6 px に。
+// 旧 8 px はラベルが見やすい代わりにロール全体が縦に膨らみすぎる印象を与えた。
+const BASE_rowHeight = 6;
 const ZOOM_X_MIN = 0.25;
 const ZOOM_X_MAX = 6;
 /** SVG の最大幅 (px)。Safari の SVG 幅上限 (~16384px) を考慮した安全値。

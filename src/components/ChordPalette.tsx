@@ -23,12 +23,21 @@ import type { Scale } from "../music/scale";
 
 /** Pattern identifiers used by sub-buttons. */
 export type ChordPatternId =
-  | "guitar8th"
-  | "piano1"
-  | "piano2"
-  | "piano3"
-  | "piano4"
-  | "piano5";
+  // ギター系
+  | "guitar8th" // 8 分音符アルペジオ (コードトーンを上下行)
+  | "guitar8thChord" // 8 分音符でコード全弾き × 8 ヒット
+  // ピアノ系 — アルペジオ / 分散和音
+  | "piano1" // ブロック (全音同時 × 1 回)
+  | "piano2" // 上行アルペジオ
+  | "piano3" // 下行アルペジオ
+  | "piano4" // アルベルティ
+  | "piano5" // ベース+和音
+  // ピアノ系 — 全弾きリズムパターン (コードトーンを全部同時に鳴らす)
+  | "piano6" // 8 ビート連打 (8 分音符 × 8)
+  | "piano7" // 4 ビート連打 (4 分音符 × 4)
+  | "piano8" // ハーフ (2 分音符 × 2)
+  | "piano9" // シンコペ (1 / &2 / 4)
+  | "piano10"; // チャールストン (1 / &2 / 3 / &4)
 
 interface ChordPaletteProps {
   scale: Scale;
@@ -48,16 +57,31 @@ interface ChordPaletteProps {
 /** Keyboard shortcut hints for diatonic chord palette (Z X C V B N M). */
 const KEY_HINTS = ["Z", "X", "C", "V", "B", "N", "M"] as const;
 
-/** Short Japanese labels for the 5 piano patterns. */
-const PIANO_PATTERN_LABELS: Record<
-  "piano1" | "piano2" | "piano3" | "piano4" | "piano5",
-  { num: string; jp: string }
-> = {
+/** Short Japanese labels for piano patterns. 1〜5 = アルペジオ系, 6〜10 = コード全弾きリズム。 */
+const PIANO_PATTERN_IDS = [
+  "piano1",
+  "piano2",
+  "piano3",
+  "piano4",
+  "piano5",
+  "piano6",
+  "piano7",
+  "piano8",
+  "piano9",
+  "piano10",
+] as const;
+type PianoPatternId = (typeof PIANO_PATTERN_IDS)[number];
+const PIANO_PATTERN_LABELS: Record<PianoPatternId, { num: string; jp: string }> = {
   piano1: { num: "1", jp: "ブロック" },
   piano2: { num: "2", jp: "上行アルペジオ" },
   piano3: { num: "3", jp: "下行アルペジオ" },
   piano4: { num: "4", jp: "アルベルティ" },
   piano5: { num: "5", jp: "ベース+和音" },
+  piano6: { num: "6", jp: "8 ビート連打 (コード全弾き)" },
+  piano7: { num: "7", jp: "4 ビート連打 (コード全弾き)" },
+  piano8: { num: "8", jp: "ハーフ (2 分音符・コード全弾き)" },
+  piano9: { num: "9", jp: "シンコペ (1 / &2 / 4・コード全弾き)" },
+  piano10: { num: "10", jp: "チャールストン (1 / &2 / 3 / &4・コード全弾き)" },
 };
 
 export default function ChordPalette({
@@ -121,37 +145,56 @@ export default function ChordPalette({
               </span>
             </button>
 
-            {/* ギター: 1 個の 8 分音符ストロークボタン */}
+            {/* ギター: 2 個の 8 分音符ボタン (アルペジオ / コード全弾き) */}
             {isGuitar && onPlayPattern && (
-              <button
-                type="button"
-                onClick={() => onPlayPattern(chord, voicing, "guitar8th")}
-                title="8 分音符でアルペジオを 1 小節分鳴らす"
-                className="rounded-lg border border-amber-400 bg-amber-50 px-1 py-1 text-[10px] font-semibold text-amber-700 shadow-sm hover:bg-amber-100 active:scale-95"
-              >
-                ♪ 8分
-              </button>
+              <div className="grid grid-cols-2 gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => onPlayPattern(chord, voicing, "guitar8th")}
+                  title="8 分音符でアルペジオを 1 小節分鳴らす"
+                  className="rounded-md border border-amber-400 bg-amber-50 px-0.5 py-1 text-[10px] font-semibold text-amber-700 shadow-sm hover:bg-amber-100 active:scale-95"
+                >
+                  ♪ アルペ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onPlayPattern(chord, voicing, "guitar8thChord")}
+                  title="8 分音符でコード全弾きを 1 小節分 (8 ヒット) 鳴らす"
+                  className="rounded-md border border-amber-500 bg-amber-100 px-0.5 py-1 text-[10px] font-semibold text-amber-800 shadow-sm hover:bg-amber-200 active:scale-95"
+                >
+                  ♫ コード
+                </button>
+              </div>
             )}
 
-            {/* ピアノ (コード層 armed): 5 個のコードパターンボタン */}
+            {/* ピアノ (コード層 armed): 10 個のコードパターンボタン (5 × 2 行) */}
+            {/* 1〜5 = アルペジオ系, 6〜10 = コード全弾きリズム */}
             {isPiano && onPlayPattern && (
               <div className="grid grid-cols-5 gap-0.5">
-                {(["piano1", "piano2", "piano3", "piano4", "piano5"] as const).map(
-                  (pid) => {
-                    const lbl = PIANO_PATTERN_LABELS[pid];
-                    return (
-                      <button
-                        key={pid}
-                        type="button"
-                        onClick={() => onPlayPattern(chord, voicing, pid)}
-                        title={lbl.jp}
-                        className="rounded-md border border-indigo-300 bg-indigo-50 px-0.5 py-1 text-[10px] font-bold text-indigo-700 shadow-sm hover:bg-indigo-100 active:scale-95"
-                      >
-                        {lbl.num}
-                      </button>
-                    );
-                  },
-                )}
+                {PIANO_PATTERN_IDS.map((pid) => {
+                  const lbl = PIANO_PATTERN_LABELS[pid];
+                  // 6〜10 はコード全弾き系なのでアクセントカラーで区別。
+                  const isBlock = pid === "piano1"
+                    || pid === "piano6"
+                    || pid === "piano7"
+                    || pid === "piano8"
+                    || pid === "piano9"
+                    || pid === "piano10";
+                  const cls = isBlock && pid !== "piano1"
+                    ? "rounded-md border border-emerald-400 bg-emerald-50 px-0.5 py-1 text-[10px] font-bold text-emerald-700 shadow-sm hover:bg-emerald-100 active:scale-95"
+                    : "rounded-md border border-indigo-300 bg-indigo-50 px-0.5 py-1 text-[10px] font-bold text-indigo-700 shadow-sm hover:bg-indigo-100 active:scale-95";
+                  return (
+                    <button
+                      key={pid}
+                      type="button"
+                      onClick={() => onPlayPattern(chord, voicing, pid)}
+                      title={lbl.jp}
+                      className={cls}
+                    >
+                      {lbl.num}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
