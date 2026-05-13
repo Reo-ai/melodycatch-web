@@ -358,6 +358,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
    * `armed === "drum"` のときは無視 (ドラム自身が主録音対象)。
    */
   const [drumAlsoArmed, setDrumAlsoArmed] = useState<boolean>(false);
+  /**
+   * 録音時の自動補正モード。
+   * - "auto": 録音中のドラムヒットを拍にスナップし、停止時に layer 全体をクオンタイズする (現状の挙動)。
+   * - "raw":  手弾きのタイミングそのままで記録する (補正なし)。
+   */
+  const [recordCorrectionMode, setRecordCorrectionMode] = useState<"auto" | "raw">("auto");
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
   const [playbackHighlight, setPlaybackHighlight] = useState<Set<number>>(new Set());
@@ -398,6 +404,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const stateRef = useRef<ArmState>("idle");
   const armedRef = useRef<LayerId>("melody");
   const drumAlsoArmedRef = useRef<boolean>(false);
+  const recordCorrectionModeRef = useRef<"auto" | "raw">("auto");
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
@@ -407,6 +414,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   useEffect(() => {
     drumAlsoArmedRef.current = drumAlsoArmed;
   }, [drumAlsoArmed]);
+  useEffect(() => {
+    recordCorrectionModeRef.current = recordCorrectionMode;
+  }, [recordCorrectionMode]);
 
   // スケール変更時はコード選択をリセット
   useEffect(() => {
@@ -586,13 +596,17 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         targetSession = drumSessionRef.current;
       }
       if (!targetSession) return;
-      const beat = 60 / Math.max(1, bpm);
-      const snap =
-        quantizeGrid !== "off"
-          ? quantizeUnitSec(quantizeGrid, bpm)
-          : beat / 4; // 1/16 fallback
-      // ドラムは percussive: 短い固定 duration で 1 ヒットを記録 + 拍にスナップ
-      targetSession.recordChord([midi], 0.05, velocity, snap);
+      // raw モード時はスナップを掛けず、叩いたタイミングそのままで記録する。
+      let snap = 0;
+      if (recordCorrectionModeRef.current === "auto") {
+        const beat = 60 / Math.max(1, bpm);
+        snap =
+          quantizeGrid !== "off"
+            ? quantizeUnitSec(quantizeGrid, bpm)
+            : beat / 4; // 1/16 fallback
+      }
+      // ドラムは percussive: 短い固定 duration で 1 ヒットを記録 (auto モードなら拍にスナップ)。
+      targetSession.recordChord([midi], 0.05, velocity, snap || undefined);
       setDrumRecCount((n) => n + 1);
       scheduleRefresh();
     },
@@ -1229,25 +1243,30 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   }
 
   function stopRecord() {
+    // raw モード時は録音後の自動クオンタイズをスキップして、手弾きのタイミングを
+    // そのまま残す。auto モード時のみ拍グリッドにスナップする。
+    const applyAutoCorrection = recordCorrectionMode === "auto";
     if (sessionRef.current) {
       const finished = sessionRef.current.end();
-      // 録音直後に自動でクオンタイズして小節線にスナップさせる。
-      // 他の楽器と合わせやすいように手弾きの揺れを補正する目的。
-      const quantized = quantizeLayer({ ...finished }, quantizeGrid, bpm);
-      if (quantized.id === "melody") setMelody(quantized);
-      else if (quantized.id === "chord") setChord(quantized);
-      else if (quantized.id === "bass") setBass(quantized);
-      else if (quantized.id === "synth") setSynth(quantized);
-      else if (quantized.id === "guitar") setGuitar(quantized);
-      else if (quantized.id === "acoustic") setAcoustic(quantized);
-      else setDrum(quantized);
+      const adjusted = applyAutoCorrection
+        ? quantizeLayer({ ...finished }, quantizeGrid, bpm)
+        : { ...finished };
+      if (adjusted.id === "melody") setMelody(adjusted);
+      else if (adjusted.id === "chord") setChord(adjusted);
+      else if (adjusted.id === "bass") setBass(adjusted);
+      else if (adjusted.id === "synth") setSynth(adjusted);
+      else if (adjusted.id === "guitar") setGuitar(adjusted);
+      else if (adjusted.id === "acoustic") setAcoustic(adjusted);
+      else setDrum(adjusted);
     }
     sessionRef.current = null;
     // 並列ドラムセッションの確定処理。
     if (drumSessionRef.current) {
       const finishedDrum = drumSessionRef.current.end();
-      const quantizedDrum = quantizeLayer({ ...finishedDrum }, quantizeGrid, bpm);
-      setDrum(quantizedDrum);
+      const adjustedDrum = applyAutoCorrection
+        ? quantizeLayer({ ...finishedDrum }, quantizeGrid, bpm)
+        : { ...finishedDrum };
+      setDrum(adjustedDrum);
     }
     drumSessionRef.current = null;
     if (overdubRef.current) {
@@ -1974,6 +1993,54 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               </div>
             );
           })}
+        </div>
+
+        {/* 録音補正モード切替: 拍グリッドに揃える auto と、手弾きのままの raw */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-ink-600">録音補正:</span>
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+            <button
+              type="button"
+              onClick={() => {
+                if (state === "recording") return;
+                setRecordCorrectionMode("auto");
+              }}
+              disabled={state === "recording"}
+              className={[
+                "px-3 py-1 text-xs font-semibold transition",
+                recordCorrectionMode === "auto"
+                  ? "bg-accent-500 text-white"
+                  : "text-ink-600 hover:bg-ink-50",
+                state === "recording" ? "cursor-not-allowed opacity-60" : "",
+              ].join(" ")}
+              title="拍グリッドに自動でスナップ・クオンタイズします"
+            >
+              自動補正
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (state === "recording") return;
+                setRecordCorrectionMode("raw");
+              }}
+              disabled={state === "recording"}
+              className={[
+                "px-3 py-1 text-xs font-semibold transition",
+                recordCorrectionMode === "raw"
+                  ? "bg-accent-500 text-white"
+                  : "text-ink-600 hover:bg-ink-50",
+                state === "recording" ? "cursor-not-allowed opacity-60" : "",
+              ].join(" ")}
+              title="手弾きのタイミングそのままで記録します (スナップ・クオンタイズなし)"
+            >
+              そのまま
+            </button>
+          </div>
+          <span className="text-xs text-ink-500">
+            {recordCorrectionMode === "auto"
+              ? "ドラムは拍にスナップ・全層を録音停止時にクオンタイズします"
+              : "手弾きのタイミングを一切補正しません"}
+          </span>
         </div>
 
         {/* ドラム同時録音トグル: 主アーム楽器とは別にドラム層へ並行録音できる */}
