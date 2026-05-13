@@ -993,6 +993,52 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [scale, onPaletteChord]);
 
+  // 最後にピアノロールを触っていたらスペースキーで再生 / 停止トグル。
+  // 毎レンダリングで latest な startPlayback / stopPlayback / playing を ref に格納し、
+  // event listener は一度だけ取り付ける。
+  const spaceToggleRef = useRef<() => void>(() => {});
+  spaceToggleRef.current = () => {
+    if (playing) {
+      stopPlayback();
+    } else {
+      void startPlayback();
+    }
+  };
+  useEffect(() => {
+    // ピアノロール領域にポインタで触れていたかを追跡。
+    const focused = { value: false };
+    function onPointerDown(e: PointerEvent) {
+      const t = e.target;
+      if (t instanceof Element) {
+        focused.value = !!t.closest("[data-pianoroll-area]");
+      } else {
+        focused.value = false;
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.repeat) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key !== " " && e.code !== "Space") return;
+      if (!focused.value) return;
+      const target = e.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (target.isContentEditable) return;
+        // ボタンにフォーカスが乗っている時はそちらの挙動を優先 (Space で押下)。
+        if (tag === "BUTTON") return;
+      }
+      e.preventDefault();
+      spaceToggleRef.current();
+    }
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
   // ---- 進行プリセット --------------------------------------------------------
   const onProgressionChord = useCallback(
     async (
@@ -2070,29 +2116,31 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             通常編集に戻すには上の <b>「✎ 通常」</b> を選択してください。
           </div>
         )}
-        <PianoRoll
-          melody={melody}
-          chord={chord}
-          drum={drum}
-          bass={bass}
-          synth={synth}
-          guitar={guitar}
-          acoustic={acoustic}
-          isActive={isActive}
-          recordingLayerId={recordingLayerId}
-          getPlayheadSec={getPlayheadSec}
-          bpm={bpm}
-          editMode={editMode}
-          eraserMode={eraserMode}
-          armedLayer={armed}
-          onAddNote={handleAddNote}
-          onDeleteNote={handleDeleteNote}
-          onResizeNote={handleResizeNote}
-          onResizeNotes={handleResizeNotes}
-          onDeleteNotes={handleDeleteNotes}
-          onMoveNotes={handleMoveNotes}
-          onSeek={handleSeek}
-        />
+        <div data-pianoroll-area="1">
+          <PianoRoll
+            melody={melody}
+            chord={chord}
+            drum={drum}
+            bass={bass}
+            synth={synth}
+            guitar={guitar}
+            acoustic={acoustic}
+            isActive={isActive}
+            recordingLayerId={recordingLayerId}
+            getPlayheadSec={getPlayheadSec}
+            bpm={bpm}
+            editMode={editMode}
+            eraserMode={eraserMode}
+            armedLayer={armed}
+            onAddNote={handleAddNote}
+            onDeleteNote={handleDeleteNote}
+            onResizeNote={handleResizeNote}
+            onResizeNotes={handleResizeNotes}
+            onDeleteNotes={handleDeleteNotes}
+            onMoveNotes={handleMoveNotes}
+            onSeek={handleSeek}
+          />
+        </div>
         {/* 再生 / 録音 / 書き出し (ピアノロール直下) */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {!playing ? (

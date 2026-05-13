@@ -487,16 +487,29 @@ export default function PianoRoll({
           `translate(${x}, 0)`,
         );
       }
-      // 再生バーが画面外に出たら追尾。再生中だけでなく seek 中も追尾する。
-      // ただし上部ルーラを掴んでドラッグ中はユーザの操作を妨げないよう一時停止。
+      // 再生バーの追尾。
+      // ・録音 / 再生中 (isActive) は積極的に追尾し、再生バーを画面の左 1/3 付近に保つ。
+      // ・停止中は seek で大きく外れた時だけエッジで追尾する。
+      // ・上部ルーラを掴んでドラッグ中はユーザの操作を妨げないよう一時停止。
       if (!seekDraggingRef.current) {
         const el = scrollRef.current;
         if (el) {
-          const right = el.scrollLeft + el.clientWidth;
-          if (x > right - 100) {
-            el.scrollLeft = Math.max(0, x - el.clientWidth * 0.3);
-          } else if (x < el.scrollLeft + 40) {
-            el.scrollLeft = Math.max(0, x - 40);
+          const viewLeft = el.scrollLeft;
+          const viewWidth = el.clientWidth;
+          const viewRight = viewLeft + viewWidth;
+          if (isActive) {
+            // アクティブ追尾: バーが画面右側半分に入ったらスクロール、
+            // 左 30% を目安に表示しなおす。これで再生中に常に少し先まで見える。
+            const followThreshold = viewLeft + viewWidth * 0.5;
+            if (x > followThreshold || x < viewLeft) {
+              el.scrollLeft = Math.max(0, x - viewWidth * 0.3);
+            }
+          } else {
+            if (x > viewRight - 100) {
+              el.scrollLeft = Math.max(0, x - viewWidth * 0.3);
+            } else if (x < viewLeft + 40) {
+              el.scrollLeft = Math.max(0, x - 40);
+            }
           }
         }
       }
