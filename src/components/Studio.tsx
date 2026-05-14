@@ -70,6 +70,8 @@ import {
   guitarHoldOn,
   guitarReleaseAll,
   guitarTriggerNote,
+  setGuitarType,
+  type GuitarType,
 } from "../audio/guitarEngine";
 import {
   acousticChordOn,
@@ -368,6 +370,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [recordCorrectionMode, setRecordCorrectionMode] = useState<"auto" | "raw">("auto");
   /** ベースのタイプ: ウッド / シンセ / スラップ。 */
   const [bassType, setBassTypeState] = useState<BassType>("wood");
+  /** ギターのタイプ: クリーン / ディストーション。 */
+  const [guitarType, setGuitarTypeState] = useState<GuitarType>("distortion");
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
   const [playbackHighlight, setPlaybackHighlight] = useState<Set<number>>(new Set());
@@ -425,6 +429,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   useEffect(() => {
     setBassType(bassType);
   }, [bassType]);
+  // ギタータイプ切替もエンジン側のチェーンを再構築する。
+  useEffect(() => {
+    setGuitarType(guitarType);
+  }, [guitarType]);
 
   // スケール変更時はコード選択をリセット
   useEffect(() => {
@@ -2091,6 +2099,45 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               : bassType === "synth"
                 ? "シンセ風: 鋸波と共振フィルタでパワフル"
                 : "スラップ風: 鋭いプラックと「カン」というアタック"}
+          </span>
+        </div>
+
+        {/* ギタータイプ切替: クリーン / ディストーション */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-ink-600">🎸 ギター音色:</span>
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+            {(["clean", "distortion"] as const).map((t) => {
+              const label = t === "clean" ? "クリーン" : "ディストーション";
+              const title =
+                t === "clean"
+                  ? "クリーントーン (歪みなし、開いた高域、軽いコーラスとリバーブ)"
+                  : "ディストーション (歪み+チェビシェフ倍音、ハードロック系エレキ)";
+              const active = guitarType === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => {
+                    guitarReleaseAll();
+                    setGuitarTypeState(t);
+                  }}
+                  className={[
+                    "px-3 py-1 text-xs font-semibold transition",
+                    active
+                      ? "bg-accent-500 text-white"
+                      : "text-ink-600 hover:bg-ink-50",
+                  ].join(" ")}
+                  title={title}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-xs text-ink-500">
+            {guitarType === "clean"
+              ? "クリーン: 歪みなし、コードやアルペジオに合う"
+              : "ディストーション: 歪み+倍音強調、ハードロック系"}
           </span>
         </div>
 
