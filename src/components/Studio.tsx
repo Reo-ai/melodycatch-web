@@ -55,6 +55,8 @@ import {
   bassHoldOff,
   bassHoldOn,
   bassReleaseAll,
+  setBassType,
+  type BassType,
 } from "../audio/bassEngine";
 import {
   synthChordOn,
@@ -364,6 +366,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
    * - "raw":  手弾きのタイミングそのままで記録する (補正なし)。
    */
   const [recordCorrectionMode, setRecordCorrectionMode] = useState<"auto" | "raw">("auto");
+  /** ベースのタイプ: ウッド / シンセ / スラップ。 */
+  const [bassType, setBassTypeState] = useState<BassType>("wood");
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
   const [playbackHighlight, setPlaybackHighlight] = useState<Set<number>>(new Set());
@@ -417,6 +421,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   useEffect(() => {
     recordCorrectionModeRef.current = recordCorrectionMode;
   }, [recordCorrectionMode]);
+  // ベースタイプ切替はエンジン側のチェーンを再構築する。
+  useEffect(() => {
+    setBassType(bassType);
+  }, [bassType]);
 
   // スケール変更時はコード選択をリセット
   useEffect(() => {
@@ -2040,6 +2048,49 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             {recordCorrectionMode === "auto"
               ? "ドラムは拍にスナップ・全層を録音停止時にクオンタイズします"
               : "手弾きのタイミングを一切補正しません"}
+          </span>
+        </div>
+
+        {/* ベースタイプ切替: ウッド / シンセ / スラップ */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-ink-600">🎸 ベース音色:</span>
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+            {(["wood", "synth", "slap"] as const).map((t) => {
+              const label = t === "wood" ? "ウッド" : t === "synth" ? "シンセ" : "スラップ";
+              const title =
+                t === "wood"
+                  ? "アップライト/ウッドベース (丸く太い、歪みなし)"
+                  : t === "synth"
+                    ? "シンセベース (鋸波・共振フィルタ・パワフル)"
+                    : "スラップベース (鋭いアタック、明るい中域、カンというノイズ)";
+              const active = bassType === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => {
+                    bassReleaseAll();
+                    setBassTypeState(t);
+                  }}
+                  className={[
+                    "px-3 py-1 text-xs font-semibold transition",
+                    active
+                      ? "bg-accent-500 text-white"
+                      : "text-ink-600 hover:bg-ink-50",
+                  ].join(" ")}
+                  title={title}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-xs text-ink-500">
+            {bassType === "wood"
+              ? "アップライト風: 木の胴鳴り、丸く短い減衰"
+              : bassType === "synth"
+                ? "シンセ風: 鋸波と共振フィルタでパワフル"
+                : "スラップ風: 鋭いプラックと「カン」というアタック"}
           </span>
         </div>
 

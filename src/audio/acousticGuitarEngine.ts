@@ -11,17 +11,18 @@
  * - ショートディレイで「胴の奥で響く反射」を再現し、空間感を作る。
  *
  * シグナルチェーン (ノート信号):
- *   PluckSynth × 8 (attackNoise 1.8, dampening 5200, resonance 0.992)
+ *   PluckSynth × 8 (attackNoise 1.3, dampening 3800, resonance 0.992)
  *     ──▶ HighPass(70Hz)
- *     ──▶ BodyPeak(110Hz, +4dB)        ※ボディ最低共鳴
- *     ──▶ BodyPeak2(220Hz, +3dB)       ※第二ボディ共鳴 (バス側)
+ *     ──▶ BodyPeak(110Hz, +4.5dB)      ※ボディ最低共鳴 (より木胴っぽく)
+ *     ──▶ BodyPeak2(220Hz, +3.5dB)     ※第二ボディ共鳴 (バス側)
  *     ──▶ MudCut(330Hz, -2.5dB)        ※こもりを除去
- *     ──▶ MidPeak(1.8kHz, +1.5dB)      ※コードの輪郭
- *     ──▶ PresencePeak(4kHz, +3.5dB)   ※ピックのアタック・煌めき
- *     ──▶ AirShelf(8kHz, +2dB)         ※鉄弦アコギの空気感
- *     ──▶ LowPass(12kHz)               ※耳に痛い超高域だけカット
- *     ──▶ FeedbackDelay(45ms, 0.18, wet 0.12)  ※胴の奥での反射
- *     ──▶ Chorus(0.55Hz, depth 0.45, wet 0.2)   ※弦のうねり
+ *     ──▶ WoodPeak(800Hz, +1dB)        ※木の中域 (アコギの「ぬくもり」)
+ *     ──▶ MidPeak(1.8kHz, +0.8dB)      ※コードの輪郭 (控えめに)
+ *     ──▶ PresencePeak(2.6kHz, +1.5dB) ※指弾きの自然な存在感 (エレキ的な 4kHz は避ける)
+ *     ──▶ AirShelf(10kHz, +0.6dB)      ※空気感 (ほんのり)
+ *     ──▶ LowPass(9.5kHz)              ※エレキっぽい超高域をバッサリ
+ *     ──▶ FeedbackDelay(45ms, 0.16, wet 0.06)   ※胴の奥での反射 (薄め)
+ *     ──▶ Chorus(0.4Hz, depth 0.35, wet 0.08)   ※弦のうねり (ごく薄く)
  *     ──▶ Gain ──▶ Reverb(decay 3.0, wet 0.3)  ──▶ Destination
  *
  * アタックノイズチェーン (発音時に並列で短時間鳴る):
@@ -43,6 +44,7 @@ let acLowpass: Tone.Filter | null = null;
 let acAirShelf: Tone.Filter | null = null;
 let acPresencePeak: Tone.Filter | null = null;
 let acMidPeak: Tone.Filter | null = null;
+let acWoodPeak: Tone.Filter | null = null;
 let acMudCut: Tone.Filter | null = null;
 let acBodyPeak2: Tone.Filter | null = null;
 let acBodyPeak: Tone.Filter | null = null;
@@ -63,69 +65,76 @@ function ensureAcoustic() {
   // 終段: Reverb → Destination
   acReverb = new Tone.Reverb({ decay: 3.0, wet: 0.3 }).toDestination();
   acGain = new Tone.Gain(0.58).connect(acReverb);
-  // 弦のうねり (12 弦/コーラス感)。
+  // 弦のうねり — エレクトロっぽさを避けるため、コーラスはごく薄く。
   acChorus = new Tone.Chorus({
-    frequency: 0.55,
+    frequency: 0.4,
     delayTime: 3.8,
-    depth: 0.45,
+    depth: 0.35,
     type: "sine",
     spread: 180,
-    wet: 0.2,
+    wet: 0.08,
   }).connect(acGain);
   acChorus.start();
-  // 胴の奥での反射 — ごく短いフィードバックディレイ。
+  // 胴の奥での反射 — ディレイ感を控えめに (空間エフェクトを薄く)。
   acDelay = new Tone.FeedbackDelay({
     delayTime: 0.045,
-    feedback: 0.18,
-    wet: 0.12,
+    feedback: 0.16,
+    wet: 0.06,
   }).connect(acChorus);
-  // 耳に痛い超高域だけカット。
+  // 超高域をしっかりカットして、エレキ的な「シャリ感」を排除。
   acLowpass = new Tone.Filter({
-    frequency: 12000,
+    frequency: 9500,
     type: "lowpass",
     Q: 0.5,
     rolloff: -24,
   }).connect(acDelay);
-  // 空気感 (シェルフで 8kHz 以上を +2dB)。
+  // 空気感 (10kHz 以上をほんのり)。エレキっぽい強い air は避ける。
   acAirShelf = new Tone.Filter({
-    frequency: 8000,
+    frequency: 10000,
     type: "highshelf",
-    gain: 2,
+    gain: 0.6,
   }).connect(acLowpass);
-  // ピックのアタック・煌めき (4kHz)。
+  // 指弾きの自然な存在感 (2.6kHz)。エレキ的な 4kHz プレゼンスは避ける。
   acPresencePeak = new Tone.Filter({
-    frequency: 4000,
+    frequency: 2600,
     type: "peaking",
-    Q: 0.85,
-    gain: 3.5,
+    Q: 0.9,
+    gain: 1.5,
   }).connect(acAirShelf);
-  // コードの輪郭 (中域)。
+  // コードの輪郭 (中域、控えめに)。
   acMidPeak = new Tone.Filter({
     frequency: 1800,
     type: "peaking",
     Q: 1.1,
-    gain: 1.5,
+    gain: 0.8,
   }).connect(acPresencePeak);
+  // 木の中域の「ぬくもり」を 800Hz 付近で軽く足す。
+  acWoodPeak = new Tone.Filter({
+    frequency: 800,
+    type: "peaking",
+    Q: 1.0,
+    gain: 1,
+  }).connect(acMidPeak);
   // こもりカット (330Hz)。
   acMudCut = new Tone.Filter({
     frequency: 330,
     type: "peaking",
     Q: 1.2,
     gain: -2.5,
-  }).connect(acMidPeak);
+  }).connect(acWoodPeak);
   // 第二ボディ共鳴 (220Hz 付近の「ボーン」)。
   acBodyPeak2 = new Tone.Filter({
     frequency: 220,
     type: "peaking",
     Q: 1.3,
-    gain: 3,
+    gain: 3.5,
   }).connect(acMudCut);
-  // ボディ最低共鳴 (110Hz 付近の「胴」)。
+  // ボディ最低共鳴 (110Hz 付近の「胴」)。木胴感をしっかり。
   acBodyPeak = new Tone.Filter({
     frequency: 110,
     type: "peaking",
     Q: 1.2,
-    gain: 4,
+    gain: 4.5,
   }).connect(acBodyPeak2);
   acHighpass = new Tone.Filter({
     frequency: 70,
@@ -134,11 +143,11 @@ function ensureAcoustic() {
 
   for (let i = 0; i < VOICE_COUNT; i++) {
     const v = new Tone.PluckSynth({
-      // ピックでの弾弦感をしっかり出すために noise を強めに。
-      attackNoise: 1.8,
-      // アコギは倍音が豊か → dampening を上げて高域が長く残るように。
-      dampening: 5200,
-      // サステインを長めに (鉄弦アコギは減衰がゆっくり)。
+      // 指/ピックの摩擦音を抑えめにしてエレクトロっぽい鋭さを避ける。
+      attackNoise: 1.3,
+      // dampening を下げて高域を早めに減衰 → エレキ的な「シャリーン」を抑える。
+      dampening: 3800,
+      // サステインは鉄弦アコギらしくゆっくりめに。
       resonance: 0.992,
       release: 1.2,
     });
@@ -147,19 +156,19 @@ function ensureAcoustic() {
     acVoices.push(v);
   }
 
-  // アタックノイズ: ピック/指で弦を弾いた瞬間のスクラッチ音。
-  // → ホワイトノイズの極短いバーストを HPF してから本線にミックス。
+  // アタックノイズ: 指/ピックで弦を弾いた瞬間の摩擦音。
+  // エレキっぽい鋭さを抑えるため、HPF を下げて全体音量も控えめにする。
   const noiseHP = new Tone.Filter({
-    frequency: 2500,
+    frequency: 2000,
     type: "highpass",
     Q: 0.5,
   });
-  const noiseGain = new Tone.Gain(0.06);
+  const noiseGain = new Tone.Gain(0.035);
   acAttackNoise = new Tone.NoiseSynth({
     noise: { type: "white" },
-    envelope: { attack: 0.001, decay: 0.04, sustain: 0, release: 0.04 },
+    envelope: { attack: 0.001, decay: 0.035, sustain: 0, release: 0.04 },
   });
-  acAttackNoise.volume.value = -14;
+  acAttackNoise.volume.value = -17;
   acAttackNoise.connect(noiseHP);
   noiseHP.connect(noiseGain);
   noiseGain.connect(acHighpass);
@@ -169,9 +178,9 @@ function ensureAcoustic() {
 function triggerAttackNoise(velocity: number, time?: number): void {
   if (!acAttackNoise) return;
   try {
-    // velocity に応じてノイズの音量を微調整。
-    acAttackNoise.volume.value = -14 + (clamp01(velocity) - 0.85) * 6;
-    acAttackNoise.triggerAttackRelease(0.04, time);
+    // velocity に応じてノイズの音量を微調整。エレキっぽい鋭さを抑えるため控えめに。
+    acAttackNoise.volume.value = -17 + (clamp01(velocity) - 0.85) * 5;
+    acAttackNoise.triggerAttackRelease(0.035, time);
   } catch {
     /* 高速連打時の TimeError は無視 */
   }
