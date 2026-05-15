@@ -21,6 +21,7 @@ const LAYER_LABEL: Record<LayerId, string> = {
   synth: "シンセ",
   guitar: "ギター",
   acoustic: "アコギ",
+  vocal: "ボーカル",
 };
 
 const LAYER_COLOR: Record<LayerId, string> = {
@@ -31,6 +32,7 @@ const LAYER_COLOR: Record<LayerId, string> = {
   synth: "bg-violet-500",
   guitar: "bg-sky-500",
   acoustic: "bg-orange-600",
+  vocal: "bg-fuchsia-500",
 };
 
 export default function SavedPlayer() {
@@ -106,6 +108,7 @@ export default function SavedPlayer() {
     data.synth,
     data.guitar,
     data.acoustic ?? emptyLayer("acoustic", "アコギ"),
+    data.vocal ?? emptyLayer("vocal", "ボーカル"),
     data.drum,
   ];
   const totalDuration = layers.reduce((acc, l) => {
@@ -206,6 +209,7 @@ export default function SavedPlayer() {
           synth={data.synth ?? emptyLayer("synth", "シンセ")}
           guitar={data.guitar ?? emptyLayer("guitar", "ギター")}
           acoustic={data.acoustic ?? emptyLayer("acoustic", "アコギ")}
+          vocal={data.vocal ?? emptyLayer("vocal", "ボーカル")}
           isActive={playing}
           recordingLayerId={null}
           getPlayheadSec={() =>
@@ -218,7 +222,7 @@ export default function SavedPlayer() {
       <section className="rounded-2xl border border-ink-200 bg-white p-5 shadow-sm">
         <h3 className="mb-3 text-sm font-semibold text-ink-700">トラック構成</h3>
         <ul className="flex flex-col gap-2">
-          {(["melody", "chord", "bass", "synth", "guitar", "acoustic", "drum"] as LayerId[]).map(
+          {(["melody", "chord", "bass", "synth", "guitar", "acoustic", "vocal", "drum"] as LayerId[]).map(
             (id) => {
               const l = layers.find((x) => x.id === id);
               const count = l ? l.notes.length : 0;

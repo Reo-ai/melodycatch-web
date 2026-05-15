@@ -32,7 +32,8 @@ function countNotes(d: SlotData | CurrentSnapshot): number {
     d.bass.notes.length +
     d.synth.notes.length +
     d.guitar.notes.length +
-    (d.acoustic?.notes.length ?? 0)
+    (d.acoustic?.notes.length ?? 0) +
+    (d.vocal?.notes.length ?? 0)
   );
 }
 
@@ -100,6 +101,7 @@ export default function LibraryPage() {
       synth: snap.synth,
       guitar: snap.guitar,
       acoustic: snap.acoustic,
+      vocal: snap.vocal,
     };
     if (saveSlot(slot, data)) {
       refresh();

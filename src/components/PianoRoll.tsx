@@ -42,6 +42,7 @@ interface PianoRollProps {
   synth: Layer;
   guitar: Layer;
   acoustic: Layer;
+  vocal: Layer;
   /** 録音中 or 再生中 */
   isActive: boolean;
   /** 録音中の対象トラック (ハイライト色を変える) */
@@ -149,6 +150,7 @@ const COLOR_BASS = "#2dd4bf";
 const COLOR_SYNTH = "#f472b6";
 const COLOR_GUITAR = "#fbbf24";
 const COLOR_ACOUSTIC = "#d97706";
+const COLOR_VOCAL = "#d946ef";
 const COLOR_REC = "#ef4444";
 const COLOR_PLAY = "#38bdf8";
 /** 端を掴むためのつまみ幅 (px)。短いノートでは自動的に半分以下に縮める。 */
@@ -274,6 +276,7 @@ export default function PianoRoll({
   synth,
   guitar,
   acoustic,
+  vocal,
   isActive,
   recordingLayerId,
   getPlayheadSec,
@@ -397,6 +400,7 @@ export default function PianoRoll({
       ...synth.notes,
       ...guitar.notes,
       ...acoustic.notes,
+      ...vocal.notes,
     ];
     let pMin = 60;
     let pMax = 72;
@@ -447,7 +451,7 @@ export default function PianoRoll({
       pitchMax: pMax,
       totalSec: tot,
     };
-  }, [melody.notes, chord.notes, drum.notes, bass.notes, synth.notes, guitar.notes, acoustic.notes, pxPerSec, rowHeight, bpm]);
+  }, [melody.notes, chord.notes, drum.notes, bass.notes, synth.notes, guitar.notes, acoustic.notes, vocal.notes, pxPerSec, rowHeight, bpm]);
 
   const drumTop = TOP_RULER_HEIGHT;
   const pitchTop = TOP_RULER_HEIGHT + DRUM_TOTAL_HEIGHT + DRUM_PITCH_GAP;
@@ -592,6 +596,7 @@ export default function PianoRoll({
     { id: "synth", layer: synth, color: COLOR_SYNTH, opacity: 0.9 },
     { id: "guitar", layer: guitar, color: COLOR_GUITAR, opacity: 0.9 },
     { id: "acoustic", layer: acoustic, color: COLOR_ACOUSTIC, opacity: 0.9 },
+    { id: "vocal", layer: vocal, color: COLOR_VOCAL, opacity: 0.9 },
     { id: "melody", layer: melody, color: COLOR_MELODY, opacity: 0.95 },
   ];
 
@@ -612,6 +617,8 @@ export default function PianoRoll({
         return guitar;
       case "acoustic":
         return acoustic;
+      case "vocal":
+        return vocal;
     }
   }
 
@@ -1129,6 +1136,13 @@ export default function PianoRoll({
         <span className="flex items-center gap-1">
           <span
             className="inline-block h-2 w-3 rounded-sm"
+            style={{ backgroundColor: COLOR_VOCAL }}
+          />
+          ボーカル ({vocal.notes.length})
+        </span>
+        <span className="flex items-center gap-1">
+          <span
+            className="inline-block h-2 w-3 rounded-sm"
             style={{ backgroundColor: DRUM_LANES[0].color }}
           />
           HiHat
@@ -1251,7 +1265,9 @@ export default function PianoRoll({
                         ? "🎸 ギター層を録音中"
                         : recordingLayerId === "acoustic"
                           ? "🎸 アコギ層を録音中"
-                          : "▶ 再生中"}
+                          : recordingLayerId === "vocal"
+                            ? "🎤 ボーカル層を録音中"
+                            : "▶ 再生中"}
           </span>
         )}
       </div>
