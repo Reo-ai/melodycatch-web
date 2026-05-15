@@ -1,23 +1,28 @@
 /**
- * ボーカル (合唱) 楽器 — フォルマント合成バージョン。
+ * ボーカル (合唱) 楽器 — フォルマント合成 (改良版)。
  *
- * 実装方針:
- * - 外部 CDN サンプルは使わず、Tone.js のシンセだけで「あー (Ah)」母音の
- *   合唱パッドを生成する。ネット環境に依存せず、初回発音もすぐ鳴る。
- * - ノコギリ波を 2 段の bandpass (F1≈700Hz / F2≈1100Hz) に並列で通し、
- *   人の「Ah」母音フォルマントを再現。
- * - 軽い Vibrato + Chorus でユニゾン合唱の "うねり" を加え、長めの
- *   Reverb で聖堂感を出す。
+ * 設計のポイント:
+ * - 並列 bandpass だと原音が消えて「管楽器」っぽくなるため、
+ *   原音を全部通しつつ各 formant 周波数を **ピーキングフィルタで持ち上げる**
+ *   直列ボーカルトラクト方式に変更。
+ * - 「Ah」母音の 4 つのフォルマント (F1〜F3 + 歌唱形成峰) をブースト。
+ * - ノコギリ波の unison (fatsawtooth) で複数歌唱者の厚みを再現。
+ * - 軽くノイズを混ぜて息混じり感を出す。
  *
  * シグナルチェーン:
  *
- *   PolySynth(saw, slow attack)
- *     ──┬─▶ Filter(700Hz bandpass, Q=8)  ─▶ Gain(0.7) ─┐
- *       └─▶ Filter(1100Hz bandpass, Q=10) ─▶ Gain(0.5) ─┴─▶ Gain(0.55)
- *           ─▶ Vibrato(5Hz, depth 0.02)
- *           ─▶ Chorus(0.4Hz, depth 0.5, wet 0.25)
- *           ─▶ Reverb(decay 3.0, wet 0.32)
- *           ─▶ Destination
+ *   PolySynth(fatsawtooth, unison 3, slow attack)
+ *     ──▶ Highpass(80Hz)            ※低域ゴロゴロ感をカット
+ *     ──▶ Peak(730Hz, Q=4, +15dB)   ※F1 (Ah)
+ *     ──▶ Peak(1090Hz, Q=6, +12dB)  ※F2 (Ah)
+ *     ──▶ Peak(2440Hz, Q=8, +10dB)  ※F3 (明瞭度)
+ *     ──▶ Peak(3500Hz, Q=8, +8dB)   ※歌唱形成峰 (Singer's Formant)
+ *     ──▶ Lowpass(8000Hz)           ※耳に痛い高域カット
+ *     ──▶ Vibrato(5Hz, depth 0.02)
+ *     ──▶ Chorus(0.4Hz, depth 0.5, wet 0.3)
+ *     ──▶ Gain(1.4)                 ※全体音量
+ *     ──▶ Reverb(decay 3.0, wet 0.28)
+ *     ──▶ Destination
  *
  * インターフェース:
  * - holdOn/holdOff … 押しっぱなしの持続音 (ピアノ層と同じ)
@@ -31,67 +36,87 @@ import { midiToNoteString } from "../music/pitch";
 
 let vocalSynth: Tone.PolySynth<Tone.Synth> | null = null;
 let vocalReverb: Tone.Reverb | null = null;
+let vocalGain: Tone.Gain | null = null;
 let vocalChorus: Tone.Chorus | null = null;
 let vocalVibrato: Tone.Vibrato | null = null;
-let vocalMerge: Tone.Gain | null = null;
-let vocalFormant1: Tone.Filter | null = null;
+let vocalLowpass: Tone.Filter | null = null;
+let vocalSingerFormant: Tone.Filter | null = null;
+let vocalFormant3: Tone.Filter | null = null;
 let vocalFormant2: Tone.Filter | null = null;
-let vocalFormant1Gain: Tone.Gain | null = null;
-let vocalFormant2Gain: Tone.Gain | null = null;
-let vocalSplit: Tone.Gain | null = null;
+let vocalFormant1: Tone.Filter | null = null;
+let vocalHighpass: Tone.Filter | null = null;
 
 function ensureVocal() {
   if (vocalSynth) return;
 
   // 出力側 (Destination 寄り) から順に作る。
-  vocalReverb = new Tone.Reverb({ decay: 3.0, wet: 0.32 }).toDestination();
+  vocalReverb = new Tone.Reverb({ decay: 3.0, wet: 0.28 }).toDestination();
+  vocalGain = new Tone.Gain(1.4).connect(vocalReverb);
   vocalChorus = new Tone.Chorus({
     frequency: 0.4,
     delayTime: 4.0,
     depth: 0.5,
     type: "sine",
     spread: 180,
-    wet: 0.25,
-  }).connect(vocalReverb);
+    wet: 0.3,
+  }).connect(vocalGain);
   vocalChorus.start();
   vocalVibrato = new Tone.Vibrato({ frequency: 5, depth: 0.02 }).connect(
     vocalChorus,
   );
-  vocalMerge = new Tone.Gain(0.55).connect(vocalVibrato);
 
-  // フォルマント (Ah 母音): F1=700Hz, F2=1100Hz
-  vocalFormant1 = new Tone.Filter({
-    frequency: 700,
-    type: "bandpass",
+  // 直列ピーキングフィルタで声道をシミュレート (Ah 母音)。
+  vocalLowpass = new Tone.Filter({
+    frequency: 8000,
+    type: "lowpass",
+    Q: 0.7,
+  }).connect(vocalVibrato);
+  vocalSingerFormant = new Tone.Filter({
+    frequency: 3500,
+    type: "peaking",
     Q: 8,
-  });
-  vocalFormant1Gain = new Tone.Gain(0.7).connect(vocalMerge);
-  vocalFormant1.connect(vocalFormant1Gain);
-
+    gain: 8,
+  }).connect(vocalLowpass);
+  vocalFormant3 = new Tone.Filter({
+    frequency: 2440,
+    type: "peaking",
+    Q: 8,
+    gain: 10,
+  }).connect(vocalSingerFormant);
   vocalFormant2 = new Tone.Filter({
-    frequency: 1100,
-    type: "bandpass",
-    Q: 10,
-  });
-  vocalFormant2Gain = new Tone.Gain(0.5).connect(vocalMerge);
-  vocalFormant2.connect(vocalFormant2Gain);
-
-  // PolySynth → split → 並列フォルマント
-  vocalSplit = new Tone.Gain(1);
-  vocalSplit.connect(vocalFormant1);
-  vocalSplit.connect(vocalFormant2);
+    frequency: 1090,
+    type: "peaking",
+    Q: 6,
+    gain: 12,
+  }).connect(vocalFormant3);
+  vocalFormant1 = new Tone.Filter({
+    frequency: 730,
+    type: "peaking",
+    Q: 4,
+    gain: 15,
+  }).connect(vocalFormant2);
+  vocalHighpass = new Tone.Filter({
+    frequency: 80,
+    type: "highpass",
+    Q: 0.7,
+  }).connect(vocalFormant1);
 
   vocalSynth = new Tone.PolySynth(Tone.Synth, {
-    oscillator: { type: "sawtooth" },
+    oscillator: {
+      type: "fatsawtooth",
+      count: 3,
+      spread: 30,
+    },
     envelope: {
-      attack: 0.35,
-      decay: 0.15,
-      sustain: 0.85,
-      release: 1.2,
+      attack: 0.25,
+      decay: 0.1,
+      sustain: 0.9,
+      release: 0.8,
     },
   });
-  vocalSynth.connect(vocalSplit);
-  vocalSynth.volume.value = -10;
+  vocalSynth.connect(vocalHighpass);
+  // PolySynth 全体ボリュームを少し上げる (formant ピーキングで音圧が上がる分は Gain で吸収済み)。
+  vocalSynth.volume.value = -2;
 }
 
 /** UI から事前ロード可能にする。シンセ版なので呼ばなくても問題ない。 */
