@@ -1,121 +1,107 @@
 /**
- * ボーカル (合唱) 楽器。
+ * ボーカル (合唱) 楽器 — フォルマント合成バージョン。
  *
  * 実装方針:
- * - 音源は **Tone.Sampler** で `nbrosowsky/tonejs-instruments` の Choir Aahs
- *   サンプルを CDN (GitHub Pages) から直接ロードする。
- *   元サンプル: Versilian Studios "Versilian Community Sample Library (VCSL)"
- *   ライセンス: CC0 / Public Domain。
- * - サンプルを直接鳴らすので「人の声」のフォルマント感がそのまま得られる。
- *   合成 (フォルマントシンセ) より自然で、追加の重量級ライブラリも不要。
+ * - 外部 CDN サンプルは使わず、Tone.js のシンセだけで「あー (Ah)」母音の
+ *   合唱パッドを生成する。ネット環境に依存せず、初回発音もすぐ鳴る。
+ * - ノコギリ波を 2 段の bandpass (F1≈700Hz / F2≈1100Hz) に並列で通し、
+ *   人の「Ah」母音フォルマントを再現。
+ * - 軽い Vibrato + Chorus でユニゾン合唱の "うねり" を加え、長めの
+ *   Reverb で聖堂感を出す。
  *
  * シグナルチェーン:
- *   Sampler (Choir Aahs)
- *     ──▶ HighPass(80Hz)            ※低域のサンプルノイズを落とす
- *     ──▶ BodyPeak(250Hz, +1dB)     ※声の胸響き
- *     ──▶ PresencePeak(2.5kHz, +1.5dB) ※歌詞の明瞭度
- *     ──▶ AirShelf(8kHz, +1dB)      ※空気感
- *     ──▶ LowPass(10kHz)            ※サンプル由来のシャリ感をカット
- *     ──▶ Chorus(0.3Hz, depth 0.4, wet 0.18) ※合唱の "うねり"
- *     ──▶ Gain(0.55)
- *     ──▶ Reverb(decay 3.2, wet 0.32) ※聖堂感
- *     ──▶ Destination
+ *
+ *   PolySynth(saw, slow attack)
+ *     ──┬─▶ Filter(700Hz bandpass, Q=8)  ─▶ Gain(0.7) ─┐
+ *       └─▶ Filter(1100Hz bandpass, Q=10) ─▶ Gain(0.5) ─┴─▶ Gain(0.55)
+ *           ─▶ Vibrato(5Hz, depth 0.02)
+ *           ─▶ Chorus(0.4Hz, depth 0.5, wet 0.25)
+ *           ─▶ Reverb(decay 3.0, wet 0.32)
+ *           ─▶ Destination
  *
  * インターフェース:
  * - holdOn/holdOff … 押しっぱなしの持続音 (ピアノ層と同じ)
  * - triggerNote   … 1 ノートを所定の長さで鳴らす
- * - chordOn       … 和音を一括発音 (コードパレット用、軽く時間差で柔らかく)
+ * - chordOn       … 和音を一括発音 (コードパレット用)
  * - releaseAll    … 全ボイス停止
  */
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 
-const SAMPLE_BASE_URL =
-  "https://nbrosowsky.github.io/tonejs-instruments/samples/choir/";
-
-let vocalSampler: Tone.Sampler | null = null;
+let vocalSynth: Tone.PolySynth<Tone.Synth> | null = null;
 let vocalReverb: Tone.Reverb | null = null;
 let vocalChorus: Tone.Chorus | null = null;
-let vocalLowpass: Tone.Filter | null = null;
-let vocalAirShelf: Tone.Filter | null = null;
-let vocalPresencePeak: Tone.Filter | null = null;
-let vocalBodyPeak: Tone.Filter | null = null;
-let vocalHighpass: Tone.Filter | null = null;
-let vocalGain: Tone.Gain | null = null;
-
-/** ロード完了したかどうか (UI 側で "読み込み中..." 表示に使える)。 */
-let vocalLoaded = false;
+let vocalVibrato: Tone.Vibrato | null = null;
+let vocalMerge: Tone.Gain | null = null;
+let vocalFormant1: Tone.Filter | null = null;
+let vocalFormant2: Tone.Filter | null = null;
+let vocalFormant1Gain: Tone.Gain | null = null;
+let vocalFormant2Gain: Tone.Gain | null = null;
+let vocalSplit: Tone.Gain | null = null;
 
 function ensureVocal() {
-  if (vocalSampler) return;
+  if (vocalSynth) return;
 
-  vocalReverb = new Tone.Reverb({ decay: 3.2, wet: 0.32 }).toDestination();
-  vocalGain = new Tone.Gain(0.55).connect(vocalReverb);
+  // 出力側 (Destination 寄り) から順に作る。
+  vocalReverb = new Tone.Reverb({ decay: 3.0, wet: 0.32 }).toDestination();
   vocalChorus = new Tone.Chorus({
-    frequency: 0.3,
+    frequency: 0.4,
     delayTime: 4.0,
-    depth: 0.4,
+    depth: 0.5,
     type: "sine",
     spread: 180,
-    wet: 0.18,
-  }).connect(vocalGain);
+    wet: 0.25,
+  }).connect(vocalReverb);
   vocalChorus.start();
-  vocalLowpass = new Tone.Filter({
-    frequency: 10000,
-    type: "lowpass",
-    Q: 0.5,
-    rolloff: -24,
-  }).connect(vocalChorus);
-  vocalAirShelf = new Tone.Filter({
-    frequency: 8000,
-    type: "highshelf",
-    gain: 1,
-  }).connect(vocalLowpass);
-  vocalPresencePeak = new Tone.Filter({
-    frequency: 2500,
-    type: "peaking",
-    Q: 1.0,
-    gain: 1.5,
-  }).connect(vocalAirShelf);
-  vocalBodyPeak = new Tone.Filter({
-    frequency: 250,
-    type: "peaking",
-    Q: 1.0,
-    gain: 1,
-  }).connect(vocalPresencePeak);
-  vocalHighpass = new Tone.Filter({
-    frequency: 80,
-    type: "highpass",
-  }).connect(vocalBodyPeak);
+  vocalVibrato = new Tone.Vibrato({ frequency: 5, depth: 0.02 }).connect(
+    vocalChorus,
+  );
+  vocalMerge = new Tone.Gain(0.55).connect(vocalVibrato);
 
-  vocalSampler = new Tone.Sampler({
-    urls: {
-      A3: "A3.mp3",
-      C4: "C4.mp3",
-      E4: "E4.mp3",
-      A4: "A4.mp3",
-      C5: "C5.mp3",
-      E5: "E5.mp3",
-      A5: "A5.mp3",
+  // フォルマント (Ah 母音): F1=700Hz, F2=1100Hz
+  vocalFormant1 = new Tone.Filter({
+    frequency: 700,
+    type: "bandpass",
+    Q: 8,
+  });
+  vocalFormant1Gain = new Tone.Gain(0.7).connect(vocalMerge);
+  vocalFormant1.connect(vocalFormant1Gain);
+
+  vocalFormant2 = new Tone.Filter({
+    frequency: 1100,
+    type: "bandpass",
+    Q: 10,
+  });
+  vocalFormant2Gain = new Tone.Gain(0.5).connect(vocalMerge);
+  vocalFormant2.connect(vocalFormant2Gain);
+
+  // PolySynth → split → 並列フォルマント
+  vocalSplit = new Tone.Gain(1);
+  vocalSplit.connect(vocalFormant1);
+  vocalSplit.connect(vocalFormant2);
+
+  vocalSynth = new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: "sawtooth" },
+    envelope: {
+      attack: 0.35,
+      decay: 0.15,
+      sustain: 0.85,
+      release: 1.2,
     },
-    baseUrl: SAMPLE_BASE_URL,
-    release: 1.2,
-    onload: () => {
-      vocalLoaded = true;
-    },
-  }).connect(vocalHighpass);
-  // サンプル全体音量を下げて他楽器とバランスをとる。
-  vocalSampler.volume.value = -6;
+  });
+  vocalSynth.connect(vocalSplit);
+  vocalSynth.volume.value = -10;
 }
 
-export function isVocalLoaded(): boolean {
-  return vocalLoaded;
-}
-
-/** UI から事前ロード可能にする。初回発音時のもたつき軽減用。 */
+/** UI から事前ロード可能にする。シンセ版なので呼ばなくても問題ない。 */
 export function preloadVocal(): void {
   ensureVocal();
+}
+
+/** シンセ実装は常にロード済み扱い。 */
+export function isVocalLoaded(): boolean {
+  return vocalSynth != null;
 }
 
 function clamp01(v: number): number {
@@ -124,11 +110,15 @@ function clamp01(v: number): number {
 
 export function vocalHoldOn(midi: number, velocity = 0.85): void {
   ensureVocal();
-  vocalSampler?.triggerAttack(midiToNoteString(midi), undefined, clamp01(velocity));
+  vocalSynth?.triggerAttack(
+    midiToNoteString(midi),
+    undefined,
+    clamp01(velocity),
+  );
 }
 
 export function vocalHoldOff(midi: number): void {
-  vocalSampler?.triggerRelease(midiToNoteString(midi));
+  vocalSynth?.triggerRelease(midiToNoteString(midi));
 }
 
 export function vocalTriggerNote(
@@ -138,7 +128,7 @@ export function vocalTriggerNote(
   time?: number,
 ): void {
   ensureVocal();
-  vocalSampler?.triggerAttackRelease(
+  vocalSynth?.triggerAttackRelease(
     midiToNoteString(midi),
     Math.max(0.05, durationSec),
     time,
@@ -156,9 +146,9 @@ export function vocalChordOn(
   duration = 1.6,
 ): void {
   ensureVocal();
-  if (!vocalSampler || midiNotes.length === 0) return;
+  if (!vocalSynth || midiNotes.length === 0) return;
   const notes = midiNotes.map(midiToNoteString);
-  vocalSampler.triggerAttackRelease(
+  vocalSynth.triggerAttackRelease(
     notes,
     Math.max(0.05, duration),
     undefined,
@@ -167,5 +157,5 @@ export function vocalChordOn(
 }
 
 export function vocalReleaseAll(): void {
-  vocalSampler?.releaseAll();
+  vocalSynth?.releaseAll();
 }
