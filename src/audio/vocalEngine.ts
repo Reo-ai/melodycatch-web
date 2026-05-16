@@ -1,53 +1,89 @@
 /**
- * ボーカル (合唱) 楽器 — FluidR3 GM "Choir Aahs" サンプル再生版。
+ * ボーカル (合唱) 楽器 — FluidR3 GM サンプル + 母音切替版。
  *
- * 音源について:
- * - `gleitz/midi-js-soundfonts` が GitHub Pages で公開している
- *   FluidR3 GM SoundFont の "Choir Aahs" (Program 52) を使う。
- *   2.8MB の JS ファイルに「A0〜C8 のナチュラル音 52 サンプル」が
- *   base64 で埋め込まれている形式。
- * - ライセンスは MIT (FluidR3 自体は OFL/CC-by 系で、midi-js-soundfonts は
- *   商用利用も明示的に許可されている)。
+ * 母音モード:
+ *   - "aah": Choir Aahs (Program 52) を直接再生 (明るい「アー」)
+ *   - "ooh": Voice Oohs (Program 53) を直接再生 (柔らかい「ウー」)
+ *   - "hum": Voice Oohs をローパス + ハイ減衰で閉口音化 (「んー」)
  *
- * ロード戦略:
- * - 初回発音時に 2.8MB の fetch + デコードが走るので、それまでは
- *   フォルマント合成 (前バージョン) をフォールバックとして鳴らす。
- *   ロード完了後に自動で Tone.Sampler 経由の実サンプル再生に切り替わる。
+ * サンプルは 2.8MB / 母音 で大きいため、選択された母音だけ遅延ロードする。
+ * ロード中は前バージョンと同じフォルマント合成フォールバックを鳴らす。
  *
- * シグナルチェーン:
+ * 出力ルーティング (母音ごとに独立した sampler → 母音別の post-chain → 共通バス):
  *
- *   Sampler (Choir Aahs サンプル群)
- *     ──▶ Chorus(0.3Hz, depth 0.4, wet 0.1)
- *     ──▶ Gain(1.0)
- *     ──▶ Reverb(decay 3.0, wet 0.28)
- *     ──▶ Destination
+ *   Sampler(aah) ─▶ Gain(post-aah) ──┐
+ *   Sampler(ooh) ─▶ Gain(post-ooh) ──┼─▶ vocalInput ─▶ Chorus ─▶ Gain ─▶ Reverb ─▶ Dest
+ *   Sampler(hum) ─▶ Lowpass(500Hz) ─▶ Gain(post-hum) ┘
+ *   Fallback (formant synth) ──────────▶ vocalInput
  *
- *   (ロード中フォールバック)
- *   PolySynth(fatsawtooth) ─▶ HighPass ─▶ Peak F1/F2/F3/SingerFormant
- *     ─▶ LowPass ─▶ Chorus ─▶ Gain ─▶ Reverb ─▶ Destination
+ * ライセンス:
+ * - midi-js-soundfonts (MIT) + FluidR3 GM (MIT/OFL系, 商用可)
  */
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 import { loadGleitzSoundfont } from "./voiceSampleLoader";
 
-const SOUNDFONT_URL =
-  "https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/choir_aahs-mp3.js";
+export type VocalVowel = "aah" | "ooh" | "hum";
 
-// 出力チェーン (サンプラーとフォールバック合成で共有)
+interface VowelSpec {
+  url: string;
+  sfName: string;
+  /** UI 表示用日本語ラベル。 */
+  label: string;
+  /** Sampler 自体のボリューム (dB)。母音ごとの音量差を吸収。 */
+  samplerDb: number;
+}
+
+const VOWEL_SPECS: Record<VocalVowel, VowelSpec> = {
+  aah: {
+    url: "https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/choir_aahs-mp3.js",
+    sfName: "choir_aahs",
+    label: "アー",
+    samplerDb: -3,
+  },
+  ooh: {
+    url: "https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/voice_oohs-mp3.js",
+    sfName: "voice_oohs",
+    label: "ウー",
+    samplerDb: -2,
+  },
+  hum: {
+    // Hum は Ooh サンプルをローパスで通すので URL は Ooh と同じ。
+    url: "https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/voice_oohs-mp3.js",
+    sfName: "voice_oohs",
+    label: "んー",
+    samplerDb: 0,
+  },
+};
+
+// 共通出力チェーン -----------------------------------------------------------
 let vocalReverb: Tone.Reverb | null = null;
 let vocalGain: Tone.Gain | null = null;
 let vocalChorus: Tone.Chorus | null = null;
 let vocalInput: Tone.Gain | null = null;
 
-// 実サンプル再生
-let vocalSampler: Tone.Sampler | null = null;
-let vocalLoading = false;
-let vocalReady = false;
+// 母音別 sampler/状態 --------------------------------------------------------
+interface VowelRuntime {
+  sampler: Tone.Sampler | null;
+  loading: boolean;
+  ready: boolean;
+  /** sampler 出力先 (post chain head)。母音切替時に gain を 0 にして遮断する。 */
+  postInput: Tone.ToneAudioNode | null;
+  postGain: Tone.Gain | null;
+}
+const vowelRuntime: Record<VocalVowel, VowelRuntime> = {
+  aah: { sampler: null, loading: false, ready: false, postInput: null, postGain: null },
+  ooh: { sampler: null, loading: false, ready: false, postInput: null, postGain: null },
+  hum: { sampler: null, loading: false, ready: false, postInput: null, postGain: null },
+};
 
-// ロード中フォールバック (フォルマント合成)
+// ロード中フォールバック -----------------------------------------------------
 let fallbackSynth: Tone.PolySynth<Tone.Synth> | null = null;
 let fallbackChainHead: Tone.Filter | null = null;
+
+// 現在選択中の母音 -----------------------------------------------------------
+let activeVowel: VocalVowel = "aah";
 
 function buildOutputChain() {
   if (vocalInput) return;
@@ -63,6 +99,24 @@ function buildOutputChain() {
   }).connect(vocalGain);
   vocalChorus.start();
   vocalInput = new Tone.Gain(1).connect(vocalChorus);
+}
+
+function buildVowelPostChain(vowel: VocalVowel): VowelRuntime {
+  buildOutputChain();
+  const rt = vowelRuntime[vowel];
+  if (rt.postInput) return rt;
+  // 現在 active な母音だけ通す/それ以外は 0 にする。
+  const gain = new Tone.Gain(vowel === activeVowel ? 1 : 0).connect(vocalInput!);
+  rt.postGain = gain;
+  if (vowel === "hum") {
+    // 閉口音シミュレート: 500Hz ローパス + 軽めのハイ減衰 + 出力を少し落とす
+    const lp = new Tone.Filter({ frequency: 500, type: "lowpass", Q: 0.9 }).connect(gain);
+    const shelf = new Tone.Filter({ frequency: 1200, type: "highshelf", gain: -6 }).connect(lp);
+    rt.postInput = shelf;
+  } else {
+    rt.postInput = gain;
+  }
+  return rt;
 }
 
 function buildFallbackSynth() {
@@ -87,70 +141,96 @@ function buildFallbackSynth() {
   fallbackSynth.volume.value = -2;
 }
 
-async function ensureSamplerLoaded() {
-  if (vocalSampler || vocalLoading) return;
-  vocalLoading = true;
+async function ensureSamplerLoaded(vowel: VocalVowel) {
+  const rt = vowelRuntime[vowel];
+  if (rt.sampler || rt.loading) return;
+  rt.loading = true;
   try {
-    buildOutputChain();
-    const samples = await loadGleitzSoundfont(SOUNDFONT_URL, "choir_aahs");
+    const post = buildVowelPostChain(vowel);
+    const spec = VOWEL_SPECS[vowel];
+    const samples = await loadGleitzSoundfont(spec.url, spec.sfName);
     await new Promise<void>((resolve, reject) => {
-      vocalSampler = new Tone.Sampler({
+      const s = new Tone.Sampler({
         urls: samples,
         release: 1.2,
         onload: () => {
-          vocalReady = true;
+          rt.ready = true;
           resolve();
         },
         onerror: (err) => {
           reject(err);
         },
-      }).connect(vocalInput!);
-      vocalSampler.volume.value = -3;
+      }).connect(post.postInput!);
+      s.volume.value = spec.samplerDb;
+      rt.sampler = s;
     });
   } catch (e) {
-    // ロード失敗時はフォールバック合成が代わりに鳴り続ける。
-    console.error("[vocal] sample load failed, falling back to formant synth", e);
-    vocalSampler = null;
-    vocalReady = false;
+    console.error(`[vocal] sample load failed for ${vowel}, fallback synth in use`, e);
+    rt.sampler = null;
+    rt.ready = false;
   } finally {
-    vocalLoading = false;
+    rt.loading = false;
   }
 }
 
 function ensureVocal() {
   buildFallbackSynth();
-  void ensureSamplerLoaded();
+  void ensureSamplerLoaded(activeVowel);
 }
 
 /** UI から事前ロード可能にする (初回発音時のもたつき軽減用)。 */
-export function preloadVocal(): void {
-  ensureVocal();
+export function preloadVocal(vowel?: VocalVowel): void {
+  buildFallbackSynth();
+  void ensureSamplerLoaded(vowel ?? activeVowel);
 }
 
-/** 本物サンプルがロード完了したか (UI の "読み込み中..." 表示用)。 */
-export function isVocalLoaded(): boolean {
-  return vocalReady;
+/** 現在 active な母音のサンプルがロード完了したか。 */
+export function isVocalLoaded(vowel?: VocalVowel): boolean {
+  return vowelRuntime[vowel ?? activeVowel].ready;
 }
 
-/** 本物サンプルを fetch 中か。 */
-export function isVocalLoading(): boolean {
-  return vocalLoading;
+/** 現在 active な母音のサンプルを fetch 中か。 */
+export function isVocalLoading(vowel?: VocalVowel): boolean {
+  return vowelRuntime[vowel ?? activeVowel].loading;
+}
+
+/** 現在選択中の母音を取得。 */
+export function getVocalVowel(): VocalVowel {
+  return activeVowel;
+}
+
+/** 母音を切り替える。サンプル未ロードなら自動でロードを開始する。 */
+export function setVocalVowel(vowel: VocalVowel): void {
+  if (vowel === activeVowel) return;
+  // 切り替え前に旧母音の鳴っている音を止める。
+  vowelRuntime[activeVowel].sampler?.releaseAll();
+  // post-chain の gain で物理的に遮断 (リバーブテールは残す)。
+  const prev = vowelRuntime[activeVowel];
+  if (prev.postGain) prev.postGain.gain.rampTo(0, 0.05);
+  activeVowel = vowel;
+  buildFallbackSynth();
+  buildVowelPostChain(vowel);
+  const next = vowelRuntime[vowel];
+  if (next.postGain) next.postGain.gain.rampTo(1, 0.05);
+  void ensureSamplerLoaded(vowel);
 }
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
-function useSampler(): boolean {
-  return vocalReady && vocalSampler != null;
+function activeSampler(): Tone.Sampler | null {
+  const rt = vowelRuntime[activeVowel];
+  return rt.ready ? rt.sampler : null;
 }
 
 export function vocalHoldOn(midi: number, velocity = 0.85): void {
   ensureVocal();
   const note = midiToNoteString(midi);
   const v = clamp01(velocity);
-  if (useSampler()) {
-    vocalSampler!.triggerAttack(note, undefined, v);
+  const s = activeSampler();
+  if (s) {
+    s.triggerAttack(note, undefined, v);
   } else {
     fallbackSynth?.triggerAttack(note, undefined, v);
   }
@@ -159,7 +239,9 @@ export function vocalHoldOn(midi: number, velocity = 0.85): void {
 export function vocalHoldOff(midi: number): void {
   const note = midiToNoteString(midi);
   // 切り替わり境界で取り残されないよう、両方に release を投げる。
-  vocalSampler?.triggerRelease(note);
+  for (const v of Object.values(vowelRuntime)) {
+    v.sampler?.triggerRelease(note);
+  }
   fallbackSynth?.triggerRelease(note);
 }
 
@@ -173,8 +255,9 @@ export function vocalTriggerNote(
   const note = midiToNoteString(midi);
   const v = clamp01(velocity);
   const d = Math.max(0.05, durationSec);
-  if (useSampler()) {
-    vocalSampler!.triggerAttackRelease(note, d, time, v);
+  const s = activeSampler();
+  if (s) {
+    s.triggerAttackRelease(note, d, time, v);
   } else {
     fallbackSynth?.triggerAttackRelease(note, d, time, v);
   }
@@ -193,14 +276,17 @@ export function vocalChordOn(
   const notes = midiNotes.map(midiToNoteString);
   const v = clamp01(velocity);
   const d = Math.max(0.05, duration);
-  if (useSampler()) {
-    vocalSampler!.triggerAttackRelease(notes, d, undefined, v);
+  const s = activeSampler();
+  if (s) {
+    s.triggerAttackRelease(notes, d, undefined, v);
   } else {
     fallbackSynth?.triggerAttackRelease(notes, d, undefined, v);
   }
 }
 
 export function vocalReleaseAll(): void {
-  vocalSampler?.releaseAll();
+  for (const v of Object.values(vowelRuntime)) {
+    v.sampler?.releaseAll();
+  }
   fallbackSynth?.releaseAll();
 }

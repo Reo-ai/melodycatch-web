@@ -83,10 +83,12 @@ import {
 import {
   isVocalLoaded,
   preloadVocal,
+  setVocalVowel,
   vocalChordOn,
   vocalHoldOff,
   vocalHoldOn,
   vocalReleaseAll,
+  type VocalVowel,
 } from "../audio/vocalEngine";
 import {
   setMetronomeBpm,
@@ -402,6 +404,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [eraserMode, setEraserMode] = useState(false);
   const [noteLength, setNoteLength] = useState<NoteLength>("1/8");
   const [metronomeOn, setMetronomeOn] = useState(true);
+  const [vocalVowel, setVocalVowelState] = useState<VocalVowel>("aah");
   const [vocalSampleReady, setVocalSampleReady] = useState<boolean>(() => isVocalLoaded());
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
@@ -431,23 +434,22 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   useEffect(() => {
     armedRef.current = armed;
   }, [armed]);
-  // ボーカルがアームされた瞬間にサンプルロードを開始 (2.8MB)。
+  // ボーカルがアームされた / 母音が切り替わった瞬間にサンプルロードを開始 (2.8MB/母音)。
   // ロード完了までは UI に「読み込み中」を表示するため、200ms 間隔で監視する。
   useEffect(() => {
     if (armed !== "vocal") return;
-    preloadVocal();
-    if (isVocalLoaded()) {
-      setVocalSampleReady(true);
-      return;
-    }
+    setVocalVowel(vocalVowel);
+    preloadVocal(vocalVowel);
+    setVocalSampleReady(isVocalLoaded(vocalVowel));
+    if (isVocalLoaded(vocalVowel)) return;
     const id = window.setInterval(() => {
-      if (isVocalLoaded()) {
+      if (isVocalLoaded(vocalVowel)) {
         setVocalSampleReady(true);
         window.clearInterval(id);
       }
     }, 200);
     return () => window.clearInterval(id);
-  }, [armed]);
+  }, [armed, vocalVowel]);
   useEffect(() => {
     drumAlsoArmedRef.current = drumAlsoArmed;
   }, [drumAlsoArmed]);
@@ -2210,6 +2212,49 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             {guitarType === "clean"
               ? "クリーン: 歪みなし、コードやアルペジオに合う"
               : "ディストーション: 歪み+倍音強調、ハードロック系"}
+          </span>
+        </div>
+
+        {/* ボーカル母音切替: アー / ウー / んー */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-ink-600">🎤 ボーカル母音:</span>
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+            {(["aah", "ooh", "hum"] as const).map((v) => {
+              const label = v === "aah" ? "アー" : v === "ooh" ? "ウー" : "んー";
+              const title =
+                v === "aah"
+                  ? "Choir Aahs: 開いた明るい「アー」(賛美歌・聖歌隊風)"
+                  : v === "ooh"
+                    ? "Voice Oohs: 丸く柔らかい「ウー」(コーラスバッキング向き)"
+                    : "Hum: 閉口音「んー」(Voice Oohs をローパスで暗くした)";
+              const active = vocalVowel === v;
+              return (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => {
+                    vocalReleaseAll();
+                    setVocalVowelState(v);
+                  }}
+                  className={[
+                    "px-3 py-1 text-xs font-semibold transition",
+                    active
+                      ? "bg-accent-500 text-white"
+                      : "text-ink-600 hover:bg-ink-50",
+                  ].join(" ")}
+                  title={title}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-xs text-ink-500">
+            {vocalVowel === "aah"
+              ? "「アー」: 明るい合唱"
+              : vocalVowel === "ooh"
+                ? "「ウー」: 柔らかいコーラス"
+                : "「んー」: 閉口ハミング"}
           </span>
         </div>
 
