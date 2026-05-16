@@ -101,7 +101,7 @@ import {
 } from "../audio/metronome";
 import { useComputerKeyboard } from "../input/useComputerKeyboard";
 import { useWebMIDI } from "../input/useWebMIDI";
-import type { Scale } from "../music/scale";
+import { scaleDisplayName, type Scale } from "../music/scale";
 import {
   buildLibraryUrl,
   consumeLoadIntent,
@@ -116,6 +116,12 @@ import {
   diatonicTriads,
   type HarmonicChord,
 } from "../music/chord";
+import {
+  composeSong,
+  COMPOSER_STYLE_LABEL_JA,
+  type ComposerStyle,
+} from "../composer/autoComposer";
+import { AutoComposeSession } from "../composer/autoComposeSession";
 
 interface StudioProps {
   scale: Scale;
@@ -414,6 +420,16 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [vocalSampleReady, setVocalSampleReady] = useState<boolean>(() => isVocalLoaded());
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
+  // 自動作曲モード関連 state
+  const [autoComposeStyle, setAutoComposeStyle] = useState<ComposerStyle>("pop");
+  const [autoComposeBars, setAutoComposeBars] = useState<number>(16);
+  const [autoComposeSpeed, setAutoComposeSpeed] = useState<number>(1);
+  const [autoComposing, setAutoComposing] = useState<boolean>(false);
+  const [autoComposeProgress, setAutoComposeProgress] = useState<{
+    pct: number;
+    bar: number;
+    totalBars: number;
+  } | null>(null);
   const audioReady = useRef(false);
 
   const sessionRef = useRef<RecordingSession | null>(null);
@@ -428,6 +444,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const tickRef = useRef<number | null>(null);
   const progressionTimersRef = useRef<number[]>([]);
   const drumPadRef = useRef<DrumPadHandle | null>(null);
+  const autoComposeRef = useRef<AutoComposeSession | null>(null);
 
   // ---- stale closure 対策: 常に最新の state/armed を参照する ref ---------
   const stateRef = useRef<ArmState>("idle");
@@ -1517,6 +1534,81 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     progressionTimersRef.current = [];
   }
 
+  // ---- 自動作曲モード ------------------------------------------------------
+  /**
+   * AI が曲を生成 → リアルタイムでピアノロールに書き込みながら発音する。
+   * 進行中は autoComposing=true、終了時または stop で false に戻る。
+   */
+  async function startAutoCompose() {
+    if (autoComposing) return;
+    // 他のオーディオ動作をすべて止める
+    stopAll();
+    if (!audioReady.current) {
+      await ensureAudio();
+      audioReady.current = true;
+    }
+    // 履歴に積んでから全レイヤを空にする (1 アクションで Undo できるように)
+    pushHistory();
+    setMelody((c) => ({ ...c, notes: [] }));
+    setChord((c) => ({ ...c, notes: [] }));
+    setBass((c) => ({ ...c, notes: [] }));
+    setDrum((c) => ({ ...c, notes: [] }));
+
+    const song = composeSong({
+      scale,
+      bpm,
+      bars: autoComposeBars,
+      style: autoComposeStyle,
+    });
+
+    setAutoComposing(true);
+    setAutoComposeProgress({ pct: 0, bar: 1, totalBars: song.chords.length });
+
+    const session = new AutoComposeSession(song, {
+      onAddNote: (layerId, note) => {
+        const append = (cur: Layer): Layer => ({
+          ...cur,
+          notes: [...cur.notes, note],
+        });
+        if (layerId === "melody") setMelody(append);
+        else if (layerId === "chord") setChord(append);
+        else if (layerId === "bass") setBass(append);
+        else if (layerId === "drum") setDrum(append);
+      },
+      onProgress: (pct, bar) => {
+        setAutoComposeProgress({ pct, bar, totalBars: song.chords.length });
+      },
+      onComplete: () => {
+        setAutoComposing(false);
+        autoComposeRef.current = null;
+        // 終了時に念のため全エンジン解放
+        releaseAll();
+        bassReleaseAll();
+        synthReleaseAll();
+        guitarReleaseAll();
+        acousticReleaseAll();
+        vocalReleaseAll();
+      },
+    });
+    autoComposeRef.current = session;
+    session.start(autoComposeSpeed);
+  }
+
+  function stopAutoCompose() {
+    if (autoComposeRef.current) {
+      autoComposeRef.current.stop();
+      autoComposeRef.current = null;
+    }
+    setAutoComposing(false);
+    setAutoComposeProgress(null);
+    releaseAll();
+    bassReleaseAll();
+    synthReleaseAll();
+    guitarReleaseAll();
+    acousticReleaseAll();
+    vocalReleaseAll();
+  }
+
   /**
    * 全層を BPM 基準のグリッドにスナップする。
    * 録音中・再生中は適用しない (誤動作防止)。
@@ -1553,6 +1645,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     stopPlayback();
     if (state === "recording") stopRecord();
     if (drumPadRef.current?.isPlaying()) drumPadRef.current.stop();
+    if (autoComposeRef.current) {
+      autoComposeRef.current.stop();
+      autoComposeRef.current = null;
+      setAutoComposing(false);
+      setAutoComposeProgress(null);
+    }
     cancelProgressionTimers();
     releaseAll();
     bassReleaseAll();
@@ -2014,6 +2112,107 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                   : "未接続"}
           </span>
         </div>
+      </section>
+
+      {/* 🤖 自動作曲モード */}
+      <section className="rounded-2xl border border-violet-300 bg-gradient-to-br from-violet-50 to-fuchsia-50 p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-violet-800">
+            🤖 自動作曲モード (AI がリアルタイムで打ち込み)
+          </h2>
+          {autoComposing && autoComposeProgress && (
+            <span className="text-xs font-mono tabular-nums text-violet-700">
+              {autoComposeProgress.bar} / {autoComposeProgress.totalBars} 小節
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+          {/* スタイル */}
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-violet-700">
+              スタイル
+            </label>
+            <select
+              value={autoComposeStyle}
+              onChange={(e) => setAutoComposeStyle(e.target.value as ComposerStyle)}
+              disabled={autoComposing}
+              className="w-full rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-sm text-ink-800 disabled:opacity-50"
+            >
+              {(Object.keys(COMPOSER_STYLE_LABEL_JA) as ComposerStyle[]).map((s) => (
+                <option key={s} value={s}>
+                  {COMPOSER_STYLE_LABEL_JA[s]}
+                </option>
+              ))}
+            </select>
+          </div>
+          {/* 小節数 */}
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-violet-700">
+              小節数
+            </label>
+            <select
+              value={autoComposeBars}
+              onChange={(e) => setAutoComposeBars(Number(e.target.value))}
+              disabled={autoComposing}
+              className="w-full rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-sm text-ink-800 disabled:opacity-50"
+            >
+              <option value={8}>8 小節 (短め)</option>
+              <option value={16}>16 小節 (標準)</option>
+              <option value={32}>32 小節 (長め)</option>
+            </select>
+          </div>
+          {/* 早送り */}
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-violet-700">
+              書き込み速度
+            </label>
+            <select
+              value={autoComposeSpeed}
+              onChange={(e) => setAutoComposeSpeed(Number(e.target.value))}
+              disabled={autoComposing}
+              className="w-full rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-sm text-ink-800 disabled:opacity-50"
+            >
+              <option value={1}>1x (実時間)</option>
+              <option value={2}>2x (早回し)</option>
+              <option value={4}>4x (高速)</option>
+              <option value={8}>8x (超高速)</option>
+            </select>
+          </div>
+          {/* 開始 / 停止 */}
+          <div className="flex items-end">
+            {autoComposing ? (
+              <button
+                type="button"
+                onClick={stopAutoCompose}
+                className="w-full rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-rose-700"
+              >
+                ■ 停止
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  void startAutoCompose();
+                }}
+                className="w-full rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-violet-700"
+              >
+                🤖 自動作曲 開始
+              </button>
+            )}
+          </div>
+        </div>
+        {autoComposing && autoComposeProgress && (
+          <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-violet-200">
+            <div
+              className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500 transition-[width] duration-200"
+              style={{ width: `${Math.round(autoComposeProgress.pct * 100)}%` }}
+            />
+          </div>
+        )}
+        <p className="mt-2 text-[11px] text-violet-700/80">
+          ※ 既存のメロディ / コード / ベース / ドラム層は空にされてから書き込まれます (Undo で復元可)。
+          スケール ({scaleDisplayName(scale)}) と BPM ({bpm}) は現在の設定が使われます。
+        </p>
       </section>
 
       {/* ③ 録音トラック (ピアノロールの上に配置: ピアノロールを見ながら録音できるように) */}
