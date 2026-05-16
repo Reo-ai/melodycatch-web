@@ -284,11 +284,11 @@ function ensureDrumSynths() {
   }).chain(rimBP, drumBus);
 
   // ---- HI-HAT CLOSED : ハイパス + 短いノイズ
-  hihatHPF = new Tone.Filter({ type: "highpass", frequency: 7500, Q: 0.7 });
+  hihatHPF = new Tone.Filter({ type: "highpass", frequency: 6000, Q: 0.7 });
   hihatNoise = new Tone.NoiseSynth({
     noise: { type: "white" },
-    envelope: { attack: 0.001, decay: 0.045, sustain: 0, release: 0.02 },
-    volume: -14,
+    envelope: { attack: 0.001, decay: 0.07, sustain: 0, release: 0.02 },
+    volume: -6,
   }).chain(hihatHPF, drumBus);
 
   // ---- HI-HAT OPEN : 同じハイパス + 長めディケイ

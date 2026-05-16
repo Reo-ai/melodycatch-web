@@ -438,6 +438,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     bar: number;
     totalBars: number;
   } | null>(null);
+  // 自動作曲で書き込む対象レイヤ (チェックを外したレイヤは生成・発音をスキップ)
+  const [autoComposeWriteMelody, setAutoComposeWriteMelody] = useState<boolean>(true);
+  const [autoComposeWriteChord, setAutoComposeWriteChord] = useState<boolean>(true);
+  const [autoComposeWriteBass, setAutoComposeWriteBass] = useState<boolean>(true);
+  const [autoComposeWriteDrum, setAutoComposeWriteDrum] = useState<boolean>(true);
   const audioReady = useRef(false);
 
   const sessionRef = useRef<RecordingSession | null>(null);
@@ -1599,19 +1604,41 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       await ensureAudio();
       audioReady.current = true;
     }
-    // 履歴に積んでから全レイヤを空にする (1 アクションで Undo できるように)
-    pushHistory();
-    setMelody((c) => ({ ...c, notes: [] }));
-    setChord((c) => ({ ...c, notes: [] }));
-    setBass((c) => ({ ...c, notes: [] }));
-    setDrum((c) => ({ ...c, notes: [] }));
+    // ユーザーが少なくとも 1 つの書き込み対象を選んでいなければ何もしない
+    const writeMelody = autoComposeWriteMelody;
+    const writeChord = autoComposeWriteChord;
+    const writeBass = autoComposeWriteBass;
+    const writeDrum = autoComposeWriteDrum;
+    if (!writeMelody && !writeChord && !writeBass && !writeDrum) {
+      if (typeof window !== "undefined") {
+        window.alert("自動作曲で書き込む楽器を 1 つ以上選んでください。");
+      }
+      return;
+    }
 
-    const song = composeSong({
+    // 履歴に積んでから「書き込み対象レイヤだけ」を空にする (1 アクションで Undo できるように)
+    pushHistory();
+    if (writeMelody) setMelody((c) => ({ ...c, notes: [] }));
+    if (writeChord) setChord((c) => ({ ...c, notes: [] }));
+    if (writeBass) setBass((c) => ({ ...c, notes: [] }));
+    if (writeDrum) setDrum((c) => ({ ...c, notes: [] }));
+
+    const fullSong = composeSong({
       scale,
       bpm,
       bars: autoComposeBars,
       style: autoComposeStyle,
     });
+
+    // 選択されていないレイヤは AutoComposeSession に渡す段階で空にして、
+    // ピアノロール書き込みも発音もまとめてスキップする。
+    const song = {
+      ...fullSong,
+      melodyNotes: writeMelody ? fullSong.melodyNotes : [],
+      chordNotes: writeChord ? fullSong.chordNotes : [],
+      bassNotes: writeBass ? fullSong.bassNotes : [],
+      drumNotes: writeDrum ? fullSong.drumNotes : [],
+    };
 
     setAutoComposing(true);
     setAutoComposeProgress({ pct: 0, bar: 1, totalBars: song.chords.length });
@@ -2269,6 +2296,44 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             )}
           </div>
         </div>
+
+        {/* 書き込み対象レイヤの選択 */}
+        <div className="mt-3 rounded-lg border border-violet-200 bg-white/70 p-2">
+          <div className="mb-1 text-[11px] font-medium text-violet-700">
+            書き込む楽器を選択 (チェックを外したレイヤは生成 / 発音されません)
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { key: "melody", label: "🎵 メロディ", value: autoComposeWriteMelody, set: setAutoComposeWriteMelody },
+                { key: "chord", label: "🎹 コード", value: autoComposeWriteChord, set: setAutoComposeWriteChord },
+                { key: "bass", label: "🎸 ベース", value: autoComposeWriteBass, set: setAutoComposeWriteBass },
+                { key: "drum", label: "🥁 ドラム", value: autoComposeWriteDrum, set: setAutoComposeWriteDrum },
+              ] as const
+            ).map((opt) => (
+              <label
+                key={opt.key}
+                className={[
+                  "inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium transition",
+                  opt.value
+                    ? "border-violet-400 bg-violet-100 text-violet-800"
+                    : "border-ink-200 bg-white text-ink-500 hover:border-violet-300",
+                  autoComposing ? "cursor-not-allowed opacity-60" : "",
+                ].join(" ")}
+              >
+                <input
+                  type="checkbox"
+                  checked={opt.value}
+                  disabled={autoComposing}
+                  onChange={(e) => opt.set(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-violet-500"
+                />
+                {opt.label}
+              </label>
+            ))}
+          </div>
+        </div>
+
         {autoComposing && autoComposeProgress && (
           <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-violet-200">
             <div
@@ -2278,7 +2343,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
         )}
         <p className="mt-2 text-[11px] text-violet-700/80">
-          ※ 既存のメロディ / コード / ベース / ドラム層は空にされてから書き込まれます (Undo で復元可)。
+          ※ チェックを入れた書き込み対象レイヤだけが空にされてから書き込まれます (Undo で復元可)。
+          チェックを外したレイヤは既存内容を保持します。
           スケール ({scaleDisplayName(scale)}) と BPM ({bpm}) は現在の設定が使われます。
         </p>
       </section>
@@ -2633,8 +2699,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             ].join(" ")}
             title={
               armed === "drum"
-                ? "ドラムが主アーム楽器のため、同時録音オプションは不要です"
-                : "ON にすると、選択した楽器と一緒にドラムも同時に録音されます"
+                ? "電子ドラムが主アーム楽器のため、同時録音オプションは不要です"
+                : "ON にすると、選択した楽器と一緒に電子ドラムも同時に録音されます"
             }
           >
             <input
@@ -2644,19 +2710,19 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               onChange={(e) => setDrumAlsoArmed(e.target.checked)}
               className="h-3.5 w-3.5 accent-accent-500"
             />
-            🥁 ドラムも同時に録音する
+            🥁 電子ドラムも同時に録音する
           </label>
           {drumAlsoArmed && armed !== "drum" && state === "recording" && (
             <span className="text-xs font-medium text-accent-700">
-              + ドラム並行録音中 ({drumRecCount} ヒット)
+              + 電子ドラム並行録音中 ({drumRecCount} ヒット)
             </span>
           )}
         </div>
 
         <p className="mt-3 text-xs text-ink-500">
           層を選んでピアノロール下の「録音」ボタンで録音開始 / 停止。録音中は録音対象以外のレイヤが同時再生されます (DAW 風オーバーダブ)。
-          ドラム層を録音中はドラムループも自動で回ります。下のピアノロールを見ながら録音できます。
-          「ドラムも同時に録音する」を ON にすると、選んだ楽器と一緒にドラム層へも並行録音できます。
+          電子ドラム層を録音中はドラムループも自動で回ります。下のピアノロールを見ながら録音できます。
+          「電子ドラムも同時に録音する」を ON にすると、選んだ楽器と一緒に電子ドラム層へも並行録音できます。
         </p>
       </section>
 
