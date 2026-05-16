@@ -81,6 +81,8 @@ import {
   acousticTriggerNote,
 } from "../audio/acousticGuitarEngine";
 import {
+  isVocalLoaded,
+  preloadVocal,
   vocalChordOn,
   vocalHoldOff,
   vocalHoldOn,
@@ -400,6 +402,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [eraserMode, setEraserMode] = useState(false);
   const [noteLength, setNoteLength] = useState<NoteLength>("1/8");
   const [metronomeOn, setMetronomeOn] = useState(true);
+  const [vocalSampleReady, setVocalSampleReady] = useState<boolean>(() => isVocalLoaded());
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
   const audioReady = useRef(false);
@@ -427,6 +430,23 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   }, [state]);
   useEffect(() => {
     armedRef.current = armed;
+  }, [armed]);
+  // ボーカルがアームされた瞬間にサンプルロードを開始 (2.8MB)。
+  // ロード完了までは UI に「読み込み中」を表示するため、200ms 間隔で監視する。
+  useEffect(() => {
+    if (armed !== "vocal") return;
+    preloadVocal();
+    if (isVocalLoaded()) {
+      setVocalSampleReady(true);
+      return;
+    }
+    const id = window.setInterval(() => {
+      if (isVocalLoaded()) {
+        setVocalSampleReady(true);
+        window.clearInterval(id);
+      }
+    }, 200);
+    return () => window.clearInterval(id);
   }, [armed]);
   useEffect(() => {
     drumAlsoArmedRef.current = drumAlsoArmed;
@@ -2037,6 +2057,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                       )}
                     </span>
                     <span className="text-base font-semibold">{label}</span>
+                    {id === "vocal" && !vocalSampleReady && (
+                      <span className="ml-1 animate-pulse rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                        サンプル読み込み中…
+                      </span>
+                    )}
                   </span>
                   <span className="text-xs text-ink-500">
                     {id === "drum"

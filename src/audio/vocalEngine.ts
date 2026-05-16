@@ -1,149 +1,166 @@
 /**
- * ボーカル (合唱) 楽器 — フォルマント合成 (改良版)。
+ * ボーカル (合唱) 楽器 — FluidR3 GM "Choir Aahs" サンプル再生版。
  *
- * 設計のポイント:
- * - 並列 bandpass だと原音が消えて「管楽器」っぽくなるため、
- *   原音を全部通しつつ各 formant 周波数を **ピーキングフィルタで持ち上げる**
- *   直列ボーカルトラクト方式に変更。
- * - 「Ah」母音の 4 つのフォルマント (F1〜F3 + 歌唱形成峰) をブースト。
- * - ノコギリ波の unison (fatsawtooth) で複数歌唱者の厚みを再現。
- * - 軽くノイズを混ぜて息混じり感を出す。
+ * 音源について:
+ * - `gleitz/midi-js-soundfonts` が GitHub Pages で公開している
+ *   FluidR3 GM SoundFont の "Choir Aahs" (Program 52) を使う。
+ *   2.8MB の JS ファイルに「A0〜C8 のナチュラル音 52 サンプル」が
+ *   base64 で埋め込まれている形式。
+ * - ライセンスは MIT (FluidR3 自体は OFL/CC-by 系で、midi-js-soundfonts は
+ *   商用利用も明示的に許可されている)。
+ *
+ * ロード戦略:
+ * - 初回発音時に 2.8MB の fetch + デコードが走るので、それまでは
+ *   フォルマント合成 (前バージョン) をフォールバックとして鳴らす。
+ *   ロード完了後に自動で Tone.Sampler 経由の実サンプル再生に切り替わる。
  *
  * シグナルチェーン:
  *
- *   PolySynth(fatsawtooth, unison 3, slow attack)
- *     ──▶ Highpass(80Hz)            ※低域ゴロゴロ感をカット
- *     ──▶ Peak(730Hz, Q=4, +15dB)   ※F1 (Ah)
- *     ──▶ Peak(1090Hz, Q=6, +12dB)  ※F2 (Ah)
- *     ──▶ Peak(2440Hz, Q=8, +10dB)  ※F3 (明瞭度)
- *     ──▶ Peak(3500Hz, Q=8, +8dB)   ※歌唱形成峰 (Singer's Formant)
- *     ──▶ Lowpass(8000Hz)           ※耳に痛い高域カット
- *     ──▶ Vibrato(5Hz, depth 0.02)
- *     ──▶ Chorus(0.4Hz, depth 0.5, wet 0.3)
- *     ──▶ Gain(1.4)                 ※全体音量
+ *   Sampler (Choir Aahs サンプル群)
+ *     ──▶ Chorus(0.3Hz, depth 0.4, wet 0.1)
+ *     ──▶ Gain(1.0)
  *     ──▶ Reverb(decay 3.0, wet 0.28)
  *     ──▶ Destination
  *
- * インターフェース:
- * - holdOn/holdOff … 押しっぱなしの持続音 (ピアノ層と同じ)
- * - triggerNote   … 1 ノートを所定の長さで鳴らす
- * - chordOn       … 和音を一括発音 (コードパレット用)
- * - releaseAll    … 全ボイス停止
+ *   (ロード中フォールバック)
+ *   PolySynth(fatsawtooth) ─▶ HighPass ─▶ Peak F1/F2/F3/SingerFormant
+ *     ─▶ LowPass ─▶ Chorus ─▶ Gain ─▶ Reverb ─▶ Destination
  */
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
+import { loadGleitzSoundfont } from "./voiceSampleLoader";
 
-let vocalSynth: Tone.PolySynth<Tone.Synth> | null = null;
+const SOUNDFONT_URL =
+  "https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/choir_aahs-mp3.js";
+
+// 出力チェーン (サンプラーとフォールバック合成で共有)
 let vocalReverb: Tone.Reverb | null = null;
 let vocalGain: Tone.Gain | null = null;
 let vocalChorus: Tone.Chorus | null = null;
-let vocalVibrato: Tone.Vibrato | null = null;
-let vocalLowpass: Tone.Filter | null = null;
-let vocalSingerFormant: Tone.Filter | null = null;
-let vocalFormant3: Tone.Filter | null = null;
-let vocalFormant2: Tone.Filter | null = null;
-let vocalFormant1: Tone.Filter | null = null;
-let vocalHighpass: Tone.Filter | null = null;
+let vocalInput: Tone.Gain | null = null;
 
-function ensureVocal() {
-  if (vocalSynth) return;
+// 実サンプル再生
+let vocalSampler: Tone.Sampler | null = null;
+let vocalLoading = false;
+let vocalReady = false;
 
-  // 出力側 (Destination 寄り) から順に作る。
+// ロード中フォールバック (フォルマント合成)
+let fallbackSynth: Tone.PolySynth<Tone.Synth> | null = null;
+let fallbackChainHead: Tone.Filter | null = null;
+
+function buildOutputChain() {
+  if (vocalInput) return;
   vocalReverb = new Tone.Reverb({ decay: 3.0, wet: 0.28 }).toDestination();
-  vocalGain = new Tone.Gain(1.4).connect(vocalReverb);
+  vocalGain = new Tone.Gain(1.0).connect(vocalReverb);
   vocalChorus = new Tone.Chorus({
-    frequency: 0.4,
+    frequency: 0.3,
     delayTime: 4.0,
-    depth: 0.5,
+    depth: 0.4,
     type: "sine",
     spread: 180,
-    wet: 0.3,
+    wet: 0.1,
   }).connect(vocalGain);
   vocalChorus.start();
-  vocalVibrato = new Tone.Vibrato({ frequency: 5, depth: 0.02 }).connect(
-    vocalChorus,
-  );
-
-  // 直列ピーキングフィルタで声道をシミュレート (Ah 母音)。
-  vocalLowpass = new Tone.Filter({
-    frequency: 8000,
-    type: "lowpass",
-    Q: 0.7,
-  }).connect(vocalVibrato);
-  vocalSingerFormant = new Tone.Filter({
-    frequency: 3500,
-    type: "peaking",
-    Q: 8,
-    gain: 8,
-  }).connect(vocalLowpass);
-  vocalFormant3 = new Tone.Filter({
-    frequency: 2440,
-    type: "peaking",
-    Q: 8,
-    gain: 10,
-  }).connect(vocalSingerFormant);
-  vocalFormant2 = new Tone.Filter({
-    frequency: 1090,
-    type: "peaking",
-    Q: 6,
-    gain: 12,
-  }).connect(vocalFormant3);
-  vocalFormant1 = new Tone.Filter({
-    frequency: 730,
-    type: "peaking",
-    Q: 4,
-    gain: 15,
-  }).connect(vocalFormant2);
-  vocalHighpass = new Tone.Filter({
-    frequency: 80,
-    type: "highpass",
-    Q: 0.7,
-  }).connect(vocalFormant1);
-
-  vocalSynth = new Tone.PolySynth(Tone.Synth, {
-    oscillator: {
-      type: "fatsawtooth",
-      count: 3,
-      spread: 30,
-    },
-    envelope: {
-      attack: 0.25,
-      decay: 0.1,
-      sustain: 0.9,
-      release: 0.8,
-    },
-  });
-  vocalSynth.connect(vocalHighpass);
-  // PolySynth 全体ボリュームを少し上げる (formant ピーキングで音圧が上がる分は Gain で吸収済み)。
-  vocalSynth.volume.value = -2;
+  vocalInput = new Tone.Gain(1).connect(vocalChorus);
 }
 
-/** UI から事前ロード可能にする。シンセ版なので呼ばなくても問題ない。 */
+function buildFallbackSynth() {
+  if (fallbackSynth) return;
+  buildOutputChain();
+  // フォルマント (Ah 母音) チェーン: 直列ピーキングフィルタ
+  const lp = new Tone.Filter({ frequency: 8000, type: "lowpass", Q: 0.7 }).connect(
+    vocalInput!,
+  );
+  const sf = new Tone.Filter({ frequency: 3500, type: "peaking", Q: 8, gain: 8 }).connect(lp);
+  const f3 = new Tone.Filter({ frequency: 2440, type: "peaking", Q: 8, gain: 10 }).connect(sf);
+  const f2 = new Tone.Filter({ frequency: 1090, type: "peaking", Q: 6, gain: 12 }).connect(f3);
+  const f1 = new Tone.Filter({ frequency: 730, type: "peaking", Q: 4, gain: 15 }).connect(f2);
+  const hp = new Tone.Filter({ frequency: 80, type: "highpass", Q: 0.7 }).connect(f1);
+  fallbackChainHead = hp;
+
+  fallbackSynth = new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: "fatsawtooth", count: 3, spread: 30 },
+    envelope: { attack: 0.25, decay: 0.1, sustain: 0.9, release: 0.8 },
+  });
+  fallbackSynth.connect(fallbackChainHead);
+  fallbackSynth.volume.value = -2;
+}
+
+async function ensureSamplerLoaded() {
+  if (vocalSampler || vocalLoading) return;
+  vocalLoading = true;
+  try {
+    buildOutputChain();
+    const samples = await loadGleitzSoundfont(SOUNDFONT_URL, "choir_aahs");
+    await new Promise<void>((resolve, reject) => {
+      vocalSampler = new Tone.Sampler({
+        urls: samples,
+        release: 1.2,
+        onload: () => {
+          vocalReady = true;
+          resolve();
+        },
+        onerror: (err) => {
+          reject(err);
+        },
+      }).connect(vocalInput!);
+      vocalSampler.volume.value = -3;
+    });
+  } catch (e) {
+    // ロード失敗時はフォールバック合成が代わりに鳴り続ける。
+    console.error("[vocal] sample load failed, falling back to formant synth", e);
+    vocalSampler = null;
+    vocalReady = false;
+  } finally {
+    vocalLoading = false;
+  }
+}
+
+function ensureVocal() {
+  buildFallbackSynth();
+  void ensureSamplerLoaded();
+}
+
+/** UI から事前ロード可能にする (初回発音時のもたつき軽減用)。 */
 export function preloadVocal(): void {
   ensureVocal();
 }
 
-/** シンセ実装は常にロード済み扱い。 */
+/** 本物サンプルがロード完了したか (UI の "読み込み中..." 表示用)。 */
 export function isVocalLoaded(): boolean {
-  return vocalSynth != null;
+  return vocalReady;
+}
+
+/** 本物サンプルを fetch 中か。 */
+export function isVocalLoading(): boolean {
+  return vocalLoading;
 }
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
+function useSampler(): boolean {
+  return vocalReady && vocalSampler != null;
+}
+
 export function vocalHoldOn(midi: number, velocity = 0.85): void {
   ensureVocal();
-  vocalSynth?.triggerAttack(
-    midiToNoteString(midi),
-    undefined,
-    clamp01(velocity),
-  );
+  const note = midiToNoteString(midi);
+  const v = clamp01(velocity);
+  if (useSampler()) {
+    vocalSampler!.triggerAttack(note, undefined, v);
+  } else {
+    fallbackSynth?.triggerAttack(note, undefined, v);
+  }
 }
 
 export function vocalHoldOff(midi: number): void {
-  vocalSynth?.triggerRelease(midiToNoteString(midi));
+  const note = midiToNoteString(midi);
+  // 切り替わり境界で取り残されないよう、両方に release を投げる。
+  vocalSampler?.triggerRelease(note);
+  fallbackSynth?.triggerRelease(note);
 }
 
 export function vocalTriggerNote(
@@ -153,17 +170,18 @@ export function vocalTriggerNote(
   time?: number,
 ): void {
   ensureVocal();
-  vocalSynth?.triggerAttackRelease(
-    midiToNoteString(midi),
-    Math.max(0.05, durationSec),
-    time,
-    clamp01(velocity),
-  );
+  const note = midiToNoteString(midi);
+  const v = clamp01(velocity);
+  const d = Math.max(0.05, durationSec);
+  if (useSampler()) {
+    vocalSampler!.triggerAttackRelease(note, d, time, v);
+  } else {
+    fallbackSynth?.triggerAttackRelease(note, d, time, v);
+  }
 }
 
 /**
  * 和音を一括で鳴らす (コードパレット用)。
- * 合唱らしい一体感のためにストロークではなく同時発音。
  */
 export function vocalChordOn(
   midiNotes: number[],
@@ -171,16 +189,18 @@ export function vocalChordOn(
   duration = 1.6,
 ): void {
   ensureVocal();
-  if (!vocalSynth || midiNotes.length === 0) return;
+  if (midiNotes.length === 0) return;
   const notes = midiNotes.map(midiToNoteString);
-  vocalSynth.triggerAttackRelease(
-    notes,
-    Math.max(0.05, duration),
-    undefined,
-    clamp01(velocity),
-  );
+  const v = clamp01(velocity);
+  const d = Math.max(0.05, duration);
+  if (useSampler()) {
+    vocalSampler!.triggerAttackRelease(notes, d, undefined, v);
+  } else {
+    fallbackSynth?.triggerAttackRelease(notes, d, undefined, v);
+  }
 }
 
 export function vocalReleaseAll(): void {
-  vocalSynth?.releaseAll();
+  vocalSampler?.releaseAll();
+  fallbackSynth?.releaseAll();
 }
