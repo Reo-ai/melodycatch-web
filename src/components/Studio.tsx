@@ -28,6 +28,7 @@ import ProgressionList from "./ProgressionList";
 import PianoRoll from "./PianoRoll";
 import ScalePicker from "./ScalePicker";
 import DrumPad, { type DrumPadHandle } from "./DrumPad";
+import LiveDrumKit from "./LiveDrumKit";
 import {
   downloadBlob,
   emptyLayer,
@@ -2958,6 +2959,22 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                   />
                   <p className="mt-3 text-xs text-ink-500">
                     横にスワイプ/スクロールで音域を移動。複数の指/PCキーボードで和音も弾けます。
+                  </p>
+                </div>
+              ),
+            },
+            {
+              id: "live-drum-kit",
+              title: "🥁 生ドラム (フルキット)",
+              node: (
+                <div className="px-1">
+                  <LiveDrumKit
+                    armed={armed === "drum"}
+                    onHit={(midi, vel) => handleDrumHit(midi, vel)}
+                  />
+                  <p className="mt-3 text-xs text-ink-500">
+                    11 種類のドラムをタップ/PCキー (A〜G・Q〜Y) で演奏できます。
+                    armed が「ドラム」なら録音にもそのまま入ります。
                   </p>
                 </div>
               ),

@@ -1,6 +1,14 @@
 /**
  * Chord theory: qualities, diatonic triads, voicing.
- * Port of MelodyCatch/Shared/Theory/Diatonic.swift
+ * Port of MelodyCatch/Shared/Theory/Diatonic.swift, extended.
+ *
+ * 拡張系コード:
+ *   - 7th 系: dom7 / maj7 / min7 / m7b5 (ハーフディミニッシュ) / dim7
+ *   - サス系: sus2 / sus4 / 7sus4
+ *   - add 系: add9 / add2 (= add9 の別表記)
+ *   - 6th: maj6 / min6
+ *   - 9th: maj9 / dom9 / min9
+ *   - augmented dominant: 7#5
  */
 
 import { SHARP_NAMES, pitchClass } from "./pitch";
@@ -16,7 +24,18 @@ export type ChordQuality =
   | "sus4"
   | "dom7"
   | "maj7"
-  | "min7";
+  | "min7"
+  | "m7b5"
+  | "dim7"
+  | "dom7sus4"
+  | "add9"
+  | "minAdd9"
+  | "maj6"
+  | "min6"
+  | "maj9"
+  | "min9"
+  | "dom9"
+  | "dom7sharp5";
 
 /** Symbol shown after the root letter (e.g. "m", "°"). */
 export const CHORD_QUALITY_SYMBOL: Record<ChordQuality, string> = {
@@ -29,6 +48,17 @@ export const CHORD_QUALITY_SYMBOL: Record<ChordQuality, string> = {
   dom7: "7",
   maj7: "maj7",
   min7: "m7",
+  m7b5: "m7♭5",
+  dim7: "°7",
+  dom7sus4: "7sus4",
+  add9: "add9",
+  minAdd9: "m(add9)",
+  maj6: "6",
+  min6: "m6",
+  maj9: "maj9",
+  min9: "m9",
+  dom9: "9",
+  dom7sharp5: "7♯5",
 };
 
 /** Friendly Japanese label shown alongside the symbol. */
@@ -42,6 +72,17 @@ export const CHORD_QUALITY_LABEL_JA: Record<ChordQuality, string> = {
   dom7: "セブンス",
   maj7: "メジャー7",
   min7: "マイナー7",
+  m7b5: "ハーフディム",
+  dim7: "ディム7",
+  dom7sus4: "7サス4",
+  add9: "アド9",
+  minAdd9: "マイナーアド9",
+  maj6: "シックス",
+  min6: "マイナーシックス",
+  maj9: "メジャー9",
+  min9: "マイナー9",
+  dom9: "ナインス",
+  dom7sharp5: "オーグ7",
 };
 
 /** Short mood description used as a hint. */
@@ -55,6 +96,17 @@ export const CHORD_QUALITY_MOOD_JA: Record<ChordQuality, string> = {
   dom7: "解決を予感させる",
   maj7: "おしゃれ・夢見心地",
   min7: "切ない・ジャジー",
+  m7b5: "ジャズの ii (薄暗い)",
+  dim7: "サスペンス・経過",
+  dom7sus4: "解決前のため息",
+  add9: "キラキラ・浮遊感",
+  minAdd9: "切ない・透明",
+  maj6: "懐かしさ・甘い",
+  min6: "クールでお洒落",
+  maj9: "幻想的・上品",
+  min9: "ネオソウル・濃い情緒",
+  dom9: "ファンキー・厚み",
+  dom7sharp5: "緊張・ジャズ的",
 };
 
 /** Semitone offsets from the root. */
@@ -68,6 +120,17 @@ export const CHORD_INTERVALS: Record<ChordQuality, number[]> = {
   dom7: [0, 4, 7, 10],
   maj7: [0, 4, 7, 11],
   min7: [0, 3, 7, 10],
+  m7b5: [0, 3, 6, 10],
+  dim7: [0, 3, 6, 9],
+  dom7sus4: [0, 5, 7, 10],
+  add9: [0, 4, 7, 14],
+  minAdd9: [0, 3, 7, 14],
+  maj6: [0, 4, 7, 9],
+  min6: [0, 3, 7, 9],
+  maj9: [0, 4, 7, 11, 14],
+  min9: [0, 3, 7, 10, 14],
+  dom9: [0, 4, 7, 10, 14],
+  dom7sharp5: [0, 4, 8, 10],
 };
 
 export interface HarmonicChord {
@@ -133,4 +196,47 @@ export function diatonicTriads(scale: Scale): HarmonicChord[] {
     const root = (scale.rootPitchClass + intervals[i]) % 12;
     return makeChord(root, qualities[i], romans[i]);
   });
+}
+
+/**
+ * 同じスケール度数で「拡張された」コードに置き換える。
+ * 例: major → maj7 / add9 / maj6 / maj9
+ *     minor → min7 / minAdd9 / min6 / min9
+ *     dom (V) → dom7 / dom9 / dom7sus4 / dom7sharp5
+ *     diminished → m7b5 / dim7
+ *
+ * 自動作曲モードで「同じ進行でも豪華に響く」「単調にならない」ようにするため、
+ * 元の度数 (I/ii/V など) のロマン数字を保ったまま品質だけ拡張する。
+ */
+export function withQuality(chord: HarmonicChord, quality: ChordQuality): HarmonicChord {
+  return { ...chord, quality };
+}
+
+/**
+ * 元のトライアドに対応する拡張バリエーション。
+ * V (dominant) は dom7 系を、それ以外の major は maj7/add9/maj6/maj9 を、
+ * minor は min7/minAdd9/min6/min9 を、ハーフ・ディムは m7b5 を返す。
+ *
+ * romanIndex は 0-indexed の度数 (0=I, 4=V, ...) で、V 専用の dom 拡張に使う。
+ */
+export function richVariants(
+  chord: HarmonicChord,
+  romanIndex: number,
+): ChordQuality[] {
+  switch (chord.quality) {
+    case "major":
+      // 5 度 (V) ならドミナント拡張、それ以外はメジャー系
+      if (romanIndex === 4) {
+        return ["major", "dom7", "dom9", "dom7sus4"];
+      }
+      return ["major", "maj7", "add9", "maj6", "maj9", "sus4", "sus2"];
+    case "minor":
+      return ["minor", "min7", "minAdd9", "min6", "min9"];
+    case "diminished":
+      return ["diminished", "m7b5", "dim7"];
+    case "augmented":
+      return ["augmented", "dom7sharp5"];
+    default:
+      return [chord.quality];
+  }
 }
