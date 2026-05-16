@@ -160,7 +160,7 @@ function buildOutputChain() {
   if (vocalInput) return;
   const exp = EXPRESSION_PRESETS[activeExpression];
   vocalReverb = new Tone.Reverb({ decay: 3.0, wet: 0.28 }).toDestination();
-  vocalGain = new Tone.Gain(2.0).connect(vocalReverb);
+  vocalGain = new Tone.Gain(4.0).connect(vocalReverb);
   vocalChorus = new Tone.Chorus({
     frequency: 0.3,
     delayTime: 4.0,
