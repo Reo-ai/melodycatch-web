@@ -236,6 +236,7 @@ interface Snapshot {
   melody: Layer;
   chord: Layer;
   drum: Layer;
+  drumAcoustic: Layer;
   bass: Layer;
   synth: Layer;
   guitar: Layer;
@@ -374,7 +375,10 @@ function SwipeCarousel({ panels }: SwipeCarouselProps) {
 export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [melody, setMelody] = useState<Layer>(() => emptyLayer("melody", "メロディ"));
   const [chord, setChord] = useState<Layer>(() => emptyLayer("chord", "コード"));
-  const [drum, setDrum] = useState<Layer>(() => emptyLayer("drum", "ドラム"));
+  const [drum, setDrum] = useState<Layer>(() => emptyLayer("drum", "電子ドラム"));
+  const [drumAcoustic, setDrumAcoustic] = useState<Layer>(() =>
+    emptyLayer("drumAcoustic", "生ドラム"),
+  );
   const [bass, setBass] = useState<Layer>(() => emptyLayer("bass", "ベース"));
   const [synth, setSynth] = useState<Layer>(() => emptyLayer("synth", "シンセ"));
   const [guitar, setGuitar] = useState<Layer>(() => emptyLayer("guitar", "ギター"));
@@ -408,6 +412,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [seekedSec, setSeekedSec] = useState(0);
   const [chordRecCount, setChordRecCount] = useState(0);
   const [drumRecCount, setDrumRecCount] = useState(0);
+  const [drumAcousticRecCount, setDrumAcousticRecCount] = useState(0);
+  /** ピアノロール再生速度 (1x / 1.5x / 2x / 3x / 4x)。 */
+  const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [selectedChord, setSelectedChord] = useState<HarmonicChord | null>(null);
   const [bpm, setBpm] = useState<number>(100);
   const [quantizeGrid, setQuantizeGrid] = useState<QuantizeGrid>("1/16");
@@ -523,11 +530,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         guitar,
         acoustic,
         vocal,
+        drumAcoustic,
       };
       writeCurrent(snap);
     }, 250);
     return () => window.clearTimeout(handle);
-  }, [bpm, scale.rootPitchClass, scale.kind, melody, chord, drum, bass, synth, guitar, acoustic, vocal]);
+  }, [bpm, scale.rootPitchClass, scale.kind, melody, chord, drum, bass, synth, guitar, acoustic, vocal, drumAcoustic]);
 
   // Library タブから「このスロットをロードして」と依頼されたら受け取る。
   // - マウント時に既存の loadIntent を消費 (Library で先にボタンを押されたケース)
@@ -575,6 +583,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAcoustic((cur) => ({ ...cur, notes }));
       } else if (armedRef.current === "vocal") {
         setVocal((cur) => ({ ...cur, notes }));
+      } else if (armedRef.current === "drumAcoustic") {
+        setDrumAcoustic((cur) => ({ ...cur, notes }));
       } else {
         setDrum((cur) => ({ ...cur, notes }));
       }
@@ -597,22 +607,23 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // ---- Undo/Redo: 破壊的操作の前にスナップショット保存 -----------------------
   const pushHistory = useCallback(() => {
     setPast((p) => {
-      const snap: Snapshot = { melody, chord, drum, bass, synth, guitar, acoustic, vocal };
+      const snap: Snapshot = { melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal };
       const next = [...p, snap];
       if (next.length > HISTORY_LIMIT) next.shift();
       return next;
     });
     setFuture([]);
-  }, [melody, chord, drum, bass, synth, guitar, acoustic, vocal]);
+  }, [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal]);
 
   const undo = useCallback(() => {
     setPast((p) => {
       if (p.length === 0) return p;
       const prev = p[p.length - 1];
-      setFuture((f) => [...f, { melody, chord, drum, bass, synth, guitar, acoustic, vocal }]);
+      setFuture((f) => [...f, { melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal }]);
       setMelody(prev.melody);
       setChord(prev.chord);
       setDrum(prev.drum);
+      setDrumAcoustic(prev.drumAcoustic);
       setBass(prev.bass);
       setSynth(prev.synth);
       setGuitar(prev.guitar);
@@ -620,16 +631,17 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       setVocal(prev.vocal);
       return p.slice(0, -1);
     });
-  }, [melody, chord, drum, bass, synth, guitar, acoustic, vocal]);
+  }, [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal]);
 
   const redo = useCallback(() => {
     setFuture((f) => {
       if (f.length === 0) return f;
       const next = f[f.length - 1];
-      setPast((p) => [...p, { melody, chord, drum, bass, synth, guitar, acoustic, vocal }]);
+      setPast((p) => [...p, { melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal }]);
       setMelody(next.melody);
       setChord(next.chord);
       setDrum(next.drum);
+      setDrumAcoustic(next.drumAcoustic);
       setBass(next.bass);
       setSynth(next.synth);
       setGuitar(next.guitar);
@@ -637,7 +649,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       setVocal(next.vocal);
       return f.slice(0, -1);
     });
-  }, [melody, chord, drum, bass, synth, guitar, acoustic, vocal]);
+  }, [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal]);
 
   // Cmd+Z / Ctrl+Z = undo, Cmd+Shift+Z / Ctrl+Y = redo
   useEffect(() => {
@@ -691,6 +703,30 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       // ドラムは percussive: 短い固定 duration で 1 ヒットを記録 (auto モードなら拍にスナップ)。
       targetSession.recordChord([midi], 0.05, velocity, snap || undefined);
       setDrumRecCount((n) => n + 1);
+      scheduleRefresh();
+    },
+    [scheduleRefresh, bpm, quantizeGrid],
+  );
+
+  // ---- 生ドラムヒット (LiveDrumKit から来る) -------------------------------
+  // armed === "drumAcoustic" のときだけメインセッションに記録する。
+  // 手叩きなのでスナップは raw を尊重し、auto 時のみ拍にスナップ。
+  const handleDrumAcousticHit = useCallback(
+    (midi: number, velocity: number) => {
+      if (stateRef.current !== "recording") return;
+      if (armedRef.current !== "drumAcoustic") return;
+      const targetSession = sessionRef.current;
+      if (!targetSession) return;
+      let snap = 0;
+      if (recordCorrectionModeRef.current === "auto") {
+        const beat = 60 / Math.max(1, bpm);
+        snap =
+          quantizeGrid !== "off"
+            ? quantizeUnitSec(quantizeGrid, bpm)
+            : beat / 4;
+      }
+      targetSession.recordChord([midi], 0.05, velocity, snap || undefined);
+      setDrumAcousticRecCount((n) => n + 1);
       scheduleRefresh();
     },
     [scheduleRefresh, bpm, quantizeGrid],
@@ -1270,7 +1306,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                   ? acoustic
                   : armed === "vocal"
                     ? vocal
-                    : drum;
+                    : armed === "drumAcoustic"
+                      ? drumAcoustic
+                      : drum;
 
     sessionRef.current = new RecordingSession(layer, {
       preserveExistingNotes: true,
@@ -1291,6 +1329,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
 
     setChordRecCount(0);
     setDrumRecCount(0);
+    setDrumAcousticRecCount(0);
 
     // DAW 風オーバーダブ: 録音対象以外の既存レイヤを同時再生
     // ドラム同時録音中は、ドラム層もオーバーダブ対象から外す (録音先として書き込み中なので)。
@@ -1304,6 +1343,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (armed !== "acoustic" && acoustic.notes.length > 0) otherLayers.push(acoustic);
     if (armed !== "vocal" && vocal.notes.length > 0) otherLayers.push(vocal);
     if (!drumIsRecordTarget && drum.notes.length > 0) otherLayers.push(drum);
+    if (armed !== "drumAcoustic" && drumAcoustic.notes.length > 0) otherLayers.push(drumAcoustic);
     if (otherLayers.length > 0) {
       const overdub = new Playback(otherLayers, {
         onNoteOn: (_id, m) =>
@@ -1349,6 +1389,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (adjusted.id === "guitar") setGuitar(adjusted);
       else if (adjusted.id === "acoustic") setAcoustic(adjusted);
       else if (adjusted.id === "vocal") setVocal(adjusted);
+      else if (adjusted.id === "drumAcoustic") setDrumAcoustic(adjusted);
       else setDrum(adjusted);
     }
     sessionRef.current = null;
@@ -1388,7 +1429,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     else if (id === "guitar") setGuitar(emptyLayer("guitar", "ギター"));
     else if (id === "acoustic") setAcoustic(emptyLayer("acoustic", "アコギ"));
     else if (id === "vocal") setVocal(emptyLayer("vocal", "ボーカル"));
-    else setDrum(emptyLayer("drum", "ドラム"));
+    else if (id === "drumAcoustic")
+      setDrumAcoustic(emptyLayer("drumAcoustic", "生ドラム"));
+    else setDrum(emptyLayer("drum", "電子ドラム"));
   }
 
   /** Library タブからの「このスロットをロードして」依頼を受けて、現在のセッションに読み込む。 */
@@ -1405,6 +1448,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         melody.notes.length > 0 ||
         chord.notes.length > 0 ||
         drum.notes.length > 0 ||
+        drumAcoustic.notes.length > 0 ||
         bass.notes.length > 0 ||
         synth.notes.length > 0 ||
         guitar.notes.length > 0 ||
@@ -1428,9 +1472,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       setGuitar(data.guitar);
       setAcoustic(data.acoustic ?? emptyLayer("acoustic", "アコギ"));
       setVocal(data.vocal ?? emptyLayer("vocal", "ボーカル"));
+      setDrumAcoustic(
+        data.drumAcoustic ?? emptyLayer("drumAcoustic", "生ドラム"),
+      );
       setBpm(data.bpm);
     },
-    [melody, chord, drum, bass, synth, guitar, acoustic, vocal, pushHistory],
+    [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal, pushHistory],
   );
 
   // storage イベントから常に最新の loadSlotIntoStudio を呼べるよう ref に同期。
@@ -1449,7 +1496,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (!hasAnything) return;
     if (typeof window !== "undefined") {
       const ok = window.confirm(
-        "全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / アコギ / ボーカル / ドラム) の譜面を削除します。よろしいですか？ (元に戻る で復元可)",
+        "全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / アコギ / ボーカル / 電子ドラム / 生ドラム) の譜面を削除します。よろしいですか？ (元に戻る で復元可)",
       );
       if (!ok) return;
     }
@@ -1461,7 +1508,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setGuitar(emptyLayer("guitar", "ギター"));
     setAcoustic(emptyLayer("acoustic", "アコギ"));
     setVocal(emptyLayer("vocal", "ボーカル"));
-    setDrum(emptyLayer("drum", "ドラム"));
+    setDrum(emptyLayer("drum", "電子ドラム"));
+    setDrumAcoustic(emptyLayer("drumAcoustic", "生ドラム"));
   }
 
   // ---- 再生 -----------------------------------------------------------------
@@ -1471,7 +1519,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     cancelProgressionTimers();
     // 録音した内容を再生する間はライブ DrumLoop を止める (二重発音防止)
     if (drumPadRef.current?.isPlaying()) drumPadRef.current.stop();
-    const layers = [melody, chord, bass, synth, guitar, acoustic, vocal, drum].filter(
+    const layers = [melody, chord, bass, synth, guitar, acoustic, vocal, drum, drumAcoustic].filter(
       (l) => l.notes.length > 0,
     );
     if (layers.length === 0) return;
@@ -1495,27 +1543,30 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       },
     });
     playbackRef.current = pb;
-    pb.start(seekedSec);
+    pb.start(seekedSec, playbackRate);
     setPlaying(true);
   }
 
   /** PianoRoll の上部ルーラからシーク。再生中なら新位置から再開する。 */
-  const handleSeek = useCallback((sec: number) => {
-    const target = Math.max(0, sec);
-    setSeekedSec(target);
-    const pb = playbackRef.current;
-    if (pb && pb.isPlaying()) {
-      // 既存の再生を止めて、新位置から再開
-      pb.stop();
-      releaseAll();
-      bassReleaseAll();
-      synthReleaseAll();
-      guitarReleaseAll();
-      acousticReleaseAll();
-      vocalReleaseAll();
-      pb.start(target);
-    }
-  }, []);
+  const handleSeek = useCallback(
+    (sec: number) => {
+      const target = Math.max(0, sec);
+      setSeekedSec(target);
+      const pb = playbackRef.current;
+      if (pb && pb.isPlaying()) {
+        // 既存の再生を止めて、新位置から再開
+        pb.stop();
+        releaseAll();
+        bassReleaseAll();
+        synthReleaseAll();
+        guitarReleaseAll();
+        acousticReleaseAll();
+        vocalReleaseAll();
+        pb.start(target, playbackRate);
+      }
+    },
+    [playbackRate],
+  );
 
   function stopPlayback() {
     if (playbackRef.current) playbackRef.current.stop();
@@ -1622,6 +1673,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setMelody((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setChord((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setDrum((cur) => quantizeLayer(cur, quantizeGrid, bpm));
+    setDrumAcoustic((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setBass((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setSynth((cur) => quantizeLayer(cur, quantizeGrid, bpm));
     setGuitar((cur) => quantizeLayer(cur, quantizeGrid, bpm));
@@ -1630,7 +1682,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   }
 
   function exportMidi() {
-    const layers = [melody, chord, bass, synth, guitar, acoustic, vocal, drum].filter(
+    const layers = [melody, chord, bass, synth, guitar, acoustic, vocal, drum, drumAcoustic].filter(
       (l) => l.notes.length > 0,
     );
     if (layers.length === 0) return;
@@ -1671,7 +1723,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     (layerId: LayerId, midi: number, startSec: number) => {
       pushHistory();
       const dur =
-        layerId === "drum" ? 0.05 : noteLengthToSec(noteLength, bpm);
+        layerId === "drum" || layerId === "drumAcoustic"
+          ? 0.05
+          : noteLengthToSec(noteLength, bpm);
       const note = { midi, startSec, durationSec: dur, velocity: 0.85 };
       const update = (cur: Layer): Layer => ({
         ...cur,
@@ -1684,6 +1738,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "guitar") setGuitar(update);
       else if (layerId === "acoustic") setAcoustic(update);
       else if (layerId === "vocal") setVocal(update);
+      else if (layerId === "drumAcoustic") setDrumAcoustic(update);
       else setDrum(update);
     },
     [pushHistory, noteLength, bpm],
@@ -1703,6 +1758,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "guitar") setGuitar(update);
       else if (layerId === "acoustic") setAcoustic(update);
       else if (layerId === "vocal") setVocal(update);
+      else if (layerId === "drumAcoustic") setDrumAcoustic(update);
       else setDrum(update);
     },
     [pushHistory],
@@ -1748,6 +1804,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       else if (layerId === "guitar") setGuitar(update);
       else if (layerId === "acoustic") setAcoustic(update);
       else if (layerId === "vocal") setVocal(update);
+      else if (layerId === "drumAcoustic") setDrumAcoustic(update);
       else setDrum(update);
     },
     [pushHistory],
@@ -1791,6 +1848,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (byLayer.has("acoustic")) setAcoustic(buildUpdate("acoustic"));
       if (byLayer.has("vocal")) setVocal(buildUpdate("vocal"));
       if (byLayer.has("drum")) setDrum(buildUpdate("drum"));
+      if (byLayer.has("drumAcoustic")) setDrumAcoustic(buildUpdate("drumAcoustic"));
     },
     [pushHistory],
   );
@@ -1856,6 +1914,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (byLayer.has("acoustic")) setAcoustic(buildUpdate("acoustic"));
       if (byLayer.has("vocal")) setVocal(buildUpdate("vocal"));
       if (byLayer.has("drum")) setDrum(buildUpdate("drum"));
+      if (byLayer.has("drumAcoustic")) setDrumAcoustic(buildUpdate("drumAcoustic"));
     },
     [pushHistory],
   );
@@ -1885,7 +1944,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       const buildUpdate = (lid: LayerId) => (cur: Layer): Layer => {
         const idxs = byLayer.get(lid);
         if (!idxs) return cur;
-        const isDrum = lid === "drum";
+        const isDrum = lid === "drum" || lid === "drumAcoustic";
         return {
           ...cur,
           notes: cur.notes.map((n, i) => {
@@ -1906,6 +1965,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       if (byLayer.has("acoustic")) setAcoustic(buildUpdate("acoustic"));
       if (byLayer.has("vocal")) setVocal(buildUpdate("vocal"));
       if (byLayer.has("drum")) setDrum(buildUpdate("drum"));
+      if (byLayer.has("drumAcoustic")) setDrumAcoustic(buildUpdate("drumAcoustic"));
     },
     [pushHistory],
   );
@@ -1985,6 +2045,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const melodyDur = useMemo(() => layerDuration(melody), [melody]);
   const chordDur = useMemo(() => layerDuration(chord), [chord]);
   const drumDur = useMemo(() => layerDuration(drum), [drum]);
+  const drumAcousticDur = useMemo(() => layerDuration(drumAcoustic), [drumAcoustic]);
   const bassDur = useMemo(() => layerDuration(bass), [bass]);
   const synthDur = useMemo(() => layerDuration(synth), [synth]);
   const guitarDur = useMemo(() => layerDuration(guitar), [guitar]);
@@ -1994,6 +2055,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     melodyDur,
     chordDur,
     drumDur,
+    drumAcousticDur,
     bassDur,
     synthDur,
     guitarDur,
@@ -2004,6 +2066,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     melody.notes.length > 0 ||
     chord.notes.length > 0 ||
     drum.notes.length > 0 ||
+    drumAcoustic.notes.length > 0 ||
     bass.notes.length > 0 ||
     synth.notes.length > 0 ||
     guitar.notes.length > 0 ||
@@ -2018,7 +2081,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       (armed !== "guitar" && guitar.notes.length > 0) ||
       (armed !== "acoustic" && acoustic.notes.length > 0) ||
       (armed !== "vocal" && vocal.notes.length > 0) ||
-      (armed !== "drum" && drum.notes.length > 0));
+      (armed !== "drum" && drum.notes.length > 0) ||
+      (armed !== "drumAcoustic" && drumAcoustic.notes.length > 0));
   const isActive = state === "recording" || playing;
   const recordingLayerId: LayerId | null =
     state === "recording" ? armed : null;
@@ -2030,7 +2094,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     { id: "guitar", layer: guitar, label: "🎸 ギター層" },
     { id: "acoustic", layer: acoustic, label: "🎸 アコギ層" },
     { id: "vocal", layer: vocal, label: "🎤 ボーカル層" },
-    { id: "drum", layer: drum, label: "🥁 ドラム層" },
+    { id: "drum", layer: drum, label: "🥁 電子ドラム層" },
+    { id: "drumAcoustic", layer: drumAcoustic, label: "🥁 生ドラム層" },
   ];
   const armedLabel =
     armed === "melody"
@@ -2047,7 +2112,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                 ? "アコギ"
                 : armed === "vocal"
                   ? "ボーカル"
-                  : "ドラム";
+                  : armed === "drumAcoustic"
+                    ? "生ドラム"
+                    : "電子ドラム";
   const progressionGapSec = (60 * 4) / Math.max(40, Math.min(220, bpm));
 
   return (
@@ -2069,7 +2136,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         <ScalePicker scale={scale} onChange={onScaleChange} />
       </section>
 
-      {/* ② ドラム */}
+      {/* ② 電子ドラム */}
       <section
         className={[
           "rounded-2xl border bg-cyan-100 p-4 shadow-sm transition",
@@ -2077,11 +2144,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         ].join(" ")}
       >
         <h2 className="mb-3 text-sm font-semibold text-ink-700">
-          ② ドラム (5 パターン + 自由編集){" "}
+          ② 電子ドラム (5 パターン + 自由編集){" "}
           {armed === "drum" && state === "recording"
             ? `🥁 録音中 (+${drumRecCount} ヒット)`
             : armed === "drum"
-              ? "🥁 ドラム層に録音可"
+              ? "🥁 電子ドラム層に録音可"
               : ""}
         </h2>
         <DrumPad
@@ -2279,7 +2346,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                     )}
                   </span>
                   <span className="text-xs text-ink-500">
-                    {id === "drum"
+                    {id === "drum" || id === "drumAcoustic"
                       ? `${layer.notes.length} ヒット`
                       : `${layer.notes.length} ノート`}{" "}
                     / {dur.toFixed(1)}s
@@ -2775,6 +2842,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             melody={melody}
             chord={chord}
             drum={drum}
+            drumAcoustic={drumAcoustic}
             bass={bass}
             synth={synth}
             guitar={guitar}
@@ -2842,6 +2910,44 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           >
             ⤓ MIDIファイル書き出し
           </button>
+          {/* 再生速度セレクタ (1x / 1.5x / 2x / 3x / 4x) */}
+          <div className="ml-auto flex items-center gap-1 rounded-full border border-ink-200 bg-white p-0.5 text-xs">
+            <span className="px-2 text-ink-500">速度</span>
+            {([1, 1.5, 2, 3, 4] as const).map((rate) => {
+              const active = playbackRate === rate;
+              return (
+                <button
+                  key={rate}
+                  type="button"
+                  onClick={() => {
+                    setPlaybackRate(rate);
+                    // 再生中なら現在位置で新しい速度で再開する
+                    const pb = playbackRef.current;
+                    if (pb && pb.isPlaying()) {
+                      const cur = pb.elapsedSec();
+                      pb.stop();
+                      releaseAll();
+                      bassReleaseAll();
+                      synthReleaseAll();
+                      guitarReleaseAll();
+                      acousticReleaseAll();
+                      vocalReleaseAll();
+                      pb.start(cur, rate);
+                    }
+                  }}
+                  className={[
+                    "rounded-full px-2.5 py-0.5 text-xs font-semibold transition",
+                    active
+                      ? "bg-accent-500 text-white shadow-sm"
+                      : "text-ink-600 hover:bg-ink-100",
+                  ].join(" ")}
+                  title={`再生速度 ${rate}倍`}
+                >
+                  {rate === 1 ? "1x" : `${rate}x`}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
       </section>
@@ -2969,12 +3075,17 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               node: (
                 <div className="px-1">
                   <LiveDrumKit
-                    armed={armed === "drum"}
-                    onHit={(midi, vel) => handleDrumHit(midi, vel)}
+                    armed={armed === "drumAcoustic"}
+                    onHit={(midi, vel) => handleDrumAcousticHit(midi, vel)}
                   />
                   <p className="mt-3 text-xs text-ink-500">
                     11 種類のドラムをタップ/PCキー (A〜G・Q〜Y) で演奏できます。
-                    armed が「ドラム」なら録音にもそのまま入ります。
+                    armed が「生ドラム」なら録音にもそのまま入ります (生ドラム層へ記録)。
+                    {armed === "drumAcoustic" && state === "recording" && (
+                      <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                        🥁 録音中 (+{drumAcousticRecCount} ヒット)
+                      </span>
+                    )}
                   </p>
                 </div>
               ),

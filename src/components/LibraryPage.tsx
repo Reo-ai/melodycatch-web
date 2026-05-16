@@ -102,6 +102,7 @@ export default function LibraryPage() {
       guitar: snap.guitar,
       acoustic: snap.acoustic,
       vocal: snap.vocal,
+      drumAcoustic: snap.drumAcoustic,
     };
     if (saveSlot(slot, data)) {
       refresh();

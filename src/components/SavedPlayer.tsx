@@ -16,7 +16,8 @@ import PianoRoll from "./PianoRoll";
 const LAYER_LABEL: Record<LayerId, string> = {
   melody: "メロディ",
   chord: "コード",
-  drum: "ドラム",
+  drum: "電子ドラム",
+  drumAcoustic: "生ドラム",
   bass: "ベース",
   synth: "シンセ",
   guitar: "ギター",
@@ -28,6 +29,7 @@ const LAYER_COLOR: Record<LayerId, string> = {
   melody: "bg-rose-500",
   chord: "bg-indigo-500",
   drum: "bg-amber-500",
+  drumAcoustic: "bg-yellow-700",
   bass: "bg-emerald-500",
   synth: "bg-violet-500",
   guitar: "bg-sky-500",
@@ -110,6 +112,7 @@ export default function SavedPlayer() {
     data.acoustic ?? emptyLayer("acoustic", "アコギ"),
     data.vocal ?? emptyLayer("vocal", "ボーカル"),
     data.drum,
+    data.drumAcoustic ?? emptyLayer("drumAcoustic", "生ドラム"),
   ];
   const totalDuration = layers.reduce((acc, l) => {
     for (const n of l.notes) {
@@ -205,6 +208,7 @@ export default function SavedPlayer() {
           melody={data.melody ?? emptyLayer("melody", "メロディ")}
           chord={data.chord ?? emptyLayer("chord", "コード")}
           drum={data.drum ?? emptyLayer("drum", "ドラム")}
+          drumAcoustic={data.drumAcoustic ?? emptyLayer("drumAcoustic", "生ドラム")}
           bass={data.bass ?? emptyLayer("bass", "ベース")}
           synth={data.synth ?? emptyLayer("synth", "シンセ")}
           guitar={data.guitar ?? emptyLayer("guitar", "ギター")}
@@ -222,7 +226,7 @@ export default function SavedPlayer() {
       <section className="rounded-2xl border border-ink-200 bg-white p-5 shadow-sm">
         <h3 className="mb-3 text-sm font-semibold text-ink-700">トラック構成</h3>
         <ul className="flex flex-col gap-2">
-          {(["melody", "chord", "bass", "synth", "guitar", "acoustic", "vocal", "drum"] as LayerId[]).map(
+          {(["melody", "chord", "bass", "synth", "guitar", "acoustic", "vocal", "drum", "drumAcoustic"] as LayerId[]).map(
             (id) => {
               const l = layers.find((x) => x.id === id);
               const count = l ? l.notes.length : 0;

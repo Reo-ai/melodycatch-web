@@ -32,6 +32,8 @@ export interface SlotData {
   acoustic?: Layer;
   /** ボーカル (合唱サンプル)。古い保存データには存在しないので optional。 */
   vocal?: Layer;
+  /** 生ドラム (LiveDrumKit による手叩き)。古い保存データには存在しないので optional。 */
+  drumAcoustic?: Layer;
 }
 
 const KEY_PREFIX = "melodycatch.slot.";
@@ -130,6 +132,8 @@ export interface CurrentSnapshot {
   acoustic?: Layer;
   /** ボーカル (合唱サンプル)。古いスナップショットには存在しないので optional。 */
   vocal?: Layer;
+  /** 生ドラム (LiveDrumKit による手叩き)。古いスナップショットには存在しないので optional。 */
+  drumAcoustic?: Layer;
 }
 
 export function writeCurrent(snap: CurrentSnapshot): void {
@@ -205,7 +209,8 @@ export function slotLabel(slot: number, data: SlotData | null): string {
     data.synth.notes.length +
     data.guitar.notes.length +
     (data.acoustic?.notes.length ?? 0) +
-    (data.vocal?.notes.length ?? 0);
+    (data.vocal?.notes.length ?? 0) +
+    (data.drumAcoustic?.notes.length ?? 0);
   const date = new Date(data.savedAt);
   const dateStr = `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   const name = data.name?.trim() ? data.name.trim() : `スロット ${slot}`;

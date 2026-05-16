@@ -38,6 +38,9 @@ interface PianoRollProps {
   melody: Layer;
   chord: Layer;
   drum: Layer;
+  /** 生ドラム (LiveDrumKit による手叩き)。ドラム lane では表示しないが、
+   *  layerOf 経由で playback / 編集対象として扱えるように受け取る。 */
+  drumAcoustic: Layer;
   bass: Layer;
   synth: Layer;
   guitar: Layer;
@@ -272,6 +275,7 @@ export default function PianoRoll({
   melody,
   chord,
   drum,
+  drumAcoustic,
   bass,
   synth,
   guitar,
@@ -609,6 +613,8 @@ export default function PianoRoll({
         return chord;
       case "drum":
         return drum;
+      case "drumAcoustic":
+        return drumAcoustic;
       case "bass":
         return bass;
       case "synth":

@@ -10,6 +10,7 @@
 import { Midi } from "@tonejs/midi";
 import { holdOff, holdOn } from "./pianoEngine";
 import { triggerDrumHit } from "./drums";
+import { triggerDrumHitAcoustic } from "./drumsAcoustic";
 import { bassHoldOff, bassHoldOn } from "./bassEngine";
 import { synthHoldOff, synthHoldOn } from "./synthEngine";
 import { guitarHoldOff, guitarHoldOn } from "./guitarEngine";
@@ -20,6 +21,7 @@ export type LayerId =
   | "melody"
   | "chord"
   | "drum"
+  | "drumAcoustic"
   | "bass"
   | "synth"
   | "guitar"
@@ -261,6 +263,8 @@ export class Playback {
   private startedAt = 0;
   private layers: Layer[];
   private hooks?: PlaybackHooks;
+  /** 再生速度倍率 (1=等倍, 2=2倍速)。曲時間を実時間に換算する係数。 */
+  private rate = 1;
 
   constructor(layers: Layer[], hooks?: PlaybackHooks) {
     this.layers = layers;
@@ -277,25 +281,33 @@ export class Playback {
    * - offsetSec より前に終わるノートはスキップ
    * - offsetSec の途中にあるノートは「残り時間ぶん」だけ鳴らす (即時 noteOn)
    * - elapsedSec() は `offset + 経過時間` を返す (再生ヘッド連動)
+   * `playbackRate` で再生速度を変えられる (1=等倍, 2=2倍速 など)。
    */
-  start(offsetSec = 0) {
+  start(offsetSec = 0, playbackRate = 1) {
     this.stop();
     this.playing = true;
     const off = Math.max(0, offsetSec);
-    // performance.now() を offset ぶん過去に擬似的にずらすことで
-    // elapsedSec() がそのまま `offset + 経過` を返す
-    this.startedAt = performance.now() - off * 1000;
+    const rate = Math.max(0.1, playbackRate);
+    this.rate = rate;
+    // performance.now() を「曲時間 off の位置」になるよう擬似的にずらす。
+    // elapsedSec() は (実経過 * rate) を返すので、ここでも rate で割って補正する。
+    this.startedAt = performance.now() - (off / rate) * 1000;
 
     let last = 0;
     for (const layer of this.layers) {
       for (const note of layer.notes) {
         const noteEnd = note.startSec + note.durationSec;
-        if (layer.id === "drum") {
+        if (layer.id === "drum" || layer.id === "drumAcoustic") {
           // ドラムは一発もの。offset 後のヒットだけスケジュールする。
           if (note.startSec < off - 1e-6) continue;
-          const delayMs = (note.startSec - off) * 1000;
+          const delayMs = ((note.startSec - off) * 1000) / rate;
+          const isAcoustic = layer.id === "drumAcoustic";
           const tOn = window.setTimeout(() => {
-            triggerDrumHit(note.midi, undefined, note.velocity);
+            if (isAcoustic) {
+              triggerDrumHitAcoustic(note.midi, undefined, note.velocity);
+            } else {
+              triggerDrumHit(note.midi, undefined, note.velocity);
+            }
             this.hooks?.onNoteOn?.(layer.id, note.midi);
             window.setTimeout(
               () => this.hooks?.onNoteOff?.(layer.id, note.midi),
@@ -315,8 +327,8 @@ export class Playback {
         const isAcoustic = layer.id === "acoustic";
         const isVocal = layer.id === "vocal";
         // offset 区間にまたがるノートは即時 noteOn (delay=0)
-        const startDelayMs = Math.max(0, (note.startSec - off) * 1000);
-        const offDelayMs = Math.max(20, (noteEnd - off) * 1000);
+        const startDelayMs = Math.max(0, ((note.startSec - off) * 1000) / rate);
+        const offDelayMs = Math.max(20, ((noteEnd - off) * 1000) / rate);
         const tOn = window.setTimeout(() => {
           if (isBass) bassHoldOn(note.midi, note.velocity);
           else if (isSynth) synthHoldOn(note.midi, note.velocity);
@@ -339,7 +351,7 @@ export class Playback {
         if (noteEnd > last) last = noteEnd;
       }
     }
-    const endDelayMs = Math.max(80, (last - off) * 1000 + 80);
+    const endDelayMs = Math.max(80, ((last - off) * 1000) / rate + 80);
     const tEnd = window.setTimeout(() => {
       this.playing = false;
       this.hooks?.onEnd?.();
@@ -356,7 +368,7 @@ export class Playback {
 
   elapsedSec(): number {
     if (!this.playing) return 0;
-    return (performance.now() - this.startedAt) / 1000;
+    return ((performance.now() - this.startedAt) / 1000) * this.rate;
   }
 }
 
@@ -369,7 +381,7 @@ export function exportToMidi(layers: Layer[], filename: string): Blob {
   for (const layer of layers) {
     const track = midi.addTrack();
     track.name = layer.name;
-    if (layer.id === "drum") {
+    if (layer.id === "drum" || layer.id === "drumAcoustic") {
       // GM 規格のドラムチャンネル (0-indexed の 9 = 1-indexed の 10)
       track.channel = 9;
     }

@@ -59,6 +59,7 @@ interface ChordPaletteProps {
     | "synth"
     | "guitar"
     | "drum"
+    | "drumAcoustic"
     | "acoustic"
     | "vocal";
   /** Index of the chord currently spotlighted (e.g. last played). */

@@ -25,8 +25,8 @@ import {
   DRUM_TOM_HI_MIDI,
   DRUM_TOM_LO_MIDI,
   DRUM_TOM_MID_MIDI,
-  triggerDrumHit,
 } from "../audio/drums";
+import { triggerDrumHitAcoustic } from "../audio/drumsAcoustic";
 import { ensureAudio } from "../audio/pianoEngine";
 
 interface PadDef {
@@ -166,7 +166,7 @@ export default function LiveDrumKit({ onHit, armed = false }: LiveDrumKitProps) 
   /** 1 ヒット: 音 + 視覚フラッシュ + onHit 通知 */
   const fire = useCallback((midi: number, velocity: number) => {
     void ensureAudio().then(() => {
-      triggerDrumHit(midi, undefined, velocity);
+      triggerDrumHitAcoustic(midi, undefined, velocity);
     });
     onHitRef.current?.(midi, velocity);
     // フラッシュ
@@ -228,7 +228,7 @@ export default function LiveDrumKit({ onHit, armed = false }: LiveDrumKitProps) 
     >
       <div className="mb-1.5 flex items-center justify-between px-1">
         <span className="text-[11px] font-semibold text-ink-600">
-          🥁 ライブドラム (フルキット)
+          🥁 生ドラム (フルキット)
         </span>
         <span className="text-[10px] text-ink-500">
           パッドをタップ / PC: A〜G・Q〜Y
@@ -250,7 +250,7 @@ export default function LiveDrumKit({ onHit, armed = false }: LiveDrumKitProps) 
       </div>
 
       <p className="mt-2 px-1 text-[10px] text-ink-500">
-        パッド上=強打 / 下=弱打 でベロシティが変わります。armed が「ドラム」なら録音にも入ります。
+        パッド上=強打 / 下=弱打 でベロシティが変わります。armed が「生ドラム」なら録音にも入ります。
       </p>
     </div>
   );
