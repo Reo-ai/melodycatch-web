@@ -83,11 +83,15 @@ import {
 import {
   isVocalLoaded,
   preloadVocal,
+  setVocalExpression,
+  setVocalSyllable,
   setVocalVowel,
   vocalChordOn,
   vocalHoldOff,
   vocalHoldOn,
   vocalReleaseAll,
+  type VocalExpression,
+  type VocalSyllable,
   type VocalVowel,
 } from "../audio/vocalEngine";
 import {
@@ -405,6 +409,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [noteLength, setNoteLength] = useState<NoteLength>("1/8");
   const [metronomeOn, setMetronomeOn] = useState(true);
   const [vocalVowel, setVocalVowelState] = useState<VocalVowel>("aah");
+  const [vocalSyllable, setVocalSyllableState] = useState<VocalSyllable>("none");
+  const [vocalExpression, setVocalExpressionState] = useState<VocalExpression>("natural");
   const [vocalSampleReady, setVocalSampleReady] = useState<boolean>(() => isVocalLoaded());
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
@@ -450,6 +456,13 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     }, 200);
     return () => window.clearInterval(id);
   }, [armed, vocalVowel]);
+  // 子音アタック / 表現プリセットの同期。
+  useEffect(() => {
+    setVocalSyllable(vocalSyllable);
+  }, [vocalSyllable]);
+  useEffect(() => {
+    setVocalExpression(vocalExpression);
+  }, [vocalExpression]);
   useEffect(() => {
     drumAlsoArmedRef.current = drumAlsoArmed;
   }, [drumAlsoArmed]);
@@ -2255,6 +2268,87 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               : vocalVowel === "ooh"
                 ? "「ウー」: 柔らかいコーラス"
                 : "「んー」: 閉口ハミング"}
+          </span>
+        </div>
+
+        {/* ボーカル子音アタック切替: 各ノート頭に短い「ラ/タ/ナ/マ/パ」風バーストを挿入 */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-ink-600">🎤 子音アタック:</span>
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+            {(["none", "la", "ta", "na", "ma", "pa"] as const).map((c) => {
+              const label =
+                c === "none" ? "なし" : c === "la" ? "ラ" : c === "ta" ? "タ" : c === "na" ? "ナ" : c === "ma" ? "マ" : "パ";
+              const title =
+                c === "none"
+                  ? "子音なし、母音だけで発音"
+                  : c === "la"
+                    ? "ラ: 中域の柔らかいバースト (舌打ち風)"
+                    : c === "ta"
+                      ? "タ: 高域の鋭いトランジェント"
+                      : c === "na"
+                        ? "ナ: 鼻腔共鳴 (バンドパス 250Hz)"
+                        : c === "ma"
+                          ? "マ: 唇開放、暗めの低域"
+                          : "パ: 唇破裂の中域バースト";
+              const active = vocalSyllable === c;
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setVocalSyllableState(c)}
+                  className={[
+                    "px-3 py-1 text-xs font-semibold transition",
+                    active ? "bg-accent-500 text-white" : "text-ink-600 hover:bg-ink-50",
+                  ].join(" ")}
+                  title={title}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-xs text-ink-500">
+            {vocalSyllable === "none"
+              ? "ノートの頭に子音を入れない"
+              : `各ノートの頭に「${vocalSyllable === "la" ? "ラ" : vocalSyllable === "ta" ? "タ" : vocalSyllable === "na" ? "ナ" : vocalSyllable === "ma" ? "マ" : "パ"}」風バーストを挿入`}
+          </span>
+        </div>
+
+        {/* ボーカル表現切替: ビブラート/しゃくり/レガートをまとめてプリセット */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-ink-600">🎤 表現:</span>
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+            {(["flat", "natural", "expressive"] as const).map((e) => {
+              const label = e === "flat" ? "フラット" : e === "natural" ? "ナチュラル" : "エモい";
+              const title =
+                e === "flat"
+                  ? "ビブラート無し、release も短め (機械的)"
+                  : e === "natural"
+                    ? "薄めビブラート (5Hz, 1.5%) + ゆるめ release"
+                    : "深めビブラート (5.5Hz, 3%) + 各ノート頭に -40cent しゃくり + 長め release";
+              const active = vocalExpression === e;
+              return (
+                <button
+                  key={e}
+                  type="button"
+                  onClick={() => setVocalExpressionState(e)}
+                  className={[
+                    "px-3 py-1 text-xs font-semibold transition",
+                    active ? "bg-accent-500 text-white" : "text-ink-600 hover:bg-ink-50",
+                  ].join(" ")}
+                  title={title}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-xs text-ink-500">
+            {vocalExpression === "flat"
+              ? "機械的、揺らぎなし"
+              : vocalExpression === "natural"
+                ? "薄いビブラート + 自然な余韻"
+                : "深いビブラート + しゃくり + 長い余韻"}
           </span>
         </div>
 
