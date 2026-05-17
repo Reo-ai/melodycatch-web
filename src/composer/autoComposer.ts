@@ -99,6 +99,10 @@ export interface AutoComposeOptions {
   includeGuitar?: boolean;
   /** アコースティックギター層 (フィンガーピッキング/分散和音) を生成するか。 */
   includeAcoustic?: boolean;
+  /** ボーカル層 (メロディ + ハモリ) を生成するか。 */
+  includeVocal?: boolean;
+  /** シンセ層 (パッド or カウンターメロディ) を生成するか。 */
+  includeSynth?: boolean;
 }
 
 export type SectionKind =
@@ -138,6 +142,10 @@ export interface ComposedSong {
   guitarNotes: NoteEvent[];
   /** アコースティックギター専用パターン (空配列なら未生成)。 */
   acousticNotes: NoteEvent[];
+  /** ボーカル専用パターン (メロディ + 上 3 度ハモリ等)。 */
+  vocalNotes: NoteEvent[];
+  /** シンセ専用パターン (パッド or カウンターメロディ)。 */
+  synthNotes: NoteEvent[];
   totalSec: number;
   bpm: number;
   style: ComposerStyle;
@@ -1394,6 +1402,151 @@ function generateAcousticLayer(
 }
 
 // ---------------------------------------------------------------------------
+// ボーカル層 (メロディに 3 度/オクターブのハモリを乗せる)
+// Verse は基本ユニゾン (= melody そのまま)、Chorus / Pre-Chorus では
+// 上 3 度 (ダイアトニック、可能ならコードトーン) を重ねてハーモニーを作る。
+// ---------------------------------------------------------------------------
+function generateVocalLayer(
+  melodyNotes: NoteEvent[],
+  chords: HarmonicChord[],
+  sections: SongSection[],
+  scale: Scale,
+  bpm: number,
+): NoteEvent[] {
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+  const out: NoteEvent[] = [];
+
+  for (const note of melodyNotes) {
+    const bar = Math.floor(note.startSec / barSec);
+    if (bar < 0 || bar >= chords.length) {
+      out.push(note);
+      continue;
+    }
+    const sec = sectionAtBar(sections, bar);
+    // ユニゾン (= リードボーカルとしてメロディそのまま)
+    out.push(note);
+
+    // ハモリ対象セクション
+    const wantHarmony = sec.kind === "chorus" || sec.kind === "preChorus";
+    if (!wantHarmony) continue;
+
+    const localScale = transposeScale(scale, sec.keyOffsetSemitones);
+    const chord = chords[bar];
+    const chordPCs = new Set(chordVoicing(chord, 48).map((m) => m % 12));
+
+    // 上 3 度 (ダイアトニック)。3..5 半音上を順に試して最初の音階内ピッチを採用。
+    // できればコードトーンを優先。
+    const cand: number[] = [];
+    for (let off = 3; off <= 5; off++) {
+      const m = note.midi + off;
+      if (scaleContains(localScale, m)) cand.push(m);
+    }
+    if (cand.length === 0) continue;
+    const harmony = cand.find((c) => chordPCs.has(c % 12)) ?? cand[0];
+
+    out.push({
+      midi: harmony,
+      startSec: note.startSec,
+      durationSec: note.durationSec,
+      velocity: note.velocity * 0.7,
+    });
+
+    // 最終サビ感: chorus の最終 4 小節はオクターブ下も足してさらに厚くする
+    const sectionEndBar = sec.endBar;
+    const isLast4 = sec.kind === "chorus" && bar >= sectionEndBar - 4;
+    if (isLast4 && note.midi - 12 >= 36) {
+      out.push({
+        midi: note.midi - 12,
+        startSec: note.startSec,
+        durationSec: note.durationSec,
+        velocity: note.velocity * 0.55,
+      });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// シンセ層 (パッド or カウンターメロディ)
+// pop / ballad → 高音域でロングトーンの "パッド" (root + 5th + 9th を sustain)
+// rock / jazz → メロディの隙間を埋めるカウンターラインを 8 分/16 分で
+// ---------------------------------------------------------------------------
+function generateSynthLayer(
+  melodyNotes: NoteEvent[],
+  chords: HarmonicChord[],
+  sections: SongSection[],
+  bpm: number,
+  style: ComposerStyle,
+  rng: () => number,
+): NoteEvent[] {
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+  const out: NoteEvent[] = [];
+
+  if (style === "pop" || style === "ballad") {
+    // PAD: 高音域 (C5〜) で 1 小節フルサスティン。Intro / Outro / Break は休む。
+    for (let bar = 0; bar < chords.length; bar++) {
+      const sec = sectionAtBar(sections, bar);
+      if (sec.kind === "break" || sec.kind === "intro" || sec.kind === "outro") continue;
+      const voicing = chordVoicing(chords[bar], 72); // C5
+      const padTones = voicing.slice(0, 3);
+      const barStart = bar * barSec;
+      const v = sec.intensity * (style === "ballad" ? 0.35 : 0.42);
+      for (const m of padTones) {
+        out.push({
+          midi: m,
+          startSec: barStart,
+          durationSec: barSec * 0.97,
+          velocity: v,
+        });
+      }
+    }
+  } else {
+    // rock / jazz: カウンターライン。
+    // メロディが鳴っていない区間 (= 小節末の余白) にコードトーンの
+    // 16 分上行アルペジオを差し込んで「合いの手」を作る。
+    // Verse / Intro / Outro / Break は休む。
+    for (let bar = 0; bar < chords.length; bar++) {
+      const sec = sectionAtBar(sections, bar);
+      if (sec.kind !== "chorus" && sec.kind !== "bridge" && sec.kind !== "preChorus") continue;
+      const barStart = bar * barSec;
+      const barEnd = barStart + barSec;
+      const chord = chords[bar];
+      const voicing = chordVoicing(chord, 60); // C4
+
+      // この小節内のメロディ音
+      const inBar = melodyNotes
+        .filter((n) => n.startSec >= barStart && n.startSec < barEnd)
+        .sort((a, b) => a.startSec - b.startSec);
+      const last = inBar[inBar.length - 1];
+      const gapStart = last ? last.startSec + last.durationSec : barStart;
+      const gapLen = barEnd - gapStart;
+
+      if (gapLen < beatSec * 0.6) continue; // 隙間が狭ければスキップ
+
+      // 16 分でアルペジオを最大 4 音差し込む
+      const sixteenth = beatSec / 4;
+      const tones = voicing.slice(0, 4);
+      const slots = Math.min(tones.length, Math.floor(gapLen / sixteenth));
+      // 上行 or 下行をランダムに選択して "問いと答え" の応答を作る
+      const ascending = rng() < 0.5;
+      for (let i = 0; i < slots; i++) {
+        const idx = ascending ? i : tones.length - 1 - i;
+        const m = tones[idx % tones.length];
+        out.push({
+          midi: m,
+          startSec: gapStart + i * sixteenth,
+          durationSec: sixteenth * 0.9,
+          velocity: sec.intensity * 0.6,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // ベース
 // ---------------------------------------------------------------------------
 function generateBass(
@@ -1846,10 +1999,19 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   const acousticNotes = (opts.includeAcoustic ?? false)
     ? generateAcousticLayer(chords, sections, bpm, style, rng)
     : [];
+  const vocalNotes = (opts.includeVocal ?? false)
+    ? generateVocalLayer(melodyNotes, chords, sections, scale, bpm)
+    : [];
+  const synthNotes = (opts.includeSynth ?? false)
+    ? generateSynthLayer(melodyNotes, chords, sections, bpm, style, rng)
+    : [];
 
   const totalSec = bars * 4 * (60 / bpm);
 
-  for (const arr of [melodyNotes, chordNotes, bassNotes, drumNotes, fxNotes, guitarNotes, acousticNotes]) {
+  for (const arr of [
+    melodyNotes, chordNotes, bassNotes, drumNotes, fxNotes,
+    guitarNotes, acousticNotes, vocalNotes, synthNotes,
+  ]) {
     arr.sort((a, b) => a.startSec - b.startSec);
   }
 
@@ -1863,6 +2025,8 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
     fxNotes,
     guitarNotes,
     acousticNotes,
+    vocalNotes,
+    synthNotes,
     totalSec,
     bpm,
     style,

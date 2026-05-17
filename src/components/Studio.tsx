@@ -1677,6 +1677,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       includeFx: useFxRole,
       includeGuitar: w.guitar,
       includeAcoustic: w.acoustic,
+      includeVocal: w.vocal,
+      includeSynth: w.synth,
     });
 
     // ベース song: 主担当 (melody / chord / bass / drum / fx) のノートを渡す。
@@ -1692,8 +1694,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
 
     // 追加ストリーム: 同ロールの他楽器が同じフレーズを共有して鳴る。
     const extraStreams: { layerId: LayerId; notes: NoteEvent[] }[] = [];
-    if (w.synth) extraStreams.push({ layerId: "synth", notes: fullSong.melodyNotes });
-    if (w.vocal) extraStreams.push({ layerId: "vocal", notes: fullSong.melodyNotes });
+    if (w.synth) extraStreams.push({ layerId: "synth", notes: fullSong.synthNotes });
+    if (w.vocal) extraStreams.push({ layerId: "vocal", notes: fullSong.vocalNotes });
     if (w.guitar) extraStreams.push({ layerId: "guitar", notes: fullSong.guitarNotes });
     if (w.acoustic) extraStreams.push({ layerId: "acoustic", notes: fullSong.acousticNotes });
     if (w.drumAcoustic) extraStreams.push({ layerId: "drumAcoustic", notes: fullSong.drumNotes });
