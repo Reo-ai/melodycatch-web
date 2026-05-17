@@ -383,6 +383,44 @@ const PROGRESSION_TEMPLATES: Record<ComposerStyle, number[][]> = {
 };
 
 /**
+ * Pre-Chorus (B メロ) 専用の進行。
+ * 「サビへ向かって緊張を高める」役割なので、IV / V / ii を多用して
+ * トニック (I) で安定するのを避け、V 終止で次セクションのサビへ流れ込む。
+ *
+ * 典型パターン:
+ *   - IV → V → IV → V       : 4 度と 5 度を往復して持ち上げる王道
+ *   - vi → IV → V → V       : 暗→明→ドミナント
+ *   - ii → V → ii → V       : ジャズ・ポップで頻出
+ *   - IV → V → vi → V       : だんだん上がる
+ */
+const PRECHORUS_TEMPLATES: Record<ComposerStyle, number[][]> = {
+  pop: [
+    [4, 5, 4, 5],
+    [6, 4, 5, 5],
+    [4, 5, 6, 5],
+    [2, 5, 2, 5],
+    [4, 4, 5, 5],
+  ],
+  ballad: [
+    [4, 5, 4, 5],
+    [2, 5, 4, 5],
+    [6, 4, 5, 5],
+    [4, 3, 6, 5],
+  ],
+  rock: [
+    [4, 5, 4, 5],
+    [4, 4, 5, 5],
+    [6, 5, 4, 5],
+    [1, 5, 4, 5],
+  ],
+  jazz: [
+    [2, 5, 2, 5],
+    [4, 5, 3, 5],
+    [6, 2, 5, 5],
+  ],
+};
+
+/**
  * セクションとスタイルに応じてコード拡張の "派手さ" を決める。
  *
  * 戻り値: トライアドのまま使う確率 / 軽い拡張 (sus, 7) を使う確率 /
@@ -491,6 +529,13 @@ function buildProgression(
   const templates = PROGRESSION_TEMPLATES[style];
   const out: HarmonicChord[] = new Array(bars);
 
+  // セクション kind ごとのコードテンプレ memo。
+  // Verse1 と Verse2、Chorus1 と Chorus2 が同じ進行になるように
+  // 「最初に選んだテンプレを保存して、2 回目以降は同じものを使う」。
+  // (Chorus は元から templates[0] 固定なので memo しなくても揃うが、
+  //  pre-chorus / verse はランダム選択なので memo が必要。)
+  const tplMemo = new Map<SectionKind, number[]>();
+
   // セクションごとに 1 つテンプレを選び、その中で回す
   for (const sec of sections) {
     // 転調セクションでは「移調後のスケール」のダイアトニックを使う
@@ -506,9 +551,17 @@ function buildProgression(
     }
 
     let tpl: number[];
-    if (sec.kind === "chorus") {
+    const cached = tplMemo.get(sec.kind);
+    if (cached && (sec.kind === "verse" || sec.kind === "preChorus" || sec.kind === "chorus")) {
+      // 2 回目以降の Verse / Pre-Chorus / Chorus は同じ進行を使う
+      // (Verse1 と Verse2 が違うコードだと「歌の繰り返し」感が出ないため)
+      tpl = cached;
+    } else if (sec.kind === "chorus") {
       // Chorus は最もキャッチーなテンプレ (先頭) を使う
       tpl = templates[0];
+    } else if (sec.kind === "preChorus") {
+      // Pre-Chorus は専用テンプレ (サビへ向かう緊張感、V 終止が多い)
+      tpl = pick(PRECHORUS_TEMPLATES[style], rng);
     } else if (sec.kind === "bridge") {
       // Bridge は別のテンプレを意図的に選ぶ
       tpl = templates[Math.min(templates.length - 1, Math.floor(rng() * (templates.length - 1)) + 1)];
@@ -517,6 +570,10 @@ function buildProgression(
       tpl = [1, 4, 1, 5];
     } else {
       tpl = pick(templates, rng);
+    }
+    // 初出の verse / preChorus / chorus は memo に保存
+    if (!cached && (sec.kind === "verse" || sec.kind === "preChorus" || sec.kind === "chorus")) {
+      tplMemo.set(sec.kind, tpl);
     }
     const len = sec.endBar - sec.startBar;
     for (let i = 0; i < len; i++) {
@@ -714,17 +771,68 @@ function generateMelody(
 
   let prevMidi: number | null = null;
 
+  // セクション kind ごとの「最初に作ったメロディ」memo。
+  // Verse1 を生成したら Verse2 / Verse3 は同じメロディ (rhythm + 音高) を
+  // そのまま使う。Chorus も同様 (= サビのフックが毎回同じになる)。
+  // keyOffsetSemitones が違うセクション (= 転調済みサビ) には、その差分を加算して使う。
+  interface MemoNote {
+    midi: number;          // 初出時に鳴った絶対 MIDI
+    offsetInBarSec: number; // 小節先頭からのオフセット (秒)
+    durSec: number;
+    velocity: number;
+  }
+  interface SectionMemo {
+    bars: MemoNote[][];           // 各小節のノート列
+    keyOffsetSemitones: number;   // memo を作ったときの転調量
+  }
+  const memos = new Map<SectionKind, SectionMemo>();
+
+  // セクションが切り替わったときに「セクション内何小節目か」を 0 に戻すための追跡
+  let curSec: SongSection | null = null;
+  let barInSec = 0;
+
   for (let bar = 0; bar < chords.length; bar++) {
     const sec = sectionAtBar(sections, bar);
+    if (curSec !== sec) {
+      curSec = sec;
+      barInSec = 0;
+    }
+    const isRepeatableKind =
+      sec.kind === "verse" || sec.kind === "preChorus" || sec.kind === "chorus";
+    const memo = isRepeatableKind ? memos.get(sec.kind) : undefined;
+    const isReplay = !!memo;
+
     const { lo, hi, vel } = melodyRangeFor(sec.kind);
     // 転調セクション中はそのキーのスケール音だけ使う (= 音外し防止)
     const localScale = transposeScale(scale, sec.keyOffsetSemitones);
     const range = scaleTonesInRange(localScale, lo, hi);
-    if (range.length === 0) continue;
+    if (range.length === 0) {
+      if (isRepeatableKind) barInSec++;
+      continue;
+    }
 
     const chord = chords[bar];
     const chordTones = chordVoicing(chord, 48);
     const chordPCs = new Set(chordTones.map((m) => m % 12));
+
+    // ----- 再現モード: 保存済みメロディを転調差分だけずらして再生 ---------
+    if (isReplay && barInSec < memo!.bars.length) {
+      const transpose = sec.keyOffsetSemitones - memo!.keyOffsetSemitones;
+      const barStart = bar * 4 * beatSec;
+      const notesOfBar = memo!.bars[barInSec];
+      for (const n of notesOfBar) {
+        const m = n.midi + transpose;
+        events.push({
+          midi: m,
+          startSec: barStart + n.offsetInBarSec,
+          durationSec: n.durSec,
+          velocity: n.velocity,
+        });
+        prevMidi = m;
+      }
+      barInSec++;
+      continue;
+    }
 
     // break セクションはメロディも基本休む。最後の小節 4 拍裏に
     // 「サビへ戻る」ピックアップだけ置いて余韻を作る。
@@ -771,6 +879,19 @@ function generateMelody(
     const totalBeats = slots.reduce((a, s) => a + s.beats, 0);
     const beatScale = 4 / totalBeats;
 
+    // ----- memo 書き込み準備: このセクション kind を初めて生成するなら memo を作る ---
+    let recordBar: MemoNote[] | null = null;
+    if (isRepeatableKind && !memo) {
+      let m = memos.get(sec.kind);
+      if (!m) {
+        m = { bars: [], keyOffsetSemitones: sec.keyOffsetSemitones };
+        memos.set(sec.kind, m);
+      }
+      // 小節を末尾追加 (Verse1 を 0,1,2,... と順に記録していく)
+      while (m.bars.length <= barInSec) m.bars.push([]);
+      recordBar = m.bars[barInSec];
+    }
+
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
       const slotDurSec = slot.beats * beatScale * beatSec;
@@ -788,7 +909,16 @@ function generateMelody(
       }
 
       let pickMidi: number;
-      if (prevMidi === null) {
+      // Chorus 1 小節目の頭は「フック」として、高めのコードトーンから始める。
+      // これが memo されて、以降の全 Chorus でも同じ高い始まり方になる。
+      const isChorusHookOpener =
+        sec.kind === "chorus" && barInSec === 0 && i === 0 && !isReplay;
+      if (isChorusHookOpener) {
+        const hookCands = range.filter((m) => chordPCs.has(m % 12) && m >= 72); // C5 以上
+        const fallback = range.filter((m) => chordPCs.has(m % 12));
+        const src = hookCands.length > 0 ? hookCands : (fallback.length > 0 ? fallback : range);
+        pickMidi = src[Math.floor(src.length * 0.7)] ?? src[src.length - 1];
+      } else if (prevMidi === null) {
         // 最初は中央付近のコードトーン
         const mids = candidates.filter((m) => chordPCs.has(m % 12));
         pickMidi = (mids.length > 0 ? mids : candidates)[
@@ -829,9 +959,20 @@ function generateMelody(
         durationSec: dur,
         velocity: v,
       });
+      // memo に記録 (Verse2 で同じフレーズを再生するため)
+      if (recordBar) {
+        recordBar.push({
+          midi: pickMidi,
+          offsetInBarSec: t - barStart,
+          durSec: dur,
+          velocity: v,
+        });
+      }
       prevMidi = pickMidi;
       t += slotDurSec;
     }
+
+    if (isRepeatableKind) barInSec++;
   }
 
   return events;
