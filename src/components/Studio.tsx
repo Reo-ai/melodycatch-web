@@ -114,6 +114,7 @@ import {
   chordLabelJa,
   chordSymbol,
   chordVoicing,
+  detectChordFromMidis,
   diatonicTriads,
   type HarmonicChord,
 } from "../music/chord";
@@ -451,6 +452,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [autoComposeWriteVocal, setAutoComposeWriteVocal] = useState<boolean>(false);
   const [autoComposeWriteDrumAcoustic, setAutoComposeWriteDrumAcoustic] = useState<boolean>(false);
   const [autoComposeWriteFx, setAutoComposeWriteFx] = useState<boolean>(true);
+  // 自動作曲時に Chord 層 (手書き or コードパレット書き込み) を進行のベースに使うか。
+  // ON にすると、自動生成のコード進行を破棄し、Chord 層から検出したコードを使う。
+  const [useChordLayerProgression, setUseChordLayerProgression] = useState<boolean>(false);
   const audioReady = useRef(false);
 
   const sessionRef = useRef<RecordingSession | null>(null);
@@ -1647,15 +1651,52 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     //   drum   ロール = drum / drumAcoustic が同じドラムパターンを共有
     //   bass / fx は単独
     const useMelodyRole = w.melody || w.synth || w.vocal;
+    // chordsOverride モード時は chord 層の自動書き込みは抑止 (ユーザー入力を尊重)。
+    // ただし guitar / acoustic は同じ進行で生成する必要があるので useChordRole は維持。
     const useChordRole = w.chord || w.guitar || w.acoustic;
     const useDrumRole = w.drum || w.drumAcoustic;
     const useBassRole = w.bass;
     const useFxRole = w.fx;
 
+    // Chord 層手書きをコード進行のベースに使うモード:
+    // 1 小節 = 4拍 ぶんの時間窓ごとに chord.notes を集めて detectChordFromMidis で
+    // HarmonicChord を推定し、autoComposeBars ぶんの進行を作る。
+    // クリア処理より前に走らせて、書き込み対象が chord の場合でも元データを参照できるようにする。
+    let chordsOverride: HarmonicChord[] | undefined = undefined;
+    if (useChordLayerProgression && chord.notes.length > 0) {
+      const beatSec = 60 / Math.max(1, bpm);
+      const barSec = beatSec * 4;
+      const progression: HarmonicChord[] = [];
+      let last: HarmonicChord | null = null;
+      for (let b = 0; b < autoComposeBars; b++) {
+        const bStart = b * barSec;
+        const bEnd = bStart + barSec;
+        const midis: number[] = [];
+        for (const n of chord.notes) {
+          // ノートが小節範囲内で鳴っていれば採用 (ノートが小節をまたぐ場合も含む)
+          const nEnd = n.startSec + n.durationSec;
+          if (nEnd > bStart && n.startSec < bEnd) {
+            midis.push(n.midi);
+          }
+        }
+        const detected = midis.length > 0 ? detectChordFromMidis(midis) : null;
+        const next: HarmonicChord | null = detected ?? last;
+        if (next) {
+          progression.push(next);
+          last = next;
+        } else {
+          // 最初の小節すらコードが無い: スケール基準のトニックで代用
+          progression.push({ rootPitchClass: scale.rootPitchClass, quality: "major" });
+        }
+      }
+      chordsOverride = progression;
+    }
+
     // 履歴に積んでから「書き込み対象レイヤだけ」を空にする (1 アクションで Undo できるように)
+    // ただしコード層オーバーライドモードでは、ユーザー入力を残すため chord 層は空にしない。
     pushHistory();
     if (w.melody) setMelody((c) => ({ ...c, notes: [] }));
-    if (w.chord) setChord((c) => ({ ...c, notes: [] }));
+    if (w.chord && !chordsOverride) setChord((c) => ({ ...c, notes: [] }));
     if (w.bass) setBass((c) => ({ ...c, notes: [] }));
     if (w.drum) setDrum((c) => ({ ...c, notes: [] }));
     if (w.synth) setSynth((c) => ({ ...c, notes: [] }));
@@ -1679,14 +1720,16 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       includeAcoustic: w.acoustic,
       includeVocal: w.vocal,
       includeSynth: w.synth,
+      chordsOverride,
     });
 
     // ベース song: 主担当 (melody / chord / bass / drum / fx) のノートを渡す。
     // 主担当が選ばれていないロールは空配列にしてピアノロール書き込みと発音をスキップ。
+    // chord override モード時はユーザー入力をそのまま使うので、自動生成 chordNotes は流さない。
     const song = {
       ...fullSong,
       melodyNotes: w.melody ? fullSong.melodyNotes : [],
-      chordNotes: w.chord ? fullSong.chordNotes : [],
+      chordNotes: (w.chord && !chordsOverride) ? fullSong.chordNotes : [],
       bassNotes: w.bass ? fullSong.bassNotes : [],
       drumNotes: w.drum ? fullSong.drumNotes : [],
       fxNotes: w.fx ? fullSong.fxNotes : [],
@@ -2441,6 +2484,34 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               </div>
             </div>
           ))}
+        </div>
+
+        {/* コード進行ソース: 自動 or Chord 層手書き */}
+        <div className="mt-3 rounded-lg border border-violet-200 bg-white/70 p-2">
+          <label
+            className={[
+              "flex cursor-pointer items-start gap-2 text-xs text-ink-700",
+              autoComposing ? "cursor-not-allowed opacity-60" : "",
+              chord.notes.length === 0 ? "opacity-60" : "",
+            ].join(" ")}
+          >
+            <input
+              type="checkbox"
+              checked={useChordLayerProgression}
+              disabled={autoComposing || chord.notes.length === 0}
+              onChange={(e) => setUseChordLayerProgression(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 accent-violet-600"
+            />
+            <span>
+              <span className="font-semibold text-violet-700">
+                🎼 コード層を進行のベースに使う
+              </span>
+              <span className="block text-[10px] text-ink-500">
+                ON にすると、自動でコード進行を作らず、コード層に書いた音 / コードパレットから録ったコードを 1 小節ごとに解析して、それに合わせて全パートを編曲します。
+                {chord.notes.length === 0 ? "（コード層が空なので使えません）" : `（現在 ${chord.notes.length} ノート）`}
+              </span>
+            </span>
+          </label>
         </div>
 
         {autoComposing && autoComposeProgress && (

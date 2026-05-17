@@ -103,6 +103,12 @@ export interface AutoComposeOptions {
   includeVocal?: boolean;
   /** シンセ層 (パッド or カウンターメロディ) を生成するか。 */
   includeSynth?: boolean;
+  /**
+   * ユーザー指定のコード進行。指定された場合、自動生成の進行を完全に置き換える。
+   * 配列長が bars と一致しない場合は、不足分は最後のコードを反復、超過分は切り捨て。
+   * Chord 層手書き / コードパレット選択を反映するための入口。
+   */
+  chordsOverride?: HarmonicChord[];
 }
 
 export type SectionKind =
@@ -2164,7 +2170,18 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   void SCALE_INTERVALS;
 
   const sections = planSections(bars, style, rng);
-  const chords = buildProgression(scale, bars, style, sections, rng);
+  // ユーザーが Chord 層やコードパレットで進行を指定していればそれを優先。
+  // 長さが足りなければ最後のコードを反復、超過分は切り捨て。
+  let chords: HarmonicChord[];
+  if (opts.chordsOverride && opts.chordsOverride.length > 0) {
+    const src = opts.chordsOverride;
+    chords = [];
+    for (let i = 0; i < bars; i++) {
+      chords.push(src[Math.min(i, src.length - 1)]);
+    }
+  } else {
+    chords = buildProgression(scale, bars, style, sections, rng);
+  }
   const melodyNotes = (opts.includeMelody ?? true)
     ? generateMelody(scale, chords, sections, bpm, style, rng)
     : [];

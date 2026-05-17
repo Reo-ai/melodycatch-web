@@ -240,3 +240,56 @@ export function richVariants(
       return [chord.quality];
   }
 }
+
+/**
+ * 一群の MIDI 音 (同時に鳴っている音、または同小節内の音) から
+ * 一番ありそうな HarmonicChord を推定する。
+ * Chord 層の手書き入力 / コードパレット選択を自動作曲のコード進行に流し込む際に使う。
+ *
+ * - 最低音をルート候補として優先。
+ * - 各候補ルートについて、相対インターバル集合を CHORD_INTERVALS と比較して一致度を採点。
+ * - 該当なしなら null。
+ */
+export function detectChordFromMidis(midis: number[]): HarmonicChord | null {
+  if (midis.length === 0) return null;
+  const pcSet = new Set(midis.map((m) => pitchClass(m)));
+  if (pcSet.size === 0) return null;
+  const sorted = [...midis].sort((a, b) => a - b);
+  const lowestPc = pitchClass(sorted[0]);
+
+  const qualities = Object.keys(CHORD_INTERVALS) as ChordQuality[];
+
+  let best: { root: number; quality: ChordQuality; score: number } | null = null;
+  // 候補ルート: ピッチクラス集合の各要素を試す (最低音優先)
+  const rootCandidates: number[] = [lowestPc];
+  for (const pc of pcSet) {
+    if (!rootCandidates.includes(pc)) rootCandidates.push(pc);
+  }
+  for (const root of rootCandidates) {
+    for (const q of qualities) {
+      const ivs = CHORD_INTERVALS[q];
+      let hit = 0;
+      for (const iv of ivs) {
+        const need = (root + iv) % 12;
+        if (pcSet.has(need)) hit++;
+      }
+      // 余分な音 (コードトーン外) があると減点
+      const extra = pcSet.size - hit;
+      let score = hit * 3 - extra;
+      // 最低音 = ルートなら大きく加点
+      if (root === lowestPc) score += 2;
+      // インターバル数が多い (= 拡張和音) はわずかに加点 (より具体的なマッチを優先)
+      score += ivs.length * 0.1;
+      // 全構成音そろってる場合のみ採用候補に
+      if (hit < Math.min(3, ivs.length)) continue;
+      if (!best || score > best.score) {
+        best = { root, quality: q, score };
+      }
+    }
+  }
+  if (!best) {
+    // 1〜2 音しかなくて判定不能 → 単音をルートのメジャー扱い
+    return { rootPitchClass: lowestPc, quality: "major" };
+  }
+  return { rootPitchClass: best.root, quality: best.quality };
+}
