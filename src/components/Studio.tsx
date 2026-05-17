@@ -1675,6 +1675,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       includeBass: useBassRole,
       includeDrums: useDrumRole,
       includeFx: useFxRole,
+      includeGuitar: w.guitar,
+      includeAcoustic: w.acoustic,
     });
 
     // ベース song: 主担当 (melody / chord / bass / drum / fx) のノートを渡す。
@@ -1692,8 +1694,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     const extraStreams: { layerId: LayerId; notes: NoteEvent[] }[] = [];
     if (w.synth) extraStreams.push({ layerId: "synth", notes: fullSong.melodyNotes });
     if (w.vocal) extraStreams.push({ layerId: "vocal", notes: fullSong.melodyNotes });
-    if (w.guitar) extraStreams.push({ layerId: "guitar", notes: fullSong.chordNotes });
-    if (w.acoustic) extraStreams.push({ layerId: "acoustic", notes: fullSong.chordNotes });
+    if (w.guitar) extraStreams.push({ layerId: "guitar", notes: fullSong.guitarNotes });
+    if (w.acoustic) extraStreams.push({ layerId: "acoustic", notes: fullSong.acousticNotes });
     if (w.drumAcoustic) extraStreams.push({ layerId: "drumAcoustic", notes: fullSong.drumNotes });
 
     setAutoComposing(true);

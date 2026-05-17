@@ -95,6 +95,10 @@ export interface AutoComposeOptions {
   includeDrums?: boolean;
   /** FX (リバースシンバル / ライザー / ダウンリフター 等) を入れるか。 */
   includeFx?: boolean;
+  /** エレキギター層 (パワーコード/カッティング) を生成するか。 */
+  includeGuitar?: boolean;
+  /** アコースティックギター層 (フィンガーピッキング/分散和音) を生成するか。 */
+  includeAcoustic?: boolean;
 }
 
 export type SectionKind =
@@ -130,6 +134,10 @@ export interface ComposedSong {
   drumNotes: NoteEvent[];
   /** セクション転換時の効果音 (リバースシンバル / ライザー / ダウンリフター 等)。 */
   fxNotes: NoteEvent[];
+  /** エレキギター専用パターン (空配列なら未生成)。 */
+  guitarNotes: NoteEvent[];
+  /** アコースティックギター専用パターン (空配列なら未生成)。 */
+  acousticNotes: NoteEvent[];
   totalSec: number;
   bpm: number;
   style: ComposerStyle;
@@ -1109,6 +1117,283 @@ function generateChordLayer(
 }
 
 // ---------------------------------------------------------------------------
+// エレキギター層 (パワーコード / カッティング 中心)
+// chord 層が「ピアノ的ブロック / アルペジオ」を担当するのに対し、
+// guitar 層は「3rd 抜きパワーコード」「8 分カッティング」「ギャロップ」
+// などギター特有のリズム楽器的振る舞いをする。
+// ---------------------------------------------------------------------------
+function generateGuitarLayer(
+  chords: HarmonicChord[],
+  sections: SongSection[],
+  bpm: number,
+  style: ComposerStyle,
+  rng: () => number,
+): NoteEvent[] {
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+  const out: NoteEvent[] = [];
+  // ギターの音域は E2 (40) 〜 E5 (76) 付近。低音弦域でパワーコードを鳴らす。
+  const baseMidi = 40;
+
+  for (let bar = 0; bar < chords.length; bar++) {
+    const sec = sectionAtBar(sections, bar);
+    const fullVoicing = chordVoicing(chords[bar], baseMidi);
+    const root = fullVoicing[0];
+    // パワーコード = root + 5th + octave (3rd を抜く)。distortion 向け。
+    const power = [root, root + 7, root + 12];
+    const fullChord = fullVoicing.slice(0, 4);
+    const barStart = bar * barSec;
+    const vel0 = sec.intensity;
+
+    // break: 1 拍目に短いストップ
+    if (sec.kind === "break") {
+      for (const m of power) {
+        out.push({ midi: m, startSec: barStart, durationSec: beatSec * 0.25, velocity: 0.7 });
+      }
+      continue;
+    }
+    // intro/outro: 薄く根音だけ
+    if (sec.kind === "intro" || sec.kind === "outro") {
+      out.push({ midi: root, startSec: barStart, durationSec: barSec * 0.9, velocity: vel0 * 0.55 });
+      out.push({ midi: root + 12, startSec: barStart, durationSec: barSec * 0.9, velocity: vel0 * 0.4 });
+      continue;
+    }
+
+    if (style === "rock") {
+      // Verse: パワーコード全休符 (ロング)、Chorus: 8 分カッティング、Bridge: ギャロップ
+      if (sec.kind === "chorus") {
+        for (let b = 0; b < 8; b++) {
+          for (const m of power) {
+            out.push({
+              midi: m,
+              startSec: barStart + b * (beatSec / 2),
+              durationSec: beatSec * 0.38,
+              velocity: vel0 * (b % 2 === 0 ? 0.9 : 0.6),
+            });
+          }
+        }
+      } else if (sec.kind === "bridge") {
+        // ギャロップ: 8 分 + 16 分 + 16 分 を 1 拍に
+        for (let beat = 0; beat < 4; beat++) {
+          const beatStart = barStart + beat * beatSec;
+          const offsets = [0, 0.5, 0.75]; // 8th + 16th + 16th
+          for (const off of offsets) {
+            for (const m of power) {
+              out.push({
+                midi: m,
+                startSec: beatStart + off * beatSec,
+                durationSec: beatSec * 0.22,
+                velocity: vel0 * (off === 0 ? 0.85 : 0.55),
+              });
+            }
+          }
+        }
+      } else if (sec.kind === "preChorus") {
+        // 4 分でパワーコード刻み (緊張感)
+        for (let b = 0; b < 4; b++) {
+          for (const m of power) {
+            out.push({
+              midi: m,
+              startSec: barStart + b * beatSec,
+              durationSec: beatSec * 0.85,
+              velocity: vel0 * (b === 0 ? 0.9 : 0.72),
+            });
+          }
+        }
+      } else {
+        // Verse: ロングサスティン
+        for (const m of power) {
+          out.push({ midi: m, startSec: barStart, durationSec: barSec * 0.95, velocity: vel0 * 0.75 });
+        }
+      }
+    } else if (style === "pop") {
+      // Pop: Chorus = 8 分カッティング (フル和音)、Verse = 2/4 のチャカ
+      if (sec.kind === "chorus") {
+        // 全部 8 分。1, 3 拍頭は強、2 拍目裏など弱
+        for (let b = 0; b < 8; b++) {
+          for (const m of fullChord) {
+            out.push({
+              midi: m,
+              startSec: barStart + b * (beatSec / 2),
+              durationSec: beatSec * 0.32,
+              velocity: vel0 * (b === 0 ? 0.92 : b % 2 === 0 ? 0.7 : 0.5),
+            });
+          }
+        }
+      } else if (sec.kind === "preChorus") {
+        // 1拍目 + 裏 (シンコペ)
+        for (const off of [0, 1.5, 2, 3.5]) {
+          for (const m of fullChord) {
+            out.push({
+              midi: m,
+              startSec: barStart + off * beatSec,
+              durationSec: beatSec * 0.4,
+              velocity: vel0 * (off === 0 ? 0.85 : 0.65),
+            });
+          }
+        }
+      } else {
+        // Verse: 2 拍, 4 拍 だけ短くチャカ (バックビート)
+        for (const off of [1, 3]) {
+          for (const m of fullChord) {
+            out.push({
+              midi: m,
+              startSec: barStart + off * beatSec,
+              durationSec: beatSec * 0.3,
+              velocity: vel0 * 0.6,
+            });
+          }
+        }
+      }
+    } else if (style === "ballad") {
+      // Ballad: 静か。Chorus のみ柔らかいフル和音を1拍目に置く
+      if (sec.kind === "chorus") {
+        for (const m of fullChord) {
+          out.push({ midi: m, startSec: barStart, durationSec: barSec * 0.9, velocity: vel0 * 0.5 });
+        }
+      }
+      // verse は guitar 休む (acoustic に任せる)
+    } else {
+      // jazz: Freddie Green コンプ。4 拍全部に短い和音
+      for (let b = 0; b < 4; b++) {
+        for (const m of fullChord) {
+          out.push({
+            midi: m,
+            startSec: barStart + b * beatSec,
+            durationSec: beatSec * 0.35,
+            velocity: vel0 * 0.55 + (rng() - 0.5) * 0.05,
+          });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// アコースティックギター層 (フィンガーピッキング / アルペジオ 中心)
+// chord 層がブロック / piano アルペジオを、guitar 層がパワーコード/カッティングを
+// 担うのに対し、acoustic 層は「Travis ピッキング」「分散和音」など
+// 落ち着いた繊細なパターンを担当する。
+// ---------------------------------------------------------------------------
+function generateAcousticLayer(
+  chords: HarmonicChord[],
+  sections: SongSection[],
+  bpm: number,
+  style: ComposerStyle,
+  rng: () => number,
+): NoteEvent[] {
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+  const out: NoteEvent[] = [];
+  const baseMidi = 48; // C3 — アコギは中域中心
+
+  for (let bar = 0; bar < chords.length; bar++) {
+    const sec = sectionAtBar(sections, bar);
+    const voicing = chordVoicing(chords[bar], baseMidi);
+    // 4 音アルペジオ素材 (root, 3rd, 5th, 7th/oct)。chordVoicing 不足分はオクターブで補う。
+    const arp = voicing.length >= 4
+      ? voicing.slice(0, 4)
+      : [voicing[0], voicing[1] ?? voicing[0] + 7, voicing[2] ?? voicing[0] + 12, voicing[0] + 12];
+    const root = voicing[0];
+    const barStart = bar * barSec;
+    const vel0 = sec.intensity;
+
+    if (sec.kind === "break") {
+      // 1 拍目に低音 root のみ余韻
+      out.push({ midi: root, startSec: barStart, durationSec: beatSec * 0.7, velocity: 0.55 });
+      continue;
+    }
+    if (sec.kind === "intro" || sec.kind === "outro") {
+      // 静かな分散和音
+      for (let i = 0; i < 4; i++) {
+        out.push({
+          midi: arp[i % arp.length],
+          startSec: barStart + i * beatSec,
+          durationSec: beatSec * 1.1,
+          velocity: vel0 * 0.55,
+        });
+      }
+      continue;
+    }
+
+    if (style === "ballad") {
+      // ballad: ゆっくり分散和音 (8 分 root-3-5-3-root-3-5-3)
+      const pattern = [0, 1, 2, 1, 0, 1, 2, 1];
+      for (let i = 0; i < 8; i++) {
+        out.push({
+          midi: arp[pattern[i] % arp.length],
+          startSec: barStart + i * (beatSec / 2),
+          durationSec: beatSec * 0.6,
+          velocity: vel0 * (i === 0 ? 0.75 : 0.55),
+        });
+      }
+    } else if (style === "pop") {
+      // Travis picking: bass を 1,3 拍目に、treble を 2,4 拍目に交互。8 分粒。
+      // 1: root (low), 2: 3rd, 3: 5th, 4: 3rd, 5: root+oct, 6: 3rd, 7: 5th, 8: 3rd
+      const pattern = [
+        { idx: 0, vel: 0.8 },  // root
+        { idx: 2, vel: 0.55 }, // 5th
+        { idx: 1, vel: 0.6 },  // 3rd
+        { idx: 2, vel: 0.55 }, // 5th
+        { idx: 3, vel: 0.65 }, // 7th/oct
+        { idx: 2, vel: 0.5 },  // 5th
+        { idx: 1, vel: 0.55 }, // 3rd
+        { idx: 2, vel: 0.5 },  // 5th
+      ];
+      for (let i = 0; i < 8; i++) {
+        const p = pattern[i];
+        out.push({
+          midi: arp[p.idx % arp.length],
+          startSec: barStart + i * (beatSec / 2),
+          durationSec: beatSec * 0.55,
+          velocity: vel0 * p.vel,
+        });
+      }
+    } else if (style === "rock") {
+      // フォークロック調: 8 分ダウンアップストローク (フル和音を 8 分粒で)
+      const strum = voicing.slice(0, 4);
+      for (let i = 0; i < 8; i++) {
+        for (const m of strum) {
+          out.push({
+            midi: m,
+            startSec: barStart + i * (beatSec / 2),
+            durationSec: beatSec * 0.35,
+            velocity: vel0 * (i === 0 ? 0.85 : i % 2 === 0 ? 0.65 : 0.45),
+          });
+        }
+      }
+    } else {
+      // jazz: ボサノバ / 軽いフィンガリング. root を 1, 3.5 拍目、和音 stab を 2, 4 拍目
+      out.push({ midi: root, startSec: barStart, durationSec: beatSec * 0.9, velocity: vel0 * 0.7 });
+      for (const m of arp.slice(1)) {
+        out.push({
+          midi: m,
+          startSec: barStart + 1 * beatSec,
+          durationSec: beatSec * 0.4,
+          velocity: vel0 * 0.55,
+        });
+      }
+      out.push({
+        midi: root,
+        startSec: barStart + 2.5 * beatSec,
+        durationSec: beatSec * 0.5,
+        velocity: vel0 * 0.6,
+      });
+      for (const m of arp.slice(1)) {
+        out.push({
+          midi: m,
+          startSec: barStart + 3 * beatSec,
+          durationSec: beatSec * 0.4,
+          velocity: vel0 * 0.5 + (rng() - 0.5) * 0.04,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // ベース
 // ---------------------------------------------------------------------------
 function generateBass(
@@ -1555,10 +1840,16 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   const fxNotes = (opts.includeFx ?? true)
     ? generateFx(sections, bpm, rng)
     : [];
+  const guitarNotes = (opts.includeGuitar ?? false)
+    ? generateGuitarLayer(chords, sections, bpm, style, rng)
+    : [];
+  const acousticNotes = (opts.includeAcoustic ?? false)
+    ? generateAcousticLayer(chords, sections, bpm, style, rng)
+    : [];
 
   const totalSec = bars * 4 * (60 / bpm);
 
-  for (const arr of [melodyNotes, chordNotes, bassNotes, drumNotes, fxNotes]) {
+  for (const arr of [melodyNotes, chordNotes, bassNotes, drumNotes, fxNotes, guitarNotes, acousticNotes]) {
     arr.sort((a, b) => a.startSec - b.startSec);
   }
 
@@ -1570,6 +1861,8 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
     bassNotes,
     drumNotes,
     fxNotes,
+    guitarNotes,
+    acousticNotes,
     totalSec,
     bpm,
     style,
