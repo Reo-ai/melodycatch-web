@@ -33,10 +33,23 @@ import {
 
 // ---------------------------------------------------------------------------
 // Master chain (生ドラム専用バス)
+//
+// 生ドラムらしさの肝は「単発のシンセ音色」よりも「全体の処理 (圧縮・部屋鳴り・
+// アタックの強調)」と「人間味 (ベロシティ揺らぎ・微妙なタイミング揺らぎ・
+// ゴーストノート)」にある。ここではマスタチェーンを
+//   [ kit bus ] → [ EQ3 ] → [ glue compressor ] → [ destination ]
+//                      └→ [ room send → short reverb → destination ]
+// の 2 系統に分け、各楽器の triggerAttackRelease 後に微小なランダマイズを
+// かけて生っぽさを出す。
 // ---------------------------------------------------------------------------
 let aBus: Tone.Channel | null = null;
 let aComp: Tone.Compressor | null = null;
 let aEq: Tone.EQ3 | null = null;
+/** 部屋鳴り送り用 (バスから分岐して短いリバーブに送る)。 */
+let aRoomSend: Tone.Gain | null = null;
+let aRoomReverb: Tone.Reverb | null = null;
+/** 全体に薄くかけるサチュレーション (アナログ感)。 */
+let aSat: Tone.Distortion | null = null;
 
 // ---- Kick ----
 let aKickSub: Tone.MembraneSynth | null = null;
@@ -88,64 +101,84 @@ let aClapBP: Tone.Filter | null = null;
 function ensureAcousticDrums() {
   if (aKickSub) return;
 
-  // 音量を大きめに (+5 dB) 取りつつ、ナチュラルなコンプ
+  // === マスタチェーン ===
+  // 1. ナチュラルなグルーコンプ (バス全体をまとめる)
   aComp = new Tone.Compressor({
     threshold: -14,
-    ratio: 2.2,
-    attack: 0.005,
-    release: 0.18,
+    ratio: 2.4,
+    attack: 0.004,
+    release: 0.16,
+    knee: 8,
   }).toDestination();
-  aEq = new Tone.EQ3({ low: 3, mid: 0.5, high: 2 }).connect(aComp);
-  aBus = new Tone.Channel({ volume: 5 }).connect(aEq);
+  // 2. 軽いテープ風サチュレーション (アナログ感)
+  aSat = new Tone.Distortion({ distortion: 0.06, wet: 0.35 }).connect(aComp);
+  // 3. EQ で低域を持ち上げ・中域少し下げ・高域シルキーに
+  aEq = new Tone.EQ3({ low: 3.5, mid: -0.5, high: 2.5, lowFrequency: 220, highFrequency: 3200 }).connect(aSat);
 
-  // ---- KICK : サブ (低胴・短め) + ボディ (中胴・スクエア寄り) + ビーター (鋭い HPF)
+  // 4. 部屋鳴りリバーブ (短く、初期反射感を出す)
+  aRoomReverb = new Tone.Reverb({ decay: 1.2, preDelay: 0.012, wet: 1.0 }).toDestination();
+  aRoomSend = new Tone.Gain(0.15).connect(aRoomReverb);
+
+  // 5. メインバス: ドライ (EQ→sat→comp) と Wet (room) の 2 系統に送る
+  aBus = new Tone.Channel({ volume: 5 });
+  aBus.connect(aEq);
+  aBus.connect(aRoomSend);
+
+  // ---- KICK : サブ (低胴・タイト) + ボディ (中胴・スクエア寄り) + ビーター (アタック)
+  // 実機キックは「低音の押し込み」と「ビーターのコンッ」の二層構造。
+  // ここでは Sub を A0 付近まで下げ、Body は短めの低中音、Beater はクリックノイズで担当。
   aKickSub = new Tone.MembraneSynth({
-    pitchDecay: 0.04,
-    octaves: 7,
-    envelope: { attack: 0.001, decay: 0.42, sustain: 0, release: 0.45 },
+    pitchDecay: 0.05,
+    octaves: 8,
+    envelope: { attack: 0.001, decay: 0.5, sustain: 0, release: 0.5 },
     oscillator: { type: "sine" },
-    volume: 0,
+    volume: 2,
   }).connect(aBus);
   aKickBody = new Tone.MembraneSynth({
-    pitchDecay: 0.035,
-    octaves: 5,
-    envelope: { attack: 0.001, decay: 0.28, sustain: 0, release: 0.26 },
-    oscillator: { type: "square" },
-    volume: -8,
+    pitchDecay: 0.03,
+    octaves: 4.5,
+    envelope: { attack: 0.001, decay: 0.22, sustain: 0, release: 0.22 },
+    oscillator: { type: "triangle" },
+    volume: -7,
   }).connect(aBus);
-  aKickBeaterHPF = new Tone.Filter({ type: "highpass", frequency: 3000, Q: 0.9 });
+  // ビーター: より広帯域 (2.2kHz〜) かつ短いトランジェントでクリックを強調
+  aKickBeaterHPF = new Tone.Filter({ type: "highpass", frequency: 2200, Q: 0.7 });
   aKickBeater = new Tone.NoiseSynth({
     noise: { type: "pink" },
-    envelope: { attack: 0.0008, decay: 0.022, sustain: 0, release: 0.01 },
-    volume: -10,
+    envelope: { attack: 0.0005, decay: 0.018, sustain: 0, release: 0.008 },
+    volume: -8,
   }).chain(aKickBeaterHPF, aBus);
 
-  // ---- SNARE : 2 つの胴 + ロック向けの鋭いバンドパス + 短めテイル
+  // ---- SNARE : 胴の倍音 2 層 + スネアワイヤノイズ (BP) + テイル (HPF)
+  // 実機スネアの音は「胴の鳴り (200Hz / 400Hz 付近)」+「スネアワイヤ (3〜6kHz の
+  // バンドパスノイズ)」+「上半部のサスティン (HPF ノイズの長め減衰)」が混ざる。
   aSnareShellHi = new Tone.MembraneSynth({
-    pitchDecay: 0.012,
-    octaves: 3,
-    envelope: { attack: 0.001, decay: 0.18, sustain: 0, release: 0.15 },
+    pitchDecay: 0.01,
+    octaves: 3.5,
+    envelope: { attack: 0.001, decay: 0.16, sustain: 0, release: 0.14 },
     oscillator: { type: "triangle" },
-    volume: -10,
+    volume: -8,
   }).connect(aBus);
   aSnareShellLo = new Tone.MembraneSynth({
-    pitchDecay: 0.018,
+    pitchDecay: 0.02,
     octaves: 3,
-    envelope: { attack: 0.001, decay: 0.22, sustain: 0, release: 0.18 },
+    envelope: { attack: 0.001, decay: 0.2, sustain: 0, release: 0.18 },
     oscillator: { type: "sine" },
-    volume: -12,
+    volume: -10,
   }).connect(aBus);
-  aSnareBP = new Tone.Filter({ type: "bandpass", frequency: 4500, Q: 1.2 });
+  // メインのスネアワイヤ: 強めの Q + 3.8kHz 中心で「パンッ」を強調
+  aSnareBP = new Tone.Filter({ type: "bandpass", frequency: 3800, Q: 1.4 });
   aSnareNoise = new Tone.NoiseSynth({
     noise: { type: "white" },
-    envelope: { attack: 0.001, decay: 0.18, sustain: 0, release: 0.15 },
-    volume: -4,
+    envelope: { attack: 0.0008, decay: 0.16, sustain: 0, release: 0.14 },
+    volume: -2,
   }).chain(aSnareBP, aBus);
-  aSnareTailHPF = new Tone.Filter({ type: "highpass", frequency: 5000, Q: 0.5 });
+  // テイル: 高域を長めに残してリリースの「シャラ…」感を出す
+  aSnareTailHPF = new Tone.Filter({ type: "highpass", frequency: 4500, Q: 0.5 });
   aSnareTail = new Tone.NoiseSynth({
     noise: { type: "white" },
-    envelope: { attack: 0.001, decay: 0.18, sustain: 0, release: 0.14 },
-    volume: -14,
+    envelope: { attack: 0.001, decay: 0.24, sustain: 0, release: 0.2 },
+    volume: -13,
   }).chain(aSnareTailHPF, aBus);
 
   // ---- RIM : 木のリム + 短いクリック
@@ -254,9 +287,50 @@ function ensureAcousticDrums() {
   }).chain(aClapBP, aBus);
 }
 
+// ---------------------------------------------------------------------------
+// Humanization helpers
+//
+// 実機ドラマーは、同じ拍の同じヒットでも毎回まったく同じ音にはならない:
+//   - ベロシティが ±10〜15% 揺らぐ
+//   - スティック位置や角度で音色が微妙に変わる (ピッチが ±数十セント揺れる)
+//   - タイミングが ±数 ms 前後する (バスドラ / スネアは正確、ハットは揺らぎ大)
+// この差が「打ち込み」と「生演奏」の最大の違い。
+// ここではトリガー時に決定論的でない (Math.random) 揺らぎを乗せる。
+// ---------------------------------------------------------------------------
+
+/** ベロシティを ±range の比率で揺らす。 */
+function jitterVel(v: number, range: number): number {
+  const j = 1 + (Math.random() * 2 - 1) * range;
+  return Math.max(0.05, Math.min(1, v * j));
+}
+
+/** ピッチ (周波数) を半音 ±range セントの範囲で揺らす。
+ *  Tone の MembraneSynth は note を文字列でも数値でも受けるが、
+ *  軽い揺らぎは "ピッチ" ではなく playbackRate 相当で出すと自然。
+ *  ここでは MIDI ノートを 0.01 半音単位でずらして対応する。 */
+function jitterPitch(noteOrMidi: number, semitones: number): number {
+  return noteOrMidi + (Math.random() * 2 - 1) * semitones;
+}
+
+/** タイミングを ±ms 揺らす (秒単位に変換)。 */
+function jitterTime(t: number, ms: number): number {
+  return t + ((Math.random() * 2 - 1) * ms) / 1000;
+}
+
+/** MIDI 数値を Tone 用のノート文字列に変換 (sharp 表記)。 */
+const PC_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+function midiToNote(midi: number): string {
+  const pc = ((Math.round(midi) % 12) + 12) % 12;
+  const octave = Math.floor(Math.round(midi) / 12) - 1;
+  return `${PC_NAMES[pc]}${octave}`;
+}
+
 /**
  * 生ドラムを 1 発鳴らす。
  * Clap (DRUM_CLAP_MIDI) も生ドラム専用シンセを aBus 上に持つ。
+ *
+ * velocity がかなり小さい (< 0.35) ヒットは "ゴーストノート" 扱いとし、
+ * 倍音 / テイル成分を弱めて柔らかい音色にする (スネアは特に効く)。
  */
 export function triggerDrumHitAcoustic(
   midi: number,
@@ -264,53 +338,102 @@ export function triggerDrumHitAcoustic(
   velocity = 0.85,
 ) {
   ensureAcousticDrums();
-  const v = Math.max(0.05, Math.min(1, velocity));
-  const t = time ?? Tone.now();
+  const vRaw = Math.max(0.05, Math.min(1, velocity));
+  const t0 = time ?? Tone.now();
+  // ゴースト判定 (微弱な裏拍ヒット)
+  const ghost = vRaw < 0.35;
+
   switch (midi) {
-    case DRUM_CLAP_MIDI:
-      // 3 連打感を出すために少しずらして 2 発
-      aClapNoise?.triggerAttackRelease(0.05, t, v);
-      aClapNoise?.triggerAttackRelease(0.14, t + 0.014, v * 0.85);
+    case DRUM_CLAP_MIDI: {
+      // 3 連打感を出すために少しずらして 2 発、各回タイミング・ベロシティを揺らす
+      const v = jitterVel(vRaw, 0.08);
+      aClapNoise?.triggerAttackRelease(0.05, jitterTime(t0, 2), v);
+      aClapNoise?.triggerAttackRelease(0.14, t0 + 0.014 + (Math.random() * 0.006 - 0.003), v * jitterVel(0.85, 0.1));
       return;
-    case DRUM_KICK_MIDI:
-      aKickSub?.triggerAttackRelease("A1", "4n", t, v);
-      aKickBody?.triggerAttackRelease("C2", "8n", t, v * 0.85);
-      aKickBeater?.triggerAttackRelease(0.025, t, v * 0.6);
+    }
+    case DRUM_KICK_MIDI: {
+      // キックはタイミング揺らぎ小 (±2ms 程度)、ピッチも狭く
+      const t = jitterTime(t0, 2);
+      const v = jitterVel(vRaw, 0.06);
+      const subPitch = jitterPitch(33, 0.1); // A1 = 33
+      const bodyPitch = jitterPitch(36, 0.1); // C2
+      aKickSub?.triggerAttackRelease(midiToNote(subPitch), "4n", t, v);
+      aKickBody?.triggerAttackRelease(midiToNote(bodyPitch), "8n", t, v * 0.85);
+      // 強く叩くほどビーターの "コンッ" が際立つ
+      aKickBeater?.triggerAttackRelease(0.022, t, v * (0.55 + vRaw * 0.35));
       return;
-    case DRUM_SNARE_MIDI:
-      aSnareShellHi?.triggerAttackRelease("E3", 0.14, t, v * 0.7);
-      aSnareShellLo?.triggerAttackRelease("A2", 0.18, t, v * 0.6);
-      aSnareNoise?.triggerAttackRelease(0.2, t, v);
-      aSnareTail?.triggerAttackRelease(0.34, t, v * 0.5);
+    }
+    case DRUM_SNARE_MIDI: {
+      // スネアはタイミング揺らぎ ±3ms、ベロシティ ±10%
+      const t = jitterTime(t0, 3);
+      const v = jitterVel(vRaw, 0.1);
+      // ゴーストは胴鳴り＋ノイズを大幅に弱め、テイルもほぼ無く
+      const shellMul = ghost ? 0.35 : 0.7;
+      const noiseMul = ghost ? 0.45 : 1.0;
+      const tailMul = ghost ? 0.0 : 0.55;
+      aSnareShellHi?.triggerAttackRelease(midiToNote(jitterPitch(52, 0.15)), 0.13, t, v * shellMul);
+      aSnareShellLo?.triggerAttackRelease(midiToNote(jitterPitch(45, 0.15)), 0.18, t, v * shellMul * 0.85);
+      aSnareNoise?.triggerAttackRelease(0.18 + Math.random() * 0.03, t, v * noiseMul);
+      if (!ghost) {
+        aSnareTail?.triggerAttackRelease(0.32 + Math.random() * 0.05, t, v * tailMul);
+      }
       return;
-    case DRUM_RIM_MIDI:
+    }
+    case DRUM_RIM_MIDI: {
+      const t = jitterTime(t0, 2);
+      const v = jitterVel(vRaw, 0.08);
       aRimNoise?.triggerAttackRelease(0.035, t, v);
-      aRimClick?.triggerAttackRelease("A4", 0.04, t, v * 0.7);
+      aRimClick?.triggerAttackRelease(midiToNote(jitterPitch(69, 0.2)), 0.04, t, v * 0.7);
       return;
-    case DRUM_HIHAT_MIDI:
-      aHatMetal?.triggerAttackRelease("C6", 0.06, t, v * 0.7);
+    }
+    case DRUM_HIHAT_MIDI: {
+      // ハットは生っぽさが特に出る部分: タイミング ±6ms、ベロシティ ±15%、強弱で帯域変化
+      const t = jitterTime(t0, 6);
+      const v = jitterVel(vRaw, 0.15);
+      // 強く叩くほど高域が伸びる (チック→チッ→チャッ)
+      const decay = 0.04 + vRaw * 0.05;
+      aHatMetal?.triggerAttackRelease("C6", decay, t, v * 0.7);
       return;
-    case DRUM_HIHAT_OPEN_MIDI:
-      aHatOpenMetal?.triggerAttackRelease("C6", 0.35, t, v * 0.7);
-      aHatOpenNoise?.triggerAttackRelease(0.4, t, v * 0.6);
+    }
+    case DRUM_HIHAT_OPEN_MIDI: {
+      const t = jitterTime(t0, 5);
+      const v = jitterVel(vRaw, 0.1);
+      aHatOpenMetal?.triggerAttackRelease("C6", 0.35 + Math.random() * 0.08, t, v * 0.7);
+      aHatOpenNoise?.triggerAttackRelease(0.4 + Math.random() * 0.08, t, v * 0.6);
       return;
-    case DRUM_CRASH_MIDI:
-      aCrashMetal?.triggerAttackRelease("C5", 1.6, t, v * 0.8);
-      aCrashNoise?.triggerAttackRelease(1.6, t, v * 0.6);
+    }
+    case DRUM_CRASH_MIDI: {
+      const t = jitterTime(t0, 4);
+      const v = jitterVel(vRaw, 0.07);
+      aCrashMetal?.triggerAttackRelease("C5", 1.6 + Math.random() * 0.2, t, v * 0.8);
+      aCrashNoise?.triggerAttackRelease(1.6 + Math.random() * 0.2, t, v * 0.6);
       return;
-    case DRUM_RIDE_MIDI:
-      aRideBell?.triggerAttackRelease("C5", 0.5, t, v * 0.55);
+    }
+    case DRUM_RIDE_MIDI: {
+      const t = jitterTime(t0, 4);
+      const v = jitterVel(vRaw, 0.1);
+      aRideBell?.triggerAttackRelease("C5", 0.45 + Math.random() * 0.1, t, v * 0.55);
       aRideStick?.triggerAttackRelease(0.14, t, v * 0.7);
       return;
-    case DRUM_TOM_LO_MIDI:
-      aTomLo?.triggerAttackRelease("F2", "4n", t, v);
+    }
+    case DRUM_TOM_LO_MIDI: {
+      const t = jitterTime(t0, 3);
+      const v = jitterVel(vRaw, 0.08);
+      aTomLo?.triggerAttackRelease(midiToNote(jitterPitch(41, 0.2)), "4n", t, v);
       return;
-    case DRUM_TOM_MID_MIDI:
-      aTomMid?.triggerAttackRelease("A2", "4n", t, v);
+    }
+    case DRUM_TOM_MID_MIDI: {
+      const t = jitterTime(t0, 3);
+      const v = jitterVel(vRaw, 0.08);
+      aTomMid?.triggerAttackRelease(midiToNote(jitterPitch(45, 0.2)), "4n", t, v);
       return;
-    case DRUM_TOM_HI_MIDI:
-      aTomHi?.triggerAttackRelease("D3", "8n", t, v);
+    }
+    case DRUM_TOM_HI_MIDI: {
+      const t = jitterTime(t0, 3);
+      const v = jitterVel(vRaw, 0.08);
+      aTomHi?.triggerAttackRelease(midiToNote(jitterPitch(50, 0.2)), "8n", t, v);
       return;
+    }
     default:
       return;
   }
