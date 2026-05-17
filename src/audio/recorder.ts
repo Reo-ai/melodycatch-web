@@ -16,6 +16,7 @@ import { synthHoldOff, synthHoldOn } from "./synthEngine";
 import { guitarHoldOff, guitarHoldOn } from "./guitarEngine";
 import { acousticHoldOff, acousticHoldOn } from "./acousticGuitarEngine";
 import { vocalHoldOff, vocalHoldOn } from "./vocalEngine";
+import { triggerFx } from "./fxEngine";
 
 export type LayerId =
   | "melody"
@@ -26,7 +27,8 @@ export type LayerId =
   | "synth"
   | "guitar"
   | "acoustic"
-  | "vocal";
+  | "vocal"
+  | "fx";
 
 export interface NoteEvent {
   midi: number;
@@ -319,6 +321,24 @@ export class Playback {
           if (end > last) last = end;
           continue;
         }
+        if (layer.id === "fx") {
+          // FX も一発もの。durationSec を「FX の長さ」として渡す。
+          if (note.startSec < off - 1e-6) continue;
+          const delayMs = ((note.startSec - off) * 1000) / rate;
+          const fxDur = Math.max(0.05, note.durationSec / rate);
+          const tOn = window.setTimeout(() => {
+            triggerFx(note.midi, fxDur, note.velocity);
+            this.hooks?.onNoteOn?.(layer.id, note.midi);
+            window.setTimeout(
+              () => this.hooks?.onNoteOff?.(layer.id, note.midi),
+              Math.min(2000, fxDur * 1000 + 80),
+            );
+          }, delayMs);
+          this.timers.push(tOn);
+          const end = note.startSec + note.durationSec;
+          if (end > last) last = end;
+          continue;
+        }
         // 持続音: offset より完全に前なら無視
         if (noteEnd <= off + 1e-6) continue;
         const isBass = layer.id === "bass";
@@ -383,6 +403,9 @@ export function exportToMidi(layers: Layer[], filename: string): Blob {
     track.name = layer.name;
     if (layer.id === "drum" || layer.id === "drumAcoustic") {
       // GM 規格のドラムチャンネル (0-indexed の 9 = 1-indexed の 10)
+      track.channel = 9;
+    } else if (layer.id === "fx") {
+      // FX も打楽器扱いで GM ドラムチャンネルに乗せる
       track.channel = 9;
     }
     for (const n of layer.notes) {

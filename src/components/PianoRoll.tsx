@@ -46,6 +46,9 @@ interface PianoRollProps {
   guitar: Layer;
   acoustic: Layer;
   vocal: Layer;
+  /** 演出用 FX (ホワイトノイズ・スウィープ・ライザー等)。
+   *  ピアノロール lane では表示しないが、layerOf 経由で playback / 編集対象として扱う。 */
+  fx: Layer;
   /** 録音中 or 再生中 */
   isActive: boolean;
   /** 録音中の対象トラック (ハイライト色を変える) */
@@ -281,6 +284,7 @@ export default function PianoRoll({
   guitar,
   acoustic,
   vocal,
+  fx,
   isActive,
   recordingLayerId,
   getPlayheadSec,
@@ -625,6 +629,8 @@ export default function PianoRoll({
         return acoustic;
       case "vocal":
         return vocal;
+      case "fx":
+        return fx;
     }
   }
 

@@ -62,6 +62,15 @@ import {
 } from "../music/chord";
 import type { Scale } from "../music/scale";
 import { SCALE_INTERVALS, scaleContains } from "../music/scale";
+import {
+  FX_DOWNLIFTER,
+  FX_FALL,
+  FX_REVERSE_CYMBAL,
+  FX_RISER,
+  FX_SWEEP_DOWN,
+  FX_SWEEP_UP,
+  FX_WHITE_NOISE,
+} from "../audio/fxEngine";
 
 export type ComposerStyle = "pop" | "ballad" | "rock" | "jazz";
 
@@ -84,6 +93,8 @@ export interface AutoComposeOptions {
   includeChord?: boolean;
   includeBass?: boolean;
   includeDrums?: boolean;
+  /** FX (リバースシンバル / ライザー / ダウンリフター 等) を入れるか。 */
+  includeFx?: boolean;
 }
 
 export type SectionKind =
@@ -92,6 +103,7 @@ export type SectionKind =
   | "preChorus"
   | "chorus"
   | "bridge"
+  | "break"
   | "outro";
 
 export interface SongSection {
@@ -100,6 +112,12 @@ export interface SongSection {
   endBar: number;   // exclusive
   /** このセクションの平均ダイナミクス (0..1)。 */
   intensity: number;
+  /**
+   * セクション中だけ適用する転調量 (半音単位)。
+   * 例えば最終サビを +2 半音上げて盛り上げる、などに使う。
+   * 0 のときは転調なし。
+   */
+  keyOffsetSemitones: number;
 }
 
 export interface ComposedSong {
@@ -110,6 +128,8 @@ export interface ComposedSong {
   chordNotes: NoteEvent[];
   bassNotes: NoteEvent[];
   drumNotes: NoteEvent[];
+  /** セクション転換時の効果音 (リバースシンバル / ライザー / ダウンリフター 等)。 */
+  fxNotes: NoteEvent[];
   totalSec: number;
   bpm: number;
   style: ComposerStyle;
@@ -160,12 +180,18 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
     preChorus: 0.7,
     chorus: 0.92,
     bridge: 0.6,
+    break: 0.25,
     outro: 0.4,
   };
 
   const sections: SongSection[] = [];
   let cur = 0;
-  const push = (kind: SectionKind, len: number) => {
+  /**
+   * セクションを 1 つ追加するヘルパ。
+   * keyOffset は「このセクション全体だけ転調」するときの半音数。
+   * 例えば最終サビを +2 にして高揚させる、ブリッジを -3 にして雰囲気を変える 等。
+   */
+  const push = (kind: SectionKind, len: number, keyOffset = 0) => {
     if (len <= 0) return;
     const end = Math.min(bars, cur + len);
     sections.push({
@@ -173,13 +199,39 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
       startBar: cur,
       endBar: end,
       intensity: intensityOf[kind] + (rng() - 0.5) * 0.08,
+      keyOffsetSemitones: keyOffset,
     });
     cur = end;
   };
 
-  // ジャズは Intro / A / A / B / A 形式 (32 小節 AABA に寄せる)
+  // ジャズは Intro / A / A / B / A 形式 (32 小節 AABA に寄せる)。
+  // 64+ では AABA を 2 ラウンドしてキー転調を入れる。
   if (style === "jazz") {
-    if (bars >= 32) {
+    if (bars >= 96) {
+      // 1 ラウンド AABA → ピアノソロ(bridge) → 2 ラウンド AABA を +5 半音 (4 度上) で
+      push("intro", 4);
+      push("verse", 8);
+      push("verse", 8);
+      push("bridge", 8);
+      push("verse", 8);
+      push("bridge", 8); // ソロ的セクション
+      push("verse", 8, 5);
+      push("verse", 8, 5);
+      push("bridge", 8, 5);
+      push("verse", Math.max(4, bars - cur - 4), 5);
+      push("outro", bars - cur);
+    } else if (bars >= 64) {
+      // AABA + キー上げの A
+      push("intro", 4);
+      push("verse", 8);
+      push("verse", 8);
+      push("bridge", 8);
+      push("verse", 8);
+      push("verse", 8, 5);
+      push("bridge", 8, 5);
+      push("verse", Math.max(4, bars - cur - 4), 5);
+      push("outro", bars - cur);
+    } else if (bars >= 32) {
       push("intro", 4);
       push("verse", 8);     // A
       push("verse", 8);     // A
@@ -201,8 +253,53 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
   }
 
   // pop / ballad / rock の一般的な構成
-  if (bars >= 32) {
-    // Intro / Verse / Pre / Chorus / Verse / Pre / Chorus / Bridge / Chorus / Outro
+  if (bars >= 96) {
+    // 大型構成: Intro / V1 / Pre / C1 / V2 / Pre / C2 / Solo(bridge) / Bridge / Break /
+    //          V3(+2) / Pre(+2) / Final Chorus x2(+2) / Outro
+    push("intro", 4);
+    push("verse", 8);
+    push("preChorus", 4);
+    push("chorus", 8);
+    push("verse", 8);
+    push("preChorus", 4);
+    push("chorus", 8);
+    push("bridge", 4);   // 楽器ソロ的ブロック
+    push("bridge", 4);
+    push("break", 2);    // 完全ドロップ (ドラム停止)
+    push("verse", 6, 2); // キー +2 で展開復帰
+    push("preChorus", 4, 2);
+    push("chorus", 8, 2);
+    push("chorus", Math.max(4, bars - cur - 4), 2);
+    push("outro", bars - cur);
+  } else if (bars >= 64) {
+    // Intro / V1 / Pre / C1 / V2 / Pre / C2 / Bridge / Break / Final C(+2) / Outro
+    push("intro", 4);
+    push("verse", 8);
+    push("preChorus", 4);
+    push("chorus", 8);
+    push("verse", 8);
+    push("preChorus", 4);
+    push("chorus", 8);
+    push("bridge", 4);
+    push("break", 2);
+    push("chorus", 8, 2);
+    push("chorus", Math.max(2, bars - cur - 2), 2);
+    push("outro", bars - cur);
+  } else if (bars >= 48) {
+    // Intro / V1 / Pre / C1 / V2 / Pre / C2 / Bridge / Final C(+2) / Outro
+    push("intro", 4);
+    push("verse", 6);
+    push("preChorus", 2);
+    push("chorus", 4);
+    push("verse", 6);
+    push("preChorus", 2);
+    push("chorus", 4);
+    push("bridge", 4);
+    push("break", 1);
+    push("chorus", Math.max(4, bars - cur - 2), 2);
+    push("outro", bars - cur);
+  } else if (bars >= 32) {
+    // Intro / Verse / Pre / Chorus / Verse / Pre / Chorus / Bridge / Final Chorus(+2) / Outro
     push("intro", 4);
     push("verse", 6);
     push("preChorus", 2);
@@ -211,7 +308,7 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
     push("preChorus", 2);
     push("chorus", 4);
     push("bridge", 2);
-    push("chorus", Math.max(2, bars - cur - 2));
+    push("chorus", Math.max(2, bars - cur - 2), 2);
     push("outro", bars - cur);
   } else if (bars >= 16) {
     push("intro", 2);
@@ -295,6 +392,10 @@ function extensionWeights(
   section: SectionKind,
   style: ComposerStyle,
 ): { triad: number; light: number; rich: number } {
+  // break (ドロップ) はコードが鳴ってもごく短いスタブだけなのでトライアド主体
+  if (section === "break") {
+    return { triad: 0.7, light: 0.25, rich: 0.05 };
+  }
   // ジャズはいつでも豪華
   if (style === "jazz") {
     if (section === "intro" || section === "outro") return { triad: 0.1, light: 0.4, rich: 0.5 };
@@ -368,6 +469,18 @@ function enrichChord(
  * セクション境界では「次セクションへ向かう」ようテンプレを切る。
  * Chorus は同じ進行を 2 回繰り返してフックを強調する。
  */
+/**
+ * 与えられたスケールを keyOffsetSemitones 半音だけ平行移動した新しいスケールを返す。
+ * 転調セクション (例: 最終サビ +2) のコード進行構築に使う。
+ */
+function transposeScale(scale: Scale, keyOffsetSemitones: number): Scale {
+  if (!keyOffsetSemitones) return scale;
+  return {
+    rootPitchClass: ((scale.rootPitchClass + keyOffsetSemitones) % 12 + 12) % 12,
+    kind: scale.kind,
+  };
+}
+
 function buildProgression(
   scale: Scale,
   bars: number,
@@ -375,12 +488,23 @@ function buildProgression(
   sections: SongSection[],
   rng: () => number,
 ): HarmonicChord[] {
-  const dia = diatonicTriads(scale);
   const templates = PROGRESSION_TEMPLATES[style];
   const out: HarmonicChord[] = new Array(bars);
 
   // セクションごとに 1 つテンプレを選び、その中で回す
   for (const sec of sections) {
+    // 転調セクションでは「移調後のスケール」のダイアトニックを使う
+    const localScale = transposeScale(scale, sec.keyOffsetSemitones);
+    const dia = diatonicTriads(localScale);
+
+    // break セクションは I で 1 拍ヒット + 残り無音の予定なので、進行は I 固定
+    if (sec.kind === "break") {
+      for (let i = sec.startBar; i < sec.endBar; i++) {
+        out[i] = dia[0];
+      }
+      continue;
+    }
+
     let tpl: number[];
     if (sec.kind === "chorus") {
       // Chorus は最もキャッチーなテンプレ (先頭) を使う
@@ -404,9 +528,10 @@ function buildProgression(
     }
   }
 
-  // 万一の埋め残し対策
+  // 万一の埋め残し対策 (元キーのトニック)
+  const fallbackDia = diatonicTriads(scale);
   for (let i = 0; i < bars; i++) {
-    if (!out[i]) out[i] = dia[0];
+    if (!out[i]) out[i] = fallbackDia[0];
   }
 
   return out;
@@ -570,6 +695,7 @@ function melodyRangeFor(section: SectionKind): { lo: number; hi: number; vel: nu
     case "preChorus": return { lo: 64, hi: 76, vel: 0.75 };
     case "chorus": return { lo: 67, hi: 84, vel: 0.92 }; // G4..C6 (派手)
     case "bridge": return { lo: 62, hi: 78, vel: 0.7 };
+    case "break": return { lo: 60, hi: 72, vel: 0.4 };   // ほぼ無音 + 終わりにヒント
     case "outro": return { lo: 60, hi: 72, vel: 0.5 };
   }
 }
@@ -591,12 +717,34 @@ function generateMelody(
   for (let bar = 0; bar < chords.length; bar++) {
     const sec = sectionAtBar(sections, bar);
     const { lo, hi, vel } = melodyRangeFor(sec.kind);
-    const range = scaleTonesInRange(scale, lo, hi);
+    // 転調セクション中はそのキーのスケール音だけ使う (= 音外し防止)
+    const localScale = transposeScale(scale, sec.keyOffsetSemitones);
+    const range = scaleTonesInRange(localScale, lo, hi);
     if (range.length === 0) continue;
 
     const chord = chords[bar];
     const chordTones = chordVoicing(chord, 48);
     const chordPCs = new Set(chordTones.map((m) => m % 12));
+
+    // break セクションはメロディも基本休む。最後の小節 4 拍裏に
+    // 「サビへ戻る」ピックアップだけ置いて余韻を作る。
+    if (sec.kind === "break") {
+      const beatSecLocal = 60 / bpm;
+      const isLast = isSectionLastBar(sec, bar);
+      if (isLast) {
+        const barStart = bar * 4 * beatSecLocal;
+        const pickup = pick(range.filter((m) => chordPCs.has(m % 12)), rng)
+          ?? range[Math.floor(range.length / 2)];
+        events.push({
+          midi: pickup,
+          startSec: barStart + 3.5 * beatSecLocal,
+          durationSec: 0.5 * beatSecLocal * 0.9,
+          velocity: 0.6,
+        });
+        prevMidi = pickup;
+      }
+      continue;
+    }
 
     // Intro/Outro は半分以上を休符にして "間" を作る
     if ((sec.kind === "intro" || sec.kind === "outro") && rng() < 0.5) {
@@ -709,6 +857,19 @@ function generateChordLayer(
     const voicing = chordVoicing(chords[bar], baseMidi);
     const barStart = bar * barSec;
     const vel0 = sec.intensity;
+
+    // ブレイク: 1 拍目に 1 発スタブだけ落として、あとは無音。
+    if (sec.kind === "break") {
+      for (const m of voicing.slice(0, 3)) {
+        out.push({
+          midi: m,
+          startSec: barStart,
+          durationSec: beatSec * 0.4,
+          velocity: 0.55,
+        });
+      }
+      continue;
+    }
 
     // Intro/Outro は薄めに (構成音の上 2 音だけ)
     const effectiveVoicing =
@@ -831,6 +992,17 @@ function generateBass(
     const third = root + 4; // 簡易: メジャー想定。微差は許容
     const barStart = bar * 4 * beatSec;
     const vel0 = sec.intensity;
+
+    // ブレイク: 1 拍目だけ短いベース、あとは無音
+    if (sec.kind === "break") {
+      out.push({
+        midi: root,
+        startSec: barStart,
+        durationSec: beatSec * 0.4,
+        velocity: 0.45,
+      });
+      continue;
+    }
 
     // Intro / Outro は控えめ (1 拍目だけ)
     if (sec.kind === "intro" || sec.kind === "outro") {
@@ -980,6 +1152,23 @@ function generateDrums(
     const isSectionStart = bar === sec.startBar;
     const isSectionLast = isSectionLastBar(sec, bar);
 
+    // ブレイク (ドロップ): ドラムをほぼ完全に止める。
+    //   - 先頭にだけクラップを 1 発
+    //   - 最終小節 4 拍目に "戻ってくる" スネアロール (16 分 x 4)
+    if (sec.kind === "break") {
+      if (isSectionStart) {
+        addNote(out, DRUM_CLAP_MIDI, barStart, 0.55);
+      }
+      if (isSectionLast) {
+        // 4 拍目に小さいフィル
+        const sub = beatSec / 4;
+        for (let i = 0; i < 4; i++) {
+          addNote(out, DRUM_SNARE_MIDI, barStart + 3 * beatSec + i * sub, 0.5 + i * 0.1);
+        }
+      }
+      continue;
+    }
+
     // セクション開始: クラッシュ + 強キック (Intro/Outro 以外)
     if (isSectionStart && sec.kind !== "intro" && sec.kind !== "outro") {
       addNote(out, DRUM_CRASH_MIDI, barStart, Math.min(1, intensity + 0.05));
@@ -1098,6 +1287,107 @@ function generateDrums(
 }
 
 // ---------------------------------------------------------------------------
+// FX (効果音): セクション転換・サビ前の盛り上げ等
+// ---------------------------------------------------------------------------
+/**
+ * セクション境界・サビ前に FX (リバースシンバル/ライザー/ダウンリフター/フォール 等) を配置する。
+ *
+ * 配置ルール:
+ *   - サビ (chorus) の直前: リバースシンバル + ライザー (1〜2 小節分の build-up)
+ *   - サビ終わり: ダウンリフター or フォール
+ *   - bridge 直前: スウィープ (上昇 or 下降)
+ *   - イントロ頭: ホワイトノイズ・スウィープアップ
+ *   - アウトロ頭: フォール
+ */
+function generateFx(
+  sections: SongSection[],
+  bpm: number,
+  rng: () => number,
+): NoteEvent[] {
+  const out: NoteEvent[] = [];
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+
+  const addFx = (
+    midi: number,
+    startSec: number,
+    durationSec: number,
+    velocity: number,
+  ) => {
+    if (startSec < 0) return;
+    out.push({
+      midi,
+      startSec,
+      durationSec: Math.max(0.1, durationSec),
+      velocity: Math.max(0.1, Math.min(1, velocity)),
+    });
+  };
+
+  for (let i = 0; i < sections.length; i++) {
+    const sec = sections[i];
+    const next = sections[i + 1];
+    const secStart = sec.startBar * barSec;
+
+    // イントロ頭: スウィープアップでオープニング
+    if (sec.kind === "intro" && i === 0) {
+      addFx(FX_SWEEP_UP, secStart, Math.min(2 * barSec, 1.5), 0.6);
+    }
+
+    // サビ前の build-up (前セクションの最終 1〜2 小節を build-up に使う)
+    if (next && next.kind === "chorus") {
+      const buildBars = sec.endBar - sec.startBar >= 2 ? 2 : 1;
+      const buildStart = (next.startBar - buildBars) * barSec;
+      const buildDur = buildBars * barSec - 0.05;
+      // リバースシンバル (盛り上がってサビ頭に着地)
+      addFx(FX_REVERSE_CYMBAL, buildStart, buildDur, 0.9);
+      // ライザーを少し遅らせて重ねる
+      if (buildBars >= 2 && rng() < 0.7) {
+        addFx(FX_RISER, buildStart + barSec * 0.5, buildDur - barSec * 0.5, 0.75);
+      }
+    }
+
+    // ブリッジ前: スウィープで色を変える
+    if (next && next.kind === "bridge") {
+      const startSec = next.startBar * barSec - barSec * 0.5;
+      addFx(rng() < 0.5 ? FX_SWEEP_UP : FX_SWEEP_DOWN, startSec, barSec * 0.5, 0.6);
+    }
+
+    // サビ終わり (= sec が chorus で次が chorus でないとき): ダウンリフター or フォール
+    if (sec.kind === "chorus" && (!next || next.kind !== "chorus")) {
+      const dropSec = sec.endBar * barSec - barSec * 0.75;
+      if (rng() < 0.6) {
+        addFx(FX_DOWNLIFTER, dropSec, barSec * 0.75, 0.7);
+      } else {
+        addFx(FX_FALL, dropSec, barSec * 0.5, 0.7);
+      }
+    }
+
+    // アウトロ頭: フォール or ホワイトノイズ
+    if (sec.kind === "outro") {
+      addFx(rng() < 0.5 ? FX_FALL : FX_WHITE_NOISE, secStart, barSec * 0.75, 0.55);
+    }
+
+    // ブレイク中はホワイトノイズで「ヒスの効いた間」を演出 +
+    // ブレイク末尾でリバースシンバルを置いて次のサビへ着地
+    if (sec.kind === "break") {
+      const breakLen = (sec.endBar - sec.startBar) * barSec;
+      addFx(FX_WHITE_NOISE, secStart, breakLen * 0.9, 0.35);
+      addFx(FX_REVERSE_CYMBAL, sec.endBar * barSec - barSec * 0.9, barSec * 0.9, 0.85);
+      if (rng() < 0.7) {
+        addFx(FX_RISER, sec.endBar * barSec - barSec * 0.6, barSec * 0.55, 0.7);
+      }
+    }
+
+    // 転調セクション (前セクションと keyOffset が違う) の直前に上昇スウィープを追加
+    if (next && next.keyOffsetSemitones !== sec.keyOffsetSemitones) {
+      addFx(FX_SWEEP_UP, next.startBar * barSec - barSec * 0.35, barSec * 0.35, 0.6);
+    }
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // 公開関数: 1 曲生成
 // ---------------------------------------------------------------------------
 export function composeSong(opts: AutoComposeOptions): ComposedSong {
@@ -1121,10 +1411,13 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   const drumNotes = (opts.includeDrums ?? true)
     ? generateDrums(sections, bars, bpm, style, rng)
     : [];
+  const fxNotes = (opts.includeFx ?? true)
+    ? generateFx(sections, bpm, rng)
+    : [];
 
   const totalSec = bars * 4 * (60 / bpm);
 
-  for (const arr of [melodyNotes, chordNotes, bassNotes, drumNotes]) {
+  for (const arr of [melodyNotes, chordNotes, bassNotes, drumNotes, fxNotes]) {
     arr.sort((a, b) => a.startSec - b.startSec);
   }
 
@@ -1135,6 +1428,7 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
     chordNotes,
     bassNotes,
     drumNotes,
+    fxNotes,
     totalSec,
     bpm,
     style,
@@ -1148,5 +1442,6 @@ export const SECTION_LABEL_JA: Record<SectionKind, string> = {
   preChorus: "Bメロ",
   chorus: "サビ",
   bridge: "間奏",
+  break: "ブレイク",
   outro: "アウトロ",
 };

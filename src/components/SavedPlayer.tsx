@@ -23,6 +23,7 @@ const LAYER_LABEL: Record<LayerId, string> = {
   guitar: "ギター",
   acoustic: "アコギ",
   vocal: "ボーカル",
+  fx: "FX",
 };
 
 const LAYER_COLOR: Record<LayerId, string> = {
@@ -35,6 +36,7 @@ const LAYER_COLOR: Record<LayerId, string> = {
   guitar: "bg-sky-500",
   acoustic: "bg-orange-600",
   vocal: "bg-fuchsia-500",
+  fx: "bg-slate-500",
 };
 
 export default function SavedPlayer() {
@@ -214,6 +216,7 @@ export default function SavedPlayer() {
           guitar={data.guitar ?? emptyLayer("guitar", "ギター")}
           acoustic={data.acoustic ?? emptyLayer("acoustic", "アコギ")}
           vocal={data.vocal ?? emptyLayer("vocal", "ボーカル")}
+          fx={data.fx ?? emptyLayer("fx", "FX")}
           isActive={playing}
           recordingLayerId={null}
           getPlayheadSec={() =>

@@ -242,6 +242,7 @@ interface Snapshot {
   guitar: Layer;
   acoustic: Layer;
   vocal: Layer;
+  fx: Layer;
 }
 
 /** 編集モード時の追加ノート長。"free" は 0.5 秒固定。 */
@@ -384,6 +385,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [guitar, setGuitar] = useState<Layer>(() => emptyLayer("guitar", "ギター"));
   const [acoustic, setAcoustic] = useState<Layer>(() => emptyLayer("acoustic", "アコギ"));
   const [vocal, setVocal] = useState<Layer>(() => emptyLayer("vocal", "ボーカル"));
+  const [fx, setFx] = useState<Layer>(() => emptyLayer("fx", "FX"));
   const [armed, setArmed] = useState<LayerId>("melody");
   /**
    * 主アーム楽器とは別に、ドラム層も並行録音するか。
@@ -443,6 +445,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [autoComposeWriteChord, setAutoComposeWriteChord] = useState<boolean>(true);
   const [autoComposeWriteBass, setAutoComposeWriteBass] = useState<boolean>(true);
   const [autoComposeWriteDrum, setAutoComposeWriteDrum] = useState<boolean>(true);
+  const [autoComposeWriteSynth, setAutoComposeWriteSynth] = useState<boolean>(false);
+  const [autoComposeWriteGuitar, setAutoComposeWriteGuitar] = useState<boolean>(false);
+  const [autoComposeWriteAcoustic, setAutoComposeWriteAcoustic] = useState<boolean>(false);
+  const [autoComposeWriteVocal, setAutoComposeWriteVocal] = useState<boolean>(false);
+  const [autoComposeWriteDrumAcoustic, setAutoComposeWriteDrumAcoustic] = useState<boolean>(false);
+  const [autoComposeWriteFx, setAutoComposeWriteFx] = useState<boolean>(true);
   const audioReady = useRef(false);
 
   const sessionRef = useRef<RecordingSession | null>(null);
@@ -536,11 +544,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         acoustic,
         vocal,
         drumAcoustic,
+        fx,
       };
       writeCurrent(snap);
     }, 250);
     return () => window.clearTimeout(handle);
-  }, [bpm, scale.rootPitchClass, scale.kind, melody, chord, drum, bass, synth, guitar, acoustic, vocal, drumAcoustic]);
+  }, [bpm, scale.rootPitchClass, scale.kind, melody, chord, drum, bass, synth, guitar, acoustic, vocal, drumAcoustic, fx]);
 
   // Library タブから「このスロットをロードして」と依頼されたら受け取る。
   // - マウント時に既存の loadIntent を消費 (Library で先にボタンを押されたケース)
@@ -612,19 +621,19 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // ---- Undo/Redo: 破壊的操作の前にスナップショット保存 -----------------------
   const pushHistory = useCallback(() => {
     setPast((p) => {
-      const snap: Snapshot = { melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal };
+      const snap: Snapshot = { melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal, fx };
       const next = [...p, snap];
       if (next.length > HISTORY_LIMIT) next.shift();
       return next;
     });
     setFuture([]);
-  }, [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal]);
+  }, [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal, fx]);
 
   const undo = useCallback(() => {
     setPast((p) => {
       if (p.length === 0) return p;
       const prev = p[p.length - 1];
-      setFuture((f) => [...f, { melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal }]);
+      setFuture((f) => [...f, { melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal, fx }]);
       setMelody(prev.melody);
       setChord(prev.chord);
       setDrum(prev.drum);
@@ -634,15 +643,16 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       setGuitar(prev.guitar);
       setAcoustic(prev.acoustic);
       setVocal(prev.vocal);
+      setFx(prev.fx);
       return p.slice(0, -1);
     });
-  }, [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal]);
+  }, [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal, fx]);
 
   const redo = useCallback(() => {
     setFuture((f) => {
       if (f.length === 0) return f;
       const next = f[f.length - 1];
-      setPast((p) => [...p, { melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal }]);
+      setPast((p) => [...p, { melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal, fx }]);
       setMelody(next.melody);
       setChord(next.chord);
       setDrum(next.drum);
@@ -652,9 +662,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       setGuitar(next.guitar);
       setAcoustic(next.acoustic);
       setVocal(next.vocal);
+      setFx(next.fx);
       return f.slice(0, -1);
     });
-  }, [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal]);
+  }, [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal, fx]);
 
   // Cmd+Z / Ctrl+Z = undo, Cmd+Shift+Z / Ctrl+Y = redo
   useEffect(() => {
@@ -1349,6 +1360,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (armed !== "vocal" && vocal.notes.length > 0) otherLayers.push(vocal);
     if (!drumIsRecordTarget && drum.notes.length > 0) otherLayers.push(drum);
     if (armed !== "drumAcoustic" && drumAcoustic.notes.length > 0) otherLayers.push(drumAcoustic);
+    if (fx.notes.length > 0) otherLayers.push(fx);
     if (otherLayers.length > 0) {
       const overdub = new Playback(otherLayers, {
         onNoteOn: (_id, m) =>
@@ -1436,6 +1448,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     else if (id === "vocal") setVocal(emptyLayer("vocal", "ボーカル"));
     else if (id === "drumAcoustic")
       setDrumAcoustic(emptyLayer("drumAcoustic", "生ドラム"));
+    else if (id === "fx") setFx(emptyLayer("fx", "FX"));
     else setDrum(emptyLayer("drum", "電子ドラム"));
   }
 
@@ -1458,7 +1471,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         synth.notes.length > 0 ||
         guitar.notes.length > 0 ||
         acoustic.notes.length > 0 ||
-        vocal.notes.length > 0;
+        vocal.notes.length > 0 ||
+        fx.notes.length > 0;
       if (
         currentlyHasAnything &&
         typeof window !== "undefined" &&
@@ -1480,9 +1494,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       setDrumAcoustic(
         data.drumAcoustic ?? emptyLayer("drumAcoustic", "生ドラム"),
       );
+      setFx(data.fx ?? emptyLayer("fx", "FX"));
       setBpm(data.bpm);
     },
-    [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal, pushHistory],
+    [melody, chord, drum, drumAcoustic, bass, synth, guitar, acoustic, vocal, fx, pushHistory],
   );
 
   // storage イベントから常に最新の loadSlotIntoStudio を呼べるよう ref に同期。
@@ -1501,7 +1516,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (!hasAnything) return;
     if (typeof window !== "undefined") {
       const ok = window.confirm(
-        "全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / アコギ / ボーカル / 電子ドラム / 生ドラム) の譜面を削除します。よろしいですか？ (元に戻る で復元可)",
+        "全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / アコギ / ボーカル / 電子ドラム / 生ドラム / FX) の譜面を削除します。よろしいですか？ (元に戻る で復元可)",
       );
       if (!ok) return;
     }
@@ -1515,6 +1530,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setVocal(emptyLayer("vocal", "ボーカル"));
     setDrum(emptyLayer("drum", "電子ドラム"));
     setDrumAcoustic(emptyLayer("drumAcoustic", "生ドラム"));
+    setFx(emptyLayer("fx", "FX"));
   }
 
   // ---- 再生 -----------------------------------------------------------------
@@ -1524,7 +1540,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     cancelProgressionTimers();
     // 録音した内容を再生する間はライブ DrumLoop を止める (二重発音防止)
     if (drumPadRef.current?.isPlaying()) drumPadRef.current.stop();
-    const layers = [melody, chord, bass, synth, guitar, acoustic, vocal, drum, drumAcoustic].filter(
+    const layers = [melody, chord, bass, synth, guitar, acoustic, vocal, drum, drumAcoustic, fx].filter(
       (l) => l.notes.length > 0,
     );
     if (layers.length === 0) return;
@@ -1604,71 +1620,123 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       await ensureAudio();
       audioReady.current = true;
     }
-    // ユーザーが少なくとも 1 つの書き込み対象を選んでいなければ何もしない
-    const writeMelody = autoComposeWriteMelody;
-    const writeChord = autoComposeWriteChord;
-    const writeBass = autoComposeWriteBass;
-    const writeDrum = autoComposeWriteDrum;
-    if (!writeMelody && !writeChord && !writeBass && !writeDrum) {
+    // 10 楽器の選択状態を取り出す
+    const w = {
+      melody: autoComposeWriteMelody,
+      chord: autoComposeWriteChord,
+      bass: autoComposeWriteBass,
+      drum: autoComposeWriteDrum,
+      synth: autoComposeWriteSynth,
+      guitar: autoComposeWriteGuitar,
+      acoustic: autoComposeWriteAcoustic,
+      vocal: autoComposeWriteVocal,
+      drumAcoustic: autoComposeWriteDrumAcoustic,
+      fx: autoComposeWriteFx,
+    };
+    const anySelected = Object.values(w).some(Boolean);
+    if (!anySelected) {
       if (typeof window !== "undefined") {
         window.alert("自動作曲で書き込む楽器を 1 つ以上選んでください。");
       }
       return;
     }
 
+    // ロール集約:
+    //   melody ロール = melody / synth / vocal が同じメロディラインを共有
+    //   chord  ロール = chord / guitar / acoustic が同じバッキングを共有
+    //   drum   ロール = drum / drumAcoustic が同じドラムパターンを共有
+    //   bass / fx は単独
+    const useMelodyRole = w.melody || w.synth || w.vocal;
+    const useChordRole = w.chord || w.guitar || w.acoustic;
+    const useDrumRole = w.drum || w.drumAcoustic;
+    const useBassRole = w.bass;
+    const useFxRole = w.fx;
+
     // 履歴に積んでから「書き込み対象レイヤだけ」を空にする (1 アクションで Undo できるように)
     pushHistory();
-    if (writeMelody) setMelody((c) => ({ ...c, notes: [] }));
-    if (writeChord) setChord((c) => ({ ...c, notes: [] }));
-    if (writeBass) setBass((c) => ({ ...c, notes: [] }));
-    if (writeDrum) setDrum((c) => ({ ...c, notes: [] }));
+    if (w.melody) setMelody((c) => ({ ...c, notes: [] }));
+    if (w.chord) setChord((c) => ({ ...c, notes: [] }));
+    if (w.bass) setBass((c) => ({ ...c, notes: [] }));
+    if (w.drum) setDrum((c) => ({ ...c, notes: [] }));
+    if (w.synth) setSynth((c) => ({ ...c, notes: [] }));
+    if (w.guitar) setGuitar((c) => ({ ...c, notes: [] }));
+    if (w.acoustic) setAcoustic((c) => ({ ...c, notes: [] }));
+    if (w.vocal) setVocal((c) => ({ ...c, notes: [] }));
+    if (w.drumAcoustic) setDrumAcoustic((c) => ({ ...c, notes: [] }));
+    if (w.fx) setFx((c) => ({ ...c, notes: [] }));
 
     const fullSong = composeSong({
       scale,
       bpm,
       bars: autoComposeBars,
       style: autoComposeStyle,
+      includeMelody: useMelodyRole,
+      includeChord: useChordRole,
+      includeBass: useBassRole,
+      includeDrums: useDrumRole,
+      includeFx: useFxRole,
     });
 
-    // 選択されていないレイヤは AutoComposeSession に渡す段階で空にして、
-    // ピアノロール書き込みも発音もまとめてスキップする。
+    // ベース song: 主担当 (melody / chord / bass / drum / fx) のノートを渡す。
+    // 主担当が選ばれていないロールは空配列にしてピアノロール書き込みと発音をスキップ。
     const song = {
       ...fullSong,
-      melodyNotes: writeMelody ? fullSong.melodyNotes : [],
-      chordNotes: writeChord ? fullSong.chordNotes : [],
-      bassNotes: writeBass ? fullSong.bassNotes : [],
-      drumNotes: writeDrum ? fullSong.drumNotes : [],
+      melodyNotes: w.melody ? fullSong.melodyNotes : [],
+      chordNotes: w.chord ? fullSong.chordNotes : [],
+      bassNotes: w.bass ? fullSong.bassNotes : [],
+      drumNotes: w.drum ? fullSong.drumNotes : [],
+      fxNotes: w.fx ? fullSong.fxNotes : [],
     };
+
+    // 追加ストリーム: 同ロールの他楽器が同じフレーズを共有して鳴る。
+    const extraStreams: { layerId: LayerId; notes: NoteEvent[] }[] = [];
+    if (w.synth) extraStreams.push({ layerId: "synth", notes: fullSong.melodyNotes });
+    if (w.vocal) extraStreams.push({ layerId: "vocal", notes: fullSong.melodyNotes });
+    if (w.guitar) extraStreams.push({ layerId: "guitar", notes: fullSong.chordNotes });
+    if (w.acoustic) extraStreams.push({ layerId: "acoustic", notes: fullSong.chordNotes });
+    if (w.drumAcoustic) extraStreams.push({ layerId: "drumAcoustic", notes: fullSong.drumNotes });
 
     setAutoComposing(true);
     setAutoComposeProgress({ pct: 0, bar: 1, totalBars: song.chords.length });
 
-    const session = new AutoComposeSession(song, {
-      onAddNote: (layerId, note) => {
-        const append = (cur: Layer): Layer => ({
-          ...cur,
-          notes: [...cur.notes, note],
-        });
-        if (layerId === "melody") setMelody(append);
-        else if (layerId === "chord") setChord(append);
-        else if (layerId === "bass") setBass(append);
-        else if (layerId === "drum") setDrum(append);
+    const session = new AutoComposeSession(
+      song,
+      {
+        onAddNote: (layerId, note) => {
+          const append = (cur: Layer): Layer => ({
+            ...cur,
+            notes: [...cur.notes, note],
+          });
+          switch (layerId) {
+            case "melody": setMelody(append); break;
+            case "chord": setChord(append); break;
+            case "bass": setBass(append); break;
+            case "drum": setDrum(append); break;
+            case "synth": setSynth(append); break;
+            case "guitar": setGuitar(append); break;
+            case "acoustic": setAcoustic(append); break;
+            case "vocal": setVocal(append); break;
+            case "drumAcoustic": setDrumAcoustic(append); break;
+            case "fx": setFx(append); break;
+          }
+        },
+        onProgress: (pct, bar) => {
+          setAutoComposeProgress({ pct, bar, totalBars: song.chords.length });
+        },
+        onComplete: () => {
+          setAutoComposing(false);
+          autoComposeRef.current = null;
+          // 終了時に念のため全エンジン解放
+          releaseAll();
+          bassReleaseAll();
+          synthReleaseAll();
+          guitarReleaseAll();
+          acousticReleaseAll();
+          vocalReleaseAll();
+        },
       },
-      onProgress: (pct, bar) => {
-        setAutoComposeProgress({ pct, bar, totalBars: song.chords.length });
-      },
-      onComplete: () => {
-        setAutoComposing(false);
-        autoComposeRef.current = null;
-        // 終了時に念のため全エンジン解放
-        releaseAll();
-        bassReleaseAll();
-        synthReleaseAll();
-        guitarReleaseAll();
-        acousticReleaseAll();
-        vocalReleaseAll();
-      },
-    });
+      extraStreams,
+    );
     autoComposeRef.current = session;
     session.start(autoComposeSpeed);
   }
@@ -2254,6 +2322,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               <option value={8}>8 小節 (短め)</option>
               <option value={16}>16 小節 (標準)</option>
               <option value={32}>32 小節 (長め)</option>
+              <option value={48}>48 小節 (3 分相当)</option>
+              <option value={64}>64 小節 (フルサイズ)</option>
+              <option value={96}>96 小節 (大型 / 転調入り)</option>
+              <option value={128}>128 小節 (最大 / プロ構成)</option>
             </select>
           </div>
           {/* 早送り */}
@@ -2297,41 +2369,74 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
         </div>
 
-        {/* 書き込み対象レイヤの選択 */}
-        <div className="mt-3 rounded-lg border border-violet-200 bg-white/70 p-2">
-          <div className="mb-1 text-[11px] font-medium text-violet-700">
-            書き込む楽器を選択 (チェックを外したレイヤは生成 / 発音されません)
+        {/* 書き込み対象レイヤの選択 — 10 楽器をロール別にグループ表示 */}
+        <div className="mt-3 rounded-lg border border-violet-200 bg-white/70 p-2 space-y-2">
+          <div className="text-[11px] font-medium text-violet-700">
+            書き込む楽器を選択 (同じロールの楽器は同じフレーズを共有して鳴ります)
           </div>
-          <div className="flex flex-wrap gap-2">
-            {(
-              [
-                { key: "melody", label: "🎵 メロディ", value: autoComposeWriteMelody, set: setAutoComposeWriteMelody },
-                { key: "chord", label: "🎹 コード", value: autoComposeWriteChord, set: setAutoComposeWriteChord },
-                { key: "bass", label: "🎸 ベース", value: autoComposeWriteBass, set: setAutoComposeWriteBass },
-                { key: "drum", label: "🥁 ドラム", value: autoComposeWriteDrum, set: setAutoComposeWriteDrum },
-              ] as const
-            ).map((opt) => (
-              <label
-                key={opt.key}
-                className={[
-                  "inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium transition",
-                  opt.value
-                    ? "border-violet-400 bg-violet-100 text-violet-800"
-                    : "border-ink-200 bg-white text-ink-500 hover:border-violet-300",
-                  autoComposing ? "cursor-not-allowed opacity-60" : "",
-                ].join(" ")}
-              >
-                <input
-                  type="checkbox"
-                  checked={opt.value}
-                  disabled={autoComposing}
-                  onChange={(e) => opt.set(e.target.checked)}
-                  className="h-3.5 w-3.5 accent-violet-500"
-                />
-                {opt.label}
-              </label>
-            ))}
-          </div>
+          {(
+            [
+              {
+                role: "メロディ系 (主旋律を弾きます)",
+                items: [
+                  { key: "melody", label: "🎵 ピアノ メロディ", value: autoComposeWriteMelody, set: setAutoComposeWriteMelody },
+                  { key: "synth", label: "🎛 シンセ リード", value: autoComposeWriteSynth, set: setAutoComposeWriteSynth },
+                  { key: "vocal", label: "🗣 ボーカル", value: autoComposeWriteVocal, set: setAutoComposeWriteVocal },
+                ],
+              },
+              {
+                role: "コード系 (バッキングを弾きます)",
+                items: [
+                  { key: "chord", label: "🎹 ピアノ コード", value: autoComposeWriteChord, set: setAutoComposeWriteChord },
+                  { key: "guitar", label: "🎸 エレキ ギター", value: autoComposeWriteGuitar, set: setAutoComposeWriteGuitar },
+                  { key: "acoustic", label: "🪕 アコギ", value: autoComposeWriteAcoustic, set: setAutoComposeWriteAcoustic },
+                ],
+              },
+              {
+                role: "リズム系",
+                items: [
+                  { key: "bass", label: "🎸 ベース", value: autoComposeWriteBass, set: setAutoComposeWriteBass },
+                  { key: "drum", label: "🥁 電子ドラム", value: autoComposeWriteDrum, set: setAutoComposeWriteDrum },
+                  { key: "drumAcoustic", label: "🥁 生ドラム", value: autoComposeWriteDrumAcoustic, set: setAutoComposeWriteDrumAcoustic },
+                ],
+              },
+              {
+                role: "演出系",
+                items: [
+                  { key: "fx", label: "✨ FX (リバースシンバル / ライザー 等)", value: autoComposeWriteFx, set: setAutoComposeWriteFx },
+                ],
+              },
+            ] as const
+          ).map((group) => (
+            <div key={group.role}>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-violet-500/80">
+                {group.role}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {group.items.map((opt) => (
+                  <label
+                    key={opt.key}
+                    className={[
+                      "inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium transition",
+                      opt.value
+                        ? "border-violet-400 bg-violet-100 text-violet-800"
+                        : "border-ink-200 bg-white text-ink-500 hover:border-violet-300",
+                      autoComposing ? "cursor-not-allowed opacity-60" : "",
+                    ].join(" ")}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={opt.value}
+                      disabled={autoComposing}
+                      onChange={(e) => opt.set(e.target.checked)}
+                      className="h-3.5 w-3.5 accent-violet-500"
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
 
         {autoComposing && autoComposeProgress && (
@@ -2914,6 +3019,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             guitar={guitar}
             acoustic={acoustic}
             vocal={vocal}
+            fx={fx}
             isActive={isActive}
             recordingLayerId={recordingLayerId}
             getPlayheadSec={getPlayheadSec}

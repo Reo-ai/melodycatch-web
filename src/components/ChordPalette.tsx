@@ -61,7 +61,8 @@ interface ChordPaletteProps {
     | "drum"
     | "drumAcoustic"
     | "acoustic"
-    | "vocal";
+    | "vocal"
+    | "fx";
   /** Index of the chord currently spotlighted (e.g. last played). */
   activeIndex?: number | null;
 }

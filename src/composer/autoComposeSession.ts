@@ -18,6 +18,8 @@ import {
   holdOn as pianoHoldOn,
 } from "../audio/pianoEngine";
 import { triggerDrumHit } from "../audio/drums";
+import { triggerDrumHitAcoustic } from "../audio/drumsAcoustic";
+import { triggerFx } from "../audio/fxEngine";
 import { bassHoldOff, bassHoldOn } from "../audio/bassEngine";
 import { synthHoldOff, synthHoldOn } from "../audio/synthEngine";
 import { guitarHoldOff, guitarHoldOn } from "../audio/guitarEngine";
@@ -39,7 +41,12 @@ interface ScheduledItem {
   note: NoteEvent;
 }
 
-function holdOnFor(layerId: LayerId, midi: number, velocity: number): void {
+function holdOnFor(
+  layerId: LayerId,
+  midi: number,
+  velocity: number,
+  durationSec = 0.25,
+): void {
   switch (layerId) {
     case "bass":
       bassHoldOn(midi, velocity);
@@ -58,6 +65,12 @@ function holdOnFor(layerId: LayerId, midi: number, velocity: number): void {
       return;
     case "drum":
       triggerDrumHit(midi, undefined, velocity);
+      return;
+    case "drumAcoustic":
+      triggerDrumHitAcoustic(midi, undefined, velocity);
+      return;
+    case "fx":
+      triggerFx(midi, durationSec, velocity);
       return;
     default:
       pianoHoldOn(midi, velocity);
@@ -84,6 +97,9 @@ function holdOffFor(layerId: LayerId, midi: number): void {
     case "drum":
       // ドラムは一発もの (triggerDrumHit) なので Off は不要
       return;
+    case "drumAcoustic":
+      // 生ドラムも一発ものなので Off は不要
+      return;
     default:
       pianoHoldOff(midi);
   }
@@ -100,16 +116,27 @@ export class AutoComposeSession {
   private barSec: number;
   private progressTimer: number | null = null;
 
-  constructor(song: ComposedSong, callbacks: AutoComposeCallbacks) {
+  constructor(
+    song: ComposedSong,
+    callbacks: AutoComposeCallbacks,
+    extraStreams: { layerId: LayerId; notes: NoteEvent[] }[] = [],
+  ) {
     this.song = song;
     this.callbacks = callbacks;
     this.barSec = (60 / song.bpm) * 4;
-    this.items = [
+    const baseItems: ScheduledItem[] = [
       ...song.melodyNotes.map((n) => ({ layerId: "melody" as LayerId, note: n })),
       ...song.chordNotes.map((n) => ({ layerId: "chord" as LayerId, note: n })),
       ...song.bassNotes.map((n) => ({ layerId: "bass" as LayerId, note: n })),
       ...song.drumNotes.map((n) => ({ layerId: "drum" as LayerId, note: n })),
-    ].sort((a, b) => a.note.startSec - b.note.startSec);
+      ...song.fxNotes.map((n) => ({ layerId: "fx" as LayerId, note: n })),
+    ];
+    const extraItems: ScheduledItem[] = extraStreams.flatMap((s) =>
+      s.notes.map((n) => ({ layerId: s.layerId, note: n })),
+    );
+    this.items = [...baseItems, ...extraItems].sort(
+      (a, b) => a.note.startSec - b.note.startSec,
+    );
   }
 
   isRunning(): boolean {
@@ -132,12 +159,21 @@ export class AutoComposeSession {
         // ノートを PianoRoll に追加
         this.callbacks.onAddNote(item.layerId, item.note);
         // 同時に発音 (オーディオは speed をかけて短縮しない: 普通に弾く)
-        holdOnFor(item.layerId, item.note.midi, item.note.velocity);
+        holdOnFor(
+          item.layerId,
+          item.note.midi,
+          item.note.velocity,
+          item.note.durationSec,
+        );
       }, delayMs);
       this.timers.push(tOn);
 
-      // ドラム以外は noteOff も予約
-      if (item.layerId !== "drum") {
+      // ドラム / 生ドラム / FX は一発もの (noteOff 不要)
+      if (
+        item.layerId !== "drum" &&
+        item.layerId !== "drumAcoustic" &&
+        item.layerId !== "fx"
+      ) {
         // オーディオの長さは「実時間に近い感じ」を優先するため
         // 表記の durationSec をそのまま使う (speed には依存しない)。
         // ただし speed が大きい場合に音が被って詰まるのを避けるため、
