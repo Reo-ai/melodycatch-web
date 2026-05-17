@@ -807,6 +807,23 @@ function generateMelody(
   let curSec: SongSection | null = null;
   let barInSec = 0;
 
+  // ===== モチーフ構造 (Phase 4b) =====
+  // Verse / Chorus / PreChorus の最初の 2 小節を「モチーフ」(A, B) として記録し、
+  // 3 小節目以降は motif[(barInSec) % 2] の "形" (リズム slots + コードルート相対音程)
+  // を、現小節のコードルートに合わせて再生する。
+  // 結果: 4 小節セクションは A B A B' の形 (call & response) になる。
+  // memo は最終的に "確定したメロディ" を Verse2 用に保存するので
+  // モチーフ展開済みのメロディが Verse2 でも一字一句再現される。
+  interface MotifNote {
+    slotIndex: number;
+    semitonesFromRoot: number; // 記録時のコードルートからの差分 (絶対 MIDI - chordRoot)
+  }
+  interface MotifBar {
+    slots: typeof patterns[number]; // この小節のリズム (motif 全体で固定)
+    notes: MotifNote[];             // 鳴った音の相対音程
+  }
+  const motifMap = new Map<SectionKind, MotifBar[]>();
+
   for (let bar = 0; bar < chords.length; bar++) {
     const sec = sectionAtBar(sections, bar);
     if (curSec !== sec) {
@@ -888,12 +905,35 @@ function generateMelody(
     // フレーズ末尾 (= セクション最終小節) はロングトーンで解決させる
     const isLastInSec = isSectionLastBar(sec, bar);
 
-    const slots = pick(patterns, rng);
+    // ---- モチーフ slots 解決 ----
+    // 0/1 小節目: 新規 slots を pick して motif に記録
+    // 2 小節目以降: motif[(barInSec) % 2].slots を再利用 (リズム形を保つ)
+    const isMotifSec = isRepeatableKind && !memo;
+    let motifList = isMotifSec ? motifMap.get(sec.kind) : undefined;
+    if (isMotifSec && !motifList) {
+      motifList = [];
+      motifMap.set(sec.kind, motifList);
+    }
+    let slots: typeof patterns[number];
+    let motifBarForRecord: MotifBar | null = null;
+    let motifBarForReplay: MotifBar | null = null;
+    if (isMotifSec && barInSec < 2) {
+      slots = pick(patterns, rng);
+      motifBarForRecord = { slots, notes: [] };
+      motifList!.push(motifBarForRecord);
+    } else if (isMotifSec && motifList && motifList.length >= 2) {
+      motifBarForReplay = motifList[barInSec % 2];
+      slots = motifBarForReplay.slots;
+    } else {
+      slots = pick(patterns, rng);
+    }
+
     const barStart = bar * 4 * beatSec;
     let t = barStart;
 
     const totalBeats = slots.reduce((a, s) => a + s.beats, 0);
     const beatScale = 4 / totalBeats;
+    const chordRoot = chordTones[0];
 
     // ----- memo 書き込み準備: このセクション kind を初めて生成するなら memo を作る ---
     let recordBar: MemoNote[] | null = null;
@@ -925,11 +965,40 @@ function generateMelody(
       }
 
       let pickMidi: number;
+      // モチーフ再生: 記録された semitonesFromRoot を現在の chordRoot に当てて再生。
+      // 範囲外なら 1 オクターブずらして range 内に収める。
+      let motifReplayPitch: number | null = null;
+      if (motifBarForReplay) {
+        const rec = motifBarForReplay.notes.find((n) => n.slotIndex === i);
+        if (rec) {
+          let m = chordRoot + rec.semitonesFromRoot;
+          while (m < lo) m += 12;
+          while (m > hi) m -= 12;
+          if (m >= lo && m <= hi) {
+            // セクション最後の小節の最終 slot は「解決音」(コードトーン) に寄せる
+            if (isLastInSec && i === slots.length - 1) {
+              const resolves = range.filter((rm) => chordPCs.has(rm % 12));
+              if (resolves.length > 0) {
+                let best = resolves[0];
+                let bestD = Math.abs(best - m);
+                for (const r of resolves) {
+                  const d = Math.abs(r - m);
+                  if (d < bestD) { best = r; bestD = d; }
+                }
+                m = best;
+              }
+            }
+            motifReplayPitch = m;
+          }
+        }
+      }
       // Chorus 1 小節目の頭は「フック」として、高めのコードトーンから始める。
       // これが memo されて、以降の全 Chorus でも同じ高い始まり方になる。
       const isChorusHookOpener =
         sec.kind === "chorus" && barInSec === 0 && i === 0 && !isReplay;
-      if (isChorusHookOpener) {
+      if (motifReplayPitch !== null) {
+        pickMidi = motifReplayPitch;
+      } else if (isChorusHookOpener) {
         const hookCands = range.filter((m) => chordPCs.has(m % 12) && m >= 72); // C5 以上
         const fallback = range.filter((m) => chordPCs.has(m % 12));
         const src = hookCands.length > 0 ? hookCands : (fallback.length > 0 ? fallback : range);
@@ -982,6 +1051,13 @@ function generateMelody(
           offsetInBarSec: t - barStart,
           durSec: dur,
           velocity: v,
+        });
+      }
+      // モチーフバンクに記録 (このセクションの 2 小節目以降で再利用)
+      if (motifBarForRecord) {
+        motifBarForRecord.notes.push({
+          slotIndex: i,
+          semitonesFromRoot: pickMidi - chordRoot,
         });
       }
       prevMidi = pickMidi;
@@ -1125,155 +1201,266 @@ function generateChordLayer(
 }
 
 // ---------------------------------------------------------------------------
-// エレキギター層 (パワーコード / カッティング 中心)
-// chord 層が「ピアノ的ブロック / アルペジオ」を担当するのに対し、
-// guitar 層は「3rd 抜きパワーコード」「8 分カッティング」「ギャロップ」
-// などギター特有のリズム楽器的振る舞いをする。
+// エレキギター層 (リフベース)
+// 「コードルートからの半音オフセット + 拍位置 + ボイシング種別」のリフを
+// ライブラリとして持ち、コードが変わるたびに root だけ差し替えて
+// 同じリフを反復する → ジャンルらしい "フック" を作る。
 // ---------------------------------------------------------------------------
+
+/**
+ * リフ 1 音分の指示。
+ * semitonesFromRoot は「現在の小節のコードルート」からの半音差。
+ * 5 = 完全 4 度上、7 = 完全 5 度上、10 = 短 7 度、12 = オクターブ上。
+ * voicing:
+ *   "single" → その 1 音だけ
+ *   "power"  → root + 5th + octave (3rd 抜き) を semitonesFromRoot で平行移動
+ *   "full"   → コード全和音 (4 音) を上にスタック
+ */
+interface RiffNote {
+  semitonesFromRoot: number;
+  startBeat: number;       // 0..4
+  durationBeats: number;
+  velocityScale: number;   // 0..1
+  voicing: "single" | "power" | "full";
+}
+
+interface GuitarRiff {
+  /** フレーズの小節長 (通常 1 or 2)。bar % barsLength でどの bar を使うか決まる。 */
+  barsLength: number;
+  notesPerBar: RiffNote[][];
+}
+
+const EMPTY_RIFF: GuitarRiff = { barsLength: 1, notesPerBar: [[]] };
+
+/** ロック: 単音 + パワーコード混合のリフ。 */
+const ROCK_RIFFS: Record<SectionKind, GuitarRiff> = {
+  intro: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0, startBeat: 0, durationBeats: 3.8, velocityScale: 0.7, voicing: "power" },
+  ]] },
+  // Verse: 「ダン……ダ・ダンッ……」のスパースなリフ
+  verse: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 0.8, velocityScale: 0.85, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 1.5, durationBeats: 0.3, velocityScale: 0.6,  voicing: "single" },
+    { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 0.5, velocityScale: 0.85, voicing: "power" },
+    { semitonesFromRoot: 7, startBeat: 3.0, durationBeats: 0.5, velocityScale: 0.75, voicing: "single" },
+    { semitonesFromRoot: 0, startBeat: 3.5, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single" },
+  ]] },
+  // Pre-Chorus: 8 分上昇テンション
+  preChorus: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.45, velocityScale: 0.8,  voicing: "power" },
+    { semitonesFromRoot: 0,  startBeat: 0.5, durationBeats: 0.45, velocityScale: 0.65, voicing: "power" },
+    { semitonesFromRoot: 0,  startBeat: 1.0, durationBeats: 0.45, velocityScale: 0.85, voicing: "power" },
+    { semitonesFromRoot: 0,  startBeat: 1.5, durationBeats: 0.45, velocityScale: 0.7,  voicing: "power" },
+    { semitonesFromRoot: 0,  startBeat: 2.0, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
+    { semitonesFromRoot: 7,  startBeat: 2.5, durationBeats: 0.45, velocityScale: 0.8,  voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 3.0, durationBeats: 0.45, velocityScale: 0.95, voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.45, velocityScale: 0.8,  voicing: "single" },
+  ]] },
+  // Chorus: 古典的ロックリフ (2 小節フレーズ: pump → 下降応答)
+  chorus: { barsLength: 2, notesPerBar: [
+    [ // bar 1: パワーコードのパンプ
+      { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 0.5, durationBeats: 0.45, velocityScale: 0.6,  voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 1.0, durationBeats: 0.45, velocityScale: 0.85, voicing: "power" },
+      { semitonesFromRoot: 5, startBeat: 1.5, durationBeats: 0.45, velocityScale: 0.7,  voicing: "single" },
+      { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 2.5, durationBeats: 0.45, velocityScale: 0.6,  voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.45, velocityScale: 0.85, voicing: "power" },
+      { semitonesFromRoot: 7, startBeat: 3.5, durationBeats: 0.45, velocityScale: 0.75, voicing: "single" },
+    ],
+    [ // bar 2: 単音の下降応答 (オクターブ → ♭7 → 5 → 4 → ♭3 → root)
+      { semitonesFromRoot: 12, startBeat: 0.0, durationBeats: 0.45, velocityScale: 0.9,  voicing: "single" },
+      { semitonesFromRoot: 10, startBeat: 0.5, durationBeats: 0.45, velocityScale: 0.7,  voicing: "single" },
+      { semitonesFromRoot: 7,  startBeat: 1.0, durationBeats: 0.45, velocityScale: 0.85, voicing: "single" },
+      { semitonesFromRoot: 5,  startBeat: 1.5, durationBeats: 0.45, velocityScale: 0.65, voicing: "single" },
+      { semitonesFromRoot: 3,  startBeat: 2.0, durationBeats: 0.45, velocityScale: 0.8,  voicing: "single" },
+      { semitonesFromRoot: 0,  startBeat: 2.5, durationBeats: 1.0,  velocityScale: 0.95, voicing: "power" },
+      { semitonesFromRoot: 0,  startBeat: 3.5, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "power" },
+    ],
+  ]},
+  // Bridge: ペンタトニック単音ライン
+  bridge: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.45, velocityScale: 0.85, voicing: "single" },
+    { semitonesFromRoot: 3,  startBeat: 0.5, durationBeats: 0.45, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 5,  startBeat: 1.0, durationBeats: 0.45, velocityScale: 0.75, voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 1.5, durationBeats: 0.45, velocityScale: 0.85, voicing: "single" },
+    { semitonesFromRoot: 10, startBeat: 2.0, durationBeats: 0.45, velocityScale: 0.8,  voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 2.5, durationBeats: 0.45, velocityScale: 0.9,  voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 3.0, durationBeats: 0.45, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 5,  startBeat: 3.5, durationBeats: 0.45, velocityScale: 0.65, voicing: "single" },
+  ]] },
+  break: EMPTY_RIFF,
+  outro: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0, startBeat: 0, durationBeats: 3.8, velocityScale: 0.55, voicing: "power" },
+  ]] },
+};
+
+/** ポップス: アルペジオ + コードスタブ。 */
+const POP_RIFFS: Record<SectionKind, GuitarRiff> = {
+  intro: EMPTY_RIFF,
+  // Verse: 2 拍 4 拍のチャカ (バックビート、フル和音だが短い)
+  verse: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0, startBeat: 1.0, durationBeats: 0.3, velocityScale: 0.65, voicing: "full" },
+    { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.3, velocityScale: 0.65, voicing: "full" },
+  ]] },
+  // Pre-Chorus: オクターブの跳ね
+  preChorus: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 12, startBeat: 0.0, durationBeats: 0.45, velocityScale: 0.8,  voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 0.5, durationBeats: 0.45, velocityScale: 0.65, voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 1.0, durationBeats: 0.45, velocityScale: 0.85, voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 1.5, durationBeats: 0.45, velocityScale: 0.65, voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 2.0, durationBeats: 0.45, velocityScale: 0.9,  voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 2.5, durationBeats: 0.45, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 14, startBeat: 3.0, durationBeats: 0.45, velocityScale: 0.95, voicing: "single" }, // 9th
+    { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.45, velocityScale: 0.8,  voicing: "single" },
+  ]] },
+  // Chorus: コードスタブ + 単音応答
+  chorus: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.5,  velocityScale: 0.9,  voicing: "full" },
+    { semitonesFromRoot: 7,  startBeat: 0.5, durationBeats: 0.4,  velocityScale: 0.55, voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 1.0, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 1.5, durationBeats: 0.4,  velocityScale: 0.5,  voicing: "single" },
+    { semitonesFromRoot: 0,  startBeat: 2.0, durationBeats: 0.5,  velocityScale: 0.85, voicing: "full" },
+    { semitonesFromRoot: 7,  startBeat: 2.5, durationBeats: 0.4,  velocityScale: 0.55, voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 3.0, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 3.5, durationBeats: 0.4,  velocityScale: 0.5,  voicing: "single" },
+  ]] },
+  // Bridge: シンコペーション
+  bridge: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.4, velocityScale: 0.85, voicing: "full" },
+    { semitonesFromRoot: 0,  startBeat: 1.5, durationBeats: 0.4, velocityScale: 0.7,  voicing: "full" },
+    { semitonesFromRoot: 0,  startBeat: 2.5, durationBeats: 0.4, velocityScale: 0.75, voicing: "full" },
+    { semitonesFromRoot: 0,  startBeat: 3.5, durationBeats: 0.4, velocityScale: 0.6,  voicing: "full" },
+  ]] },
+  break: EMPTY_RIFF,
+  outro: EMPTY_RIFF,
+};
+
+/** バラード: ほぼ静か、サビ頭にソフトな和音だけ。 */
+const BALLAD_RIFFS: Record<SectionKind, GuitarRiff> = {
+  intro: EMPTY_RIFF,
+  verse: EMPTY_RIFF,
+  preChorus: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 1.8, velocityScale: 0.45, voicing: "single" },
+    { semitonesFromRoot: 7, startBeat: 2.0, durationBeats: 1.8, velocityScale: 0.45, voicing: "single" },
+  ]] },
+  chorus: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.95, velocityScale: 0.55, voicing: "full" },
+    { semitonesFromRoot: 7,  startBeat: 1.0, durationBeats: 0.95, velocityScale: 0.5,  voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 2.0, durationBeats: 0.95, velocityScale: 0.55, voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 3.0, durationBeats: 0.95, velocityScale: 0.45, voicing: "single" },
+  ]] },
+  bridge: EMPTY_RIFF,
+  break: EMPTY_RIFF,
+  outro: EMPTY_RIFF,
+};
+
+/** ジャズ: Freddie Green コンプ + ウォーキング単音。 */
+const JAZZ_RIFFS: Record<SectionKind, GuitarRiff> = {
+  intro: EMPTY_RIFF,
+  verse: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0, startBeat: 1.0, durationBeats: 0.3, velocityScale: 0.55, voicing: "full" },
+    { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.3, velocityScale: 0.6,  voicing: "full" },
+  ]] },
+  preChorus: { barsLength: 1, notesPerBar: [[
+    // ウォーキング単音 (root, 3, 5, 6)
+    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.9, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 4,  startBeat: 1.0, durationBeats: 0.9, velocityScale: 0.65, voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 2.0, durationBeats: 0.9, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 9,  startBeat: 3.0, durationBeats: 0.9, velocityScale: 0.75, voicing: "single" },
+  ]] },
+  // Chorus: 4 ビートコンプ + 単音応答
+  chorus: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.35, velocityScale: 0.6, voicing: "full" },
+    { semitonesFromRoot: 12, startBeat: 0.5, durationBeats: 0.35, velocityScale: 0.55, voicing: "single" },
+    { semitonesFromRoot: 0,  startBeat: 1.0, durationBeats: 0.35, velocityScale: 0.6,  voicing: "full" },
+    { semitonesFromRoot: 0,  startBeat: 2.0, durationBeats: 0.35, velocityScale: 0.6,  voicing: "full" },
+    { semitonesFromRoot: 10, startBeat: 2.5, durationBeats: 0.35, velocityScale: 0.55, voicing: "single" },
+    { semitonesFromRoot: 0,  startBeat: 3.0, durationBeats: 0.35, velocityScale: 0.6,  voicing: "full" },
+  ]] },
+  // Bridge: 半音アプローチ
+  bridge: { barsLength: 1, notesPerBar: [[
+    { semitonesFromRoot: -1, startBeat: 0.0, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 0,  startBeat: 0.5, durationBeats: 0.4, velocityScale: 0.8,  voicing: "full" },
+    { semitonesFromRoot: 6,  startBeat: 1.5, durationBeats: 0.4, velocityScale: 0.65, voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 2.0, durationBeats: 0.4, velocityScale: 0.75, voicing: "full" },
+    { semitonesFromRoot: 11, startBeat: 3.0, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.4, velocityScale: 0.75, voicing: "single" },
+  ]] },
+  break: EMPTY_RIFF,
+  outro: EMPTY_RIFF,
+};
+
+const GUITAR_RIFF_LIBRARY: Record<ComposerStyle, Record<SectionKind, GuitarRiff>> = {
+  rock: ROCK_RIFFS,
+  pop: POP_RIFFS,
+  ballad: BALLAD_RIFFS,
+  jazz: JAZZ_RIFFS,
+};
+
 function generateGuitarLayer(
   chords: HarmonicChord[],
   sections: SongSection[],
   bpm: number,
   style: ComposerStyle,
-  rng: () => number,
+  _rng: () => number,
 ): NoteEvent[] {
   const beatSec = 60 / bpm;
   const barSec = beatSec * 4;
   const out: NoteEvent[] = [];
-  // ギターの音域は E2 (40) 〜 E5 (76) 付近。低音弦域でパワーコードを鳴らす。
-  const baseMidi = 40;
+  const baseMidi = 40; // ギター低音域 E2
+
+  // セクションごとに「このセクションは何小節目か」を追跡。
+  // Chorus が 8 小節なら、リフ (barsLength=2) を 4 回反復する。
+  let curSec: SongSection | null = null;
+  let barInSec = 0;
 
   for (let bar = 0; bar < chords.length; bar++) {
     const sec = sectionAtBar(sections, bar);
+    if (curSec !== sec) {
+      curSec = sec;
+      barInSec = 0;
+    }
     const fullVoicing = chordVoicing(chords[bar], baseMidi);
     const root = fullVoicing[0];
-    // パワーコード = root + 5th + octave (3rd を抜く)。distortion 向け。
-    const power = [root, root + 7, root + 12];
     const fullChord = fullVoicing.slice(0, 4);
     const barStart = bar * barSec;
     const vel0 = sec.intensity;
 
-    // break: 1 拍目に短いストップ
+    // break: 1 拍目に短いストップだけ (リフはなし)
     if (sec.kind === "break") {
+      const power = [root, root + 7, root + 12];
       for (const m of power) {
         out.push({ midi: m, startSec: barStart, durationSec: beatSec * 0.25, velocity: 0.7 });
       }
-      continue;
-    }
-    // intro/outro: 薄く根音だけ
-    if (sec.kind === "intro" || sec.kind === "outro") {
-      out.push({ midi: root, startSec: barStart, durationSec: barSec * 0.9, velocity: vel0 * 0.55 });
-      out.push({ midi: root + 12, startSec: barStart, durationSec: barSec * 0.9, velocity: vel0 * 0.4 });
+      barInSec++;
       continue;
     }
 
-    if (style === "rock") {
-      // Verse: パワーコード全休符 (ロング)、Chorus: 8 分カッティング、Bridge: ギャロップ
-      if (sec.kind === "chorus") {
-        for (let b = 0; b < 8; b++) {
-          for (const m of power) {
-            out.push({
-              midi: m,
-              startSec: barStart + b * (beatSec / 2),
-              durationSec: beatSec * 0.38,
-              velocity: vel0 * (b % 2 === 0 ? 0.9 : 0.6),
-            });
-          }
-        }
-      } else if (sec.kind === "bridge") {
-        // ギャロップ: 8 分 + 16 分 + 16 分 を 1 拍に
-        for (let beat = 0; beat < 4; beat++) {
-          const beatStart = barStart + beat * beatSec;
-          const offsets = [0, 0.5, 0.75]; // 8th + 16th + 16th
-          for (const off of offsets) {
-            for (const m of power) {
-              out.push({
-                midi: m,
-                startSec: beatStart + off * beatSec,
-                durationSec: beatSec * 0.22,
-                velocity: vel0 * (off === 0 ? 0.85 : 0.55),
-              });
-            }
-          }
-        }
-      } else if (sec.kind === "preChorus") {
-        // 4 分でパワーコード刻み (緊張感)
-        for (let b = 0; b < 4; b++) {
-          for (const m of power) {
-            out.push({
-              midi: m,
-              startSec: barStart + b * beatSec,
-              durationSec: beatSec * 0.85,
-              velocity: vel0 * (b === 0 ? 0.9 : 0.72),
-            });
-          }
-        }
+    const riff = GUITAR_RIFF_LIBRARY[style][sec.kind] ?? EMPTY_RIFF;
+    const barNotes = riff.notesPerBar[barInSec % riff.barsLength];
+
+    for (const n of barNotes) {
+      const baseMidiForNote = root + n.semitonesFromRoot;
+      let pitches: number[];
+      if (n.voicing === "power") {
+        pitches = [baseMidiForNote, baseMidiForNote + 7, baseMidiForNote + 12];
+      } else if (n.voicing === "full") {
+        // root が semitonesFromRoot 分上下しているなら、和音もそれだけ平行移動
+        pitches = fullChord.map((m) => m + n.semitonesFromRoot);
       } else {
-        // Verse: ロングサスティン
-        for (const m of power) {
-          out.push({ midi: m, startSec: barStart, durationSec: barSec * 0.95, velocity: vel0 * 0.75 });
-        }
+        pitches = [baseMidiForNote];
       }
-    } else if (style === "pop") {
-      // Pop: Chorus = 8 分カッティング (フル和音)、Verse = 2/4 のチャカ
-      if (sec.kind === "chorus") {
-        // 全部 8 分。1, 3 拍頭は強、2 拍目裏など弱
-        for (let b = 0; b < 8; b++) {
-          for (const m of fullChord) {
-            out.push({
-              midi: m,
-              startSec: barStart + b * (beatSec / 2),
-              durationSec: beatSec * 0.32,
-              velocity: vel0 * (b === 0 ? 0.92 : b % 2 === 0 ? 0.7 : 0.5),
-            });
-          }
-        }
-      } else if (sec.kind === "preChorus") {
-        // 1拍目 + 裏 (シンコペ)
-        for (const off of [0, 1.5, 2, 3.5]) {
-          for (const m of fullChord) {
-            out.push({
-              midi: m,
-              startSec: barStart + off * beatSec,
-              durationSec: beatSec * 0.4,
-              velocity: vel0 * (off === 0 ? 0.85 : 0.65),
-            });
-          }
-        }
-      } else {
-        // Verse: 2 拍, 4 拍 だけ短くチャカ (バックビート)
-        for (const off of [1, 3]) {
-          for (const m of fullChord) {
-            out.push({
-              midi: m,
-              startSec: barStart + off * beatSec,
-              durationSec: beatSec * 0.3,
-              velocity: vel0 * 0.6,
-            });
-          }
-        }
-      }
-    } else if (style === "ballad") {
-      // Ballad: 静か。Chorus のみ柔らかいフル和音を1拍目に置く
-      if (sec.kind === "chorus") {
-        for (const m of fullChord) {
-          out.push({ midi: m, startSec: barStart, durationSec: barSec * 0.9, velocity: vel0 * 0.5 });
-        }
-      }
-      // verse は guitar 休む (acoustic に任せる)
-    } else {
-      // jazz: Freddie Green コンプ。4 拍全部に短い和音
-      for (let b = 0; b < 4; b++) {
-        for (const m of fullChord) {
-          out.push({
-            midi: m,
-            startSec: barStart + b * beatSec,
-            durationSec: beatSec * 0.35,
-            velocity: vel0 * 0.55 + (rng() - 0.5) * 0.05,
-          });
-        }
+      for (const m of pitches) {
+        out.push({
+          midi: m,
+          startSec: barStart + n.startBeat * beatSec,
+          durationSec: n.durationBeats * beatSec,
+          velocity: Math.max(0.2, Math.min(1, vel0 * n.velocityScale)),
+        });
       }
     }
+    barInSec++;
   }
   return out;
 }
