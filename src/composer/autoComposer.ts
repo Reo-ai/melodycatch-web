@@ -3128,6 +3128,118 @@ function generateFx(
 // ---------------------------------------------------------------------------
 // 公開関数: 1 曲生成
 // ---------------------------------------------------------------------------
+/**
+ * イベントループに 1 ティック制御を返す。
+ * これを各 generate*Layer の合間に挟むことで、
+ * ボタン押下 → composeSong 完了までの間に
+ * UI が完全フリーズするのを防ぐ。
+ */
+function yieldToUI(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    // setTimeout(0) で次の macrotask に回す。
+    // 50ms 程度なら UI は完全に再描画 / クリック受付ができる。
+    setTimeout(resolve, 0);
+  });
+}
+
+/**
+ * composeSong の非同期版。
+ * 各レイヤー生成の合間に await yieldToUI() を挟んで、
+ * 「自動作曲」ボタンを押した瞬間の数百 ms フリーズを解消する。
+ *
+ * 出力は composeSong と完全に同一 (内容も順序も)。
+ * 計算結果が決定的なように同じ rng (= 同 seed) を共有する。
+ */
+export async function composeSongAsync(opts: AutoComposeOptions): Promise<ComposedSong> {
+  const { scale, bpm, bars, style } = opts;
+  const seed = opts.seed ?? (Date.now() & 0xffffffff);
+  const rng = makeRng(seed);
+  void SCALE_INTERVALS;
+
+  const sections = planSections(bars, style, rng);
+  let chords: HarmonicChord[];
+  if (opts.chordsOverride && opts.chordsOverride.length > 0) {
+    const src = opts.chordsOverride;
+    chords = [];
+    for (let i = 0; i < bars; i++) {
+      chords.push(src[Math.min(i, src.length - 1)]);
+    }
+  } else {
+    chords = buildProgression(scale, bars, style, sections, rng);
+  }
+  await yieldToUI();
+
+  const melodyNotes = (opts.includeMelody ?? true)
+    ? generateMelody(scale, chords, sections, bpm, style, rng)
+    : [];
+  await yieldToUI();
+
+  const chordNotes = (opts.includeChord ?? true)
+    ? generateChordLayer(chords, sections, bpm, style, rng)
+    : [];
+  await yieldToUI();
+
+  const bassNotes = (opts.includeBass ?? true)
+    ? generateBass(chords, sections, bpm, style, rng)
+    : [];
+  await yieldToUI();
+
+  const drumNotes = (opts.includeDrums ?? true)
+    ? generateDrums(sections, bars, bpm, style, rng)
+    : [];
+  await yieldToUI();
+
+  const fxNotes = (opts.includeFx ?? true)
+    ? generateFx(sections, bpm, rng)
+    : [];
+  await yieldToUI();
+
+  const guitarNotes = (opts.includeGuitar ?? false)
+    ? generateGuitarLayer(chords, sections, bpm, style, rng)
+    : [];
+  await yieldToUI();
+
+  const acousticNotes = (opts.includeAcoustic ?? false)
+    ? generateAcousticLayer(chords, sections, bpm, style, rng)
+    : [];
+  await yieldToUI();
+
+  const vocalNotes = (opts.includeVocal ?? false)
+    ? generateVocalLayer(melodyNotes, chords, sections, scale, bpm)
+    : [];
+  await yieldToUI();
+
+  const synthNotes = (opts.includeSynth ?? false)
+    ? generateSynthLayer(melodyNotes, chords, sections, bpm, style, rng)
+    : [];
+
+  const totalSec = bars * 4 * (60 / bpm);
+
+  for (const arr of [
+    melodyNotes, chordNotes, bassNotes, drumNotes, fxNotes,
+    guitarNotes, acousticNotes, vocalNotes, synthNotes,
+  ]) {
+    arr.sort((a, b) => a.startSec - b.startSec);
+  }
+
+  return {
+    chords,
+    sections,
+    melodyNotes,
+    chordNotes,
+    bassNotes,
+    drumNotes,
+    fxNotes,
+    guitarNotes,
+    acousticNotes,
+    vocalNotes,
+    synthNotes,
+    totalSec,
+    bpm,
+    style,
+  };
+}
+
 export function composeSong(opts: AutoComposeOptions): ComposedSong {
   const { scale, bpm, bars, style } = opts;
   const seed = opts.seed ?? (Date.now() & 0xffffffff);

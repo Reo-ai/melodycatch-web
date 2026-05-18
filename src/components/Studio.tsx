@@ -119,7 +119,7 @@ import {
   type HarmonicChord,
 } from "../music/chord";
 import {
-  composeSong,
+  composeSongAsync,
   COMPOSER_STYLE_LABEL_JA,
   type ComposerStyle,
 } from "../composer/autoComposer";
@@ -1714,7 +1714,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (w.drumAcoustic) setDrumAcoustic((c) => ({ ...c, notes: [] }));
     if (w.fx) setFx((c) => ({ ...c, notes: [] }));
 
-    const fullSong = composeSong({
+    // 作曲計算 (数百 ms かかる) の間も UI に「作曲中」と
+    // 出して固まって見えないようにする。
+    setAutoComposing(true);
+    setAutoComposeProgress({ pct: 0, bar: 0, totalBars: autoComposeBars });
+
+    const fullSong = await composeSongAsync({
       scale,
       bpm,
       bars: autoComposeBars,
@@ -1751,7 +1756,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (w.acoustic) extraStreams.push({ layerId: "acoustic", notes: fullSong.acousticNotes });
     if (w.drumAcoustic) extraStreams.push({ layerId: "drumAcoustic", notes: fullSong.drumNotes });
 
-    setAutoComposing(true);
+    // 実際の曲の小節数で進捗を上書き (autoComposeBars と一致するはず)
     setAutoComposeProgress({ pct: 0, bar: 1, totalBars: song.chords.length });
 
     // バッファに溜まったノートをレイヤーごとに 1 回 の setState で flush。
