@@ -105,8 +105,15 @@ function holdOffFor(layerId: LayerId, midi: number): void {
   }
 }
 
+/** look-ahead 用の note-off エントリ (song-time 基準)。 */
+interface PendingOff {
+  /** この時刻 (song-time 秒) を過ぎたら holdOff を呼ぶ */
+  offSongSec: number;
+  layerId: LayerId;
+  midi: number;
+}
+
 export class AutoComposeSession {
-  private timers: number[] = [];
   private running = false;
   private startedAt = 0;
   private speed = 1.0;
@@ -114,7 +121,10 @@ export class AutoComposeSession {
   private callbacks: AutoComposeCallbacks;
   private song: ComposedSong;
   private barSec: number;
-  private progressTimer: number | null = null;
+  /** 単一の look-ahead ティック (25ms 間隔)。 */
+  private tickTimer: number | null = null;
+  /** 進捗コールバックのスロットリング用。 */
+  private lastProgressAt = 0;
 
   constructor(
     song: ComposedSong,
@@ -146,90 +156,118 @@ export class AutoComposeSession {
   /**
    * @param speed 1.0=実時間, 2.0=2倍速, 4.0=4倍速。
    *              発音タイミングと書き込みタイミングが speed で割られる。
+   *
+   * look-ahead 方式: 数千個の setTimeout を事前確保せず、
+   * 25ms 周期のティックで「次に到達したノート」だけを順に fire する。
+   * これでブラウザのタイマーキューに 1 個しか残らないため、
+   * ノート数 1000+ でもスケジューラ起因のジッタ/重さがなくなる。
    */
   start(speed = 1.0): void {
     this.stop();
     this.running = true;
     this.speed = Math.max(0.25, speed);
     this.startedAt = performance.now();
+    this.lastProgressAt = 0;
 
-    for (const item of this.items) {
-      const delayMs = (item.note.startSec * 1000) / this.speed;
-      const tOn = window.setTimeout(() => {
-        // ノートを PianoRoll に追加
+    // song-time 秒で記録される note-on / note-off 進行管理。
+    let cursor = 0;
+    const pendingOffs: PendingOff[] = [];
+    const TICK_MS = 25;
+    /** look-ahead (song-time 秒)。次ティック分を先取りして
+     *  ティック境界による発音の遅れを 1 ティック以内に抑える。 */
+    const LOOKAHEAD_SONG_SEC = (TICK_MS / 1000) * this.speed;
+
+    const tick = () => {
+      if (!this.running) return;
+      const elapsedRealSec = (performance.now() - this.startedAt) / 1000;
+      const songSec = elapsedRealSec * this.speed;
+      const horizon = songSec + LOOKAHEAD_SONG_SEC;
+
+      // 1) note-on を fire (cursor 以降で startSec <= horizon のもの)
+      while (
+        cursor < this.items.length &&
+        this.items[cursor].note.startSec <= horizon
+      ) {
+        const item = this.items[cursor++];
         this.callbacks.onAddNote(item.layerId, item.note);
-        // 同時に発音 (オーディオは speed をかけて短縮しない: 普通に弾く)
         holdOnFor(
           item.layerId,
           item.note.midi,
           item.note.velocity,
           item.note.durationSec,
         );
-      }, delayMs);
-      this.timers.push(tOn);
+        // 持続系レイヤだけ note-off を pending に積む
+        if (
+          item.layerId !== "drum" &&
+          item.layerId !== "drumAcoustic" &&
+          item.layerId !== "fx"
+        ) {
+          // オーディオ実時間長 (元のロジックを踏襲: speed が大きいと短縮)
+          const audioRealDurSec = Math.max(
+            0.08,
+            Math.min(item.note.durationSec, item.note.durationSec / this.speed + 0.05),
+          );
+          pendingOffs.push({
+            // song-time 換算: 実時間 audioRealDurSec → song-time は speed 倍
+            offSongSec: item.note.startSec + audioRealDurSec * this.speed,
+            layerId: item.layerId,
+            midi: item.note.midi,
+          });
+        }
+      }
 
-      // ドラム / 生ドラム / FX は一発もの (noteOff 不要)
+      // 2) note-off を fire (offSongSec <= songSec のもの)
+      if (pendingOffs.length > 0) {
+        for (let i = pendingOffs.length - 1; i >= 0; i--) {
+          if (pendingOffs[i].offSongSec <= songSec) {
+            const off = pendingOffs[i];
+            holdOffFor(off.layerId, off.midi);
+            // 末尾と入れ替えて pop (順序不問の安価な削除)
+            pendingOffs[i] = pendingOffs[pendingOffs.length - 1];
+            pendingOffs.pop();
+          }
+        }
+      }
+
+      // 3) 進捗通知 (200ms 程度に間引き)
+      if (this.callbacks.onProgress) {
+        const nowMs = performance.now();
+        if (nowMs - this.lastProgressAt >= 200) {
+          this.lastProgressAt = nowMs;
+          const progress = Math.min(1, songSec / Math.max(0.01, this.song.totalSec));
+          const currentBar = Math.min(
+            this.song.chords.length,
+            Math.floor(songSec / this.barSec) + 1,
+          );
+          this.callbacks.onProgress(progress, currentBar);
+        }
+      }
+
+      // 4) 完了判定: 全 note-on/off を処理し終え、song 全長を超えたら終了
       if (
-        item.layerId !== "drum" &&
-        item.layerId !== "drumAcoustic" &&
-        item.layerId !== "fx"
+        cursor >= this.items.length &&
+        pendingOffs.length === 0 &&
+        songSec >= this.song.totalSec
       ) {
-        // オーディオの長さは「実時間に近い感じ」を優先するため
-        // 表記の durationSec をそのまま使う (speed には依存しない)。
-        // ただし speed が大きい場合に音が被って詰まるのを避けるため、
-        // durationSec / speed で短縮する。
-        const audioDurSec = Math.max(
-          0.08,
-          Math.min(item.note.durationSec, item.note.durationSec / this.speed + 0.05),
-        );
-        const tOff = window.setTimeout(
-          () => {
-            holdOffFor(item.layerId, item.note.midi);
-          },
-          delayMs + audioDurSec * 1000,
-        );
-        this.timers.push(tOff);
+        this.running = false;
+        if (this.tickTimer !== null) {
+          window.clearInterval(this.tickTimer);
+          this.tickTimer = null;
+        }
+        this.callbacks.onProgress?.(1, this.song.chords.length);
+        this.callbacks.onComplete?.();
       }
-    }
+    };
 
-    // 進捗通知 (200ms 間隔)
-    if (this.callbacks.onProgress) {
-      const tickProgress = () => {
-        if (!this.running) return;
-        const elapsed = (performance.now() - this.startedAt) / 1000;
-        const songElapsed = elapsed * this.speed;
-        const progress = Math.min(1, songElapsed / Math.max(0.01, this.song.totalSec));
-        const currentBar = Math.min(
-          this.song.chords.length,
-          Math.floor(songElapsed / this.barSec) + 1,
-        );
-        this.callbacks.onProgress?.(progress, currentBar);
-      };
-      this.progressTimer = window.setInterval(tickProgress, 200) as unknown as number;
-      tickProgress();
-    }
-
-    // 完了通知
-    const totalDelayMs = (this.song.totalSec * 1000) / this.speed + 200;
-    const tEnd = window.setTimeout(() => {
-      this.running = false;
-      if (this.progressTimer !== null) {
-        window.clearInterval(this.progressTimer);
-        this.progressTimer = null;
-      }
-      this.callbacks.onProgress?.(1, this.song.chords.length);
-      this.callbacks.onComplete?.();
-    }, totalDelayMs);
-    this.timers.push(tEnd);
+    this.tickTimer = window.setInterval(tick, TICK_MS) as unknown as number;
+    tick(); // 初回即時実行 (startSec=0 のノートを 1 ティック待たずに発音)
   }
 
   stop(): void {
     this.running = false;
-    for (const t of this.timers) window.clearTimeout(t);
-    this.timers = [];
-    if (this.progressTimer !== null) {
-      window.clearInterval(this.progressTimer);
-      this.progressTimer = null;
+    if (this.tickTimer !== null) {
+      window.clearInterval(this.tickTimer);
+      this.tickTimer = null;
     }
   }
 }
