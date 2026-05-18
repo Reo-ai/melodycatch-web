@@ -852,6 +852,27 @@ const RHYTHM_PATTERNS: Record<ComposerStyle, RhythmSlot[][]> = {
       { beats: 0.75, rest: false, strong: true },
       { beats: 1,    rest: false, strong: false },
     ],
+    // 16 分跳ね (キャッチー)
+    [
+      { beats: 0.25, rest: false, strong: true },
+      { beats: 0.25, rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 0.5,  rest: true,  strong: false },
+      { beats: 0.5,  rest: false, strong: true },
+      { beats: 0.25, rest: false, strong: false },
+      { beats: 0.25, rest: false, strong: false },
+      { beats: 1,    rest: false, strong: false },
+    ],
+    // 付点と切り (ラテン pop っぽい)
+    [
+      { beats: 0.75, rest: false, strong: true },
+      { beats: 0.25, rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: true },
+      { beats: 0.5,  rest: true,  strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 1,    rest: false, strong: false },
+    ],
   ],
   ballad: [
     [
@@ -880,6 +901,22 @@ const RHYTHM_PATTERNS: Record<ComposerStyle, RhythmSlot[][]> = {
       { beats: 0.5, rest: false, strong: false },
       { beats: 2,   rest: false, strong: true },
       { beats: 1,   rest: true,  strong: false },
+    ],
+    // 流れる 8 分 (アンセム系バラード)
+    [
+      { beats: 1,   rest: false, strong: true },
+      { beats: 0.5, rest: false, strong: false },
+      { beats: 0.5, rest: false, strong: false },
+      { beats: 0.5, rest: false, strong: true },
+      { beats: 0.5, rest: false, strong: false },
+      { beats: 1,   rest: false, strong: false },
+    ],
+    // 弱起 (アウフタクト) → 強拍ロングトーン
+    [
+      { beats: 0.5, rest: true,  strong: false },
+      { beats: 0.5, rest: false, strong: false },
+      { beats: 2,   rest: false, strong: true },
+      { beats: 1,   rest: false, strong: false },
     ],
   ],
   rock: [
@@ -911,6 +948,23 @@ const RHYTHM_PATTERNS: Record<ComposerStyle, RhythmSlot[][]> = {
       { beats: 0.5, rest: false, strong: false },
       { beats: 1,   rest: false, strong: false },
     ],
+    // パンチライン (休 → アクセント)
+    [
+      { beats: 1,    rest: false, strong: true },
+      { beats: 0.5,  rest: true,  strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 1,    rest: false, strong: true },
+      { beats: 0.5,  rest: true,  strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+    ],
+    // チョーキング風ロングトーン後の連打
+    [
+      { beats: 2,    rest: false, strong: true },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: true },
+      { beats: 0.5,  rest: false, strong: false },
+    ],
   ],
   jazz: [
     // 跳ねたフィール (三連符近似)
@@ -940,6 +994,25 @@ const RHYTHM_PATTERNS: Record<ComposerStyle, RhythmSlot[][]> = {
       { beats: 0.5, rest: false, strong: false },
       { beats: 0.5, rest: true,  strong: false },
       { beats: 1,   rest: false, strong: true },
+    ],
+    // バップ風 8 分連 (フレーズ走り)
+    [
+      { beats: 0.5,  rest: false, strong: true },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: true },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+      { beats: 0.5,  rest: false, strong: false },
+    ],
+    // 4 分 + 4 分 + 8 分裏 (会話的)
+    [
+      { beats: 1,    rest: false, strong: true },
+      { beats: 1,    rest: false, strong: false },
+      { beats: 0.5,  rest: true,  strong: false },
+      { beats: 0.5,  rest: false, strong: true },
+      { beats: 1,    rest: false, strong: false },
     ],
   ],
 };
@@ -1142,6 +1215,44 @@ function generateMelody(
       recordBar = m.bars[barInSec];
     }
 
+    // ===== モチーフ B' 変奏 (Phase 5) =====
+    // バー 3 (= 4 小節セクションの最終小節、motif B の繰り返し位置) では
+    // 機械的な literal 再生ではなく、後半 ~40% の音を「スケール tonic への
+    // カデンツ的下降 (or 上昇) 進行」に置き換える。
+    // これにより A B A B' の "B'" 部分が解決感を持ち、繰り返しの単調さを抑える。
+    // Verse1 の bar 3 で生成した B' は memo されるので、Verse2 でも同じ B' が鳴る。
+    const isBPrime = !!motifBarForReplay && barInSec === 3 && isLastInSec;
+    const bPrimeStartSlot = isBPrime ? Math.floor(slots.length * 0.6) : -1;
+    // 現在のキー (localScale) のトニックを range 内で見つける
+    let tonicTarget: number | null = null;
+    if (isBPrime) {
+      const ts = range.filter((m) => m % 12 === localScale.rootPitchClass);
+      if (ts.length > 0) {
+        // メロディ範囲の中央寄りのオクターブを選ぶ
+        tonicTarget = ts[Math.floor(ts.length / 2)];
+      }
+    }
+    // range 上で prev から方向 dir に 1 ステップ動いた音を返す
+    function stepInScaleRange(prev: number, dir: number): number {
+      const idx = range.indexOf(prev);
+      if (idx === -1) {
+        // range にない (絶対あり得ないが念のため): 最も近い range 値
+        let best = range[0];
+        let bd = Math.abs(best - prev);
+        for (const r of range) {
+          const d = Math.abs(r - prev);
+          if (d < bd) { best = r; bd = d; }
+        }
+        return best;
+      }
+      const ni = Math.max(0, Math.min(range.length - 1, idx + dir));
+      return range[ni];
+    }
+
+    // ===== 直近 2 音追跡 (anti-stagnation 用) =====
+    let recentSame = 0; // 直近で prevMidi と同じ音を何回続けて鳴らしたか
+    let lastDelta: number | null = null; // 直前のジャンプ量 (leap recovery 用)
+
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
       const slotDurSec = slot.beats * beatScale * beatSec;
@@ -1185,6 +1296,15 @@ function generateMelody(
             motifReplayPitch = m;
           }
         }
+        // ----- B' 変奏: 後半 slot を tonic 方向のスケール step に置換 -----
+        if (isBPrime && i >= bPrimeStartSlot && tonicTarget !== null) {
+          if (i === slots.length - 1) {
+            motifReplayPitch = tonicTarget;
+          } else if (prevMidi != null) {
+            const dir = tonicTarget > prevMidi ? 1 : tonicTarget < prevMidi ? -1 : 0;
+            motifReplayPitch = dir === 0 ? prevMidi : stepInScaleRange(prevMidi, dir);
+          }
+        }
       }
       // Chorus 1 小節目の頭は「フック」として、高めのコードトーンから始める。
       // これが memo されて、以降の全 Chorus でも同じ高い始まり方になる。
@@ -1204,16 +1324,39 @@ function generateMelody(
           Math.floor((mids.length > 0 ? mids.length : candidates.length) / 2)
         ];
       } else {
-        // フレーズの形: 前半は上昇傾向、後半は下降傾向で「弧」を作る
+        // フレーズの形: アーチ contour (前半 climb, 中盤 peak, 後半 descend)
+        // peak を 60% 位置に置くことで「自然な弧」を作る。
         const phasePos = (i / Math.max(1, slots.length - 1)); // 0..1
-        const climbBias = phasePos < 0.5 ? +0.4 : -0.4;
+        const peakPos = 0.6;
+        const climbBias = phasePos < peakPos ? +0.45 : -0.45;
+        // ===== leap recovery: 直前が大きく跳ねたら逆方向 step を強制バイアス =====
+        const leapRecoverDir =
+          lastDelta != null && Math.abs(lastDelta) >= 5
+            ? (lastDelta > 0 ? -1 : +1)
+            : 0;
         const weights = candidates.map((m) => {
           const d = m - (prevMidi as number);
           const ad = Math.abs(d);
           // ステップワイズ優先 (±2 半音内が最大)
-          let w = ad === 0 ? 0.35 : ad > 9 ? 0.02 : ad > 5 ? 0.18 : ad > 2 ? 0.55 : 1.0;
+          let w = ad === 0 ? 0.30 : ad > 9 ? 0.02 : ad > 5 ? 0.18 : ad > 2 ? 0.55 : 1.0;
           // セクション形に沿った方向バイアス
           if ((climbBias > 0 && d > 0) || (climbBias < 0 && d < 0)) w *= 1.4;
+          // leap recovery: 直前が leap なら逆方向 step を大きく押し上げる
+          if (leapRecoverDir !== 0 && d !== 0) {
+            const sameDir = (leapRecoverDir > 0 && d > 0) || (leapRecoverDir < 0 && d < 0);
+            if (sameDir && ad <= 3) w *= 2.4;
+            else if (!sameDir && ad > 4) w *= 0.15;
+          }
+          // 直前と同じ音が 2 回以上続いたら 3 回目は強く抑制
+          if (recentSame >= 1 && d === 0) w *= 0.05;
+          // 弱拍で「コードトーンへの半音/全音アプローチ」を加点 (passing/neighbor)
+          if (!slot.strong && !chordPCs.has(m % 12) && ad <= 2 && ad >= 1) {
+            w *= 1.3;
+          }
+          // 強拍がコードトーンの場合、prev から近いコードトーンを優先
+          if (slot.strong && chordPCs.has(m % 12)) {
+            if (ad <= 4) w *= 1.5;
+          }
           return w;
         });
         pickMidi = pickWeighted(candidates, weights, rng);
@@ -1253,6 +1396,12 @@ function generateMelody(
           slotIndex: i,
           semitonesFromRoot: pickMidi - chordRoot,
         });
+      }
+      // leap recovery / anti-stagnation 用の追跡更新
+      if (prevMidi != null) {
+        lastDelta = pickMidi - prevMidi;
+        if (pickMidi === prevMidi) recentSame++;
+        else recentSame = 0;
       }
       prevMidi = pickMidi;
       t += slotDurSec;
