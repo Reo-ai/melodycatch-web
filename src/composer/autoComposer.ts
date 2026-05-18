@@ -53,6 +53,7 @@ import {
   DRUM_TOM_MID_MIDI,
 } from "../audio/drums";
 import {
+  CHORD_INTERVALS,
   chordVoicing,
   diatonicTriads,
   richVariants,
@@ -1986,6 +1987,312 @@ const GUITAR_RIFF_LIBRARY: Record<ComposerStyle, Record<SectionKind, GuitarRiff>
   jazz: JAZZ_RIFFS,
 };
 
+// ---------------------------------------------------------------------------
+// リフ変奏エンジン (music-theory ベース)
+//
+// 既存の GUITAR_RIFF_LIBRARY は「骨格」として保ったまま、bar ごとに少しだけ
+// ミューテーションを掛けてリスナーが「あ、同じパターンの繰り返しじゃないな」と
+// 感じるようにする。
+//
+// 原則:
+//   - アクセント (velocityScale >= 0.85) は触らない (= 骨格の "ノリ" は守る)
+//   - 弱拍 (weak slots) だけを変奏対象にする
+//   - 1 bar につき 1〜2 個までしか mutate しない (= 過剰変化させない)
+//   - 変奏は role に応じて異なる:
+//       chord  → ゴースト挿入 / voicing flip / 5度/8度差し替え / 微小タイミング揺らぎ
+//       phrase → 通過音(passing) / 隣接音(neighbor) / オクターブ跳躍 / アーティキュレーション
+//   - セクション最終 bar は専用 fill (次セクションへ橋を架ける)
+// ---------------------------------------------------------------------------
+
+/** velocityScale がこれ以上の音は「アクセント」とみなし、変奏で触らない。 */
+const RIFF_ACCENT_THRESHOLD = 0.85;
+
+/** 0..len-1 の弱拍 (= 非アクセント) インデックスの配列。 */
+function weakSlots(notes: RiffNote[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < notes.length; i++) {
+    if (notes[i].velocityScale < RIFF_ACCENT_THRESHOLD) out.push(i);
+  }
+  return out;
+}
+
+/** chord.quality に対応する半音オフセット配列を「コードトーン候補」として返す。 */
+function chordToneSet(chord: HarmonicChord): number[] {
+  // 例: major → [0, 4, 7]、min7 → [0, 3, 7, 10]、maj9 → [0, 4, 7, 11, 14]
+  return CHORD_INTERVALS[chord.quality];
+}
+
+/**
+ * `current` (chord root からの半音) に最も近い「他のコードトーン」を返す。
+ * 通過音/隣接音の着地先決定に使う。dir = +1 で上向き、-1 で下向き、0 はどちらでも。
+ */
+function nearestChordTone(current: number, chord: HarmonicChord, dir: 0 | 1 | -1): number {
+  const set = chordToneSet(chord);
+  // -12..+24 まで展開して、dir に合う最寄りを探す
+  const candidates: number[] = [];
+  for (let oct = -1; oct <= 2; oct++) {
+    for (const iv of set) candidates.push(iv + 12 * oct);
+  }
+  const filtered = dir === 0
+    ? candidates.filter((c) => c !== current)
+    : dir > 0
+      ? candidates.filter((c) => c > current)
+      : candidates.filter((c) => c < current);
+  if (filtered.length === 0) return current;
+  filtered.sort((a, b) => Math.abs(a - current) - Math.abs(b - current));
+  return filtered[0];
+}
+
+/** RiffNote を deep copy。 */
+function cloneRiffNotes(notes: RiffNote[]): RiffNote[] {
+  return notes.map((n) => ({ ...n }));
+}
+
+/**
+ * chord 役の変奏ストラテジ。
+ *   "ghost"      : 既存のアクセント間に 16 分パームミュートを 1 音差し込む
+ *   "flipVoice"  : 弱拍 1 音の voicing を power↔mute / mute→stab などに差し替え
+ *   "octShift"   : 弱拍 1 音の semitonesFromRoot を +12 か -12 へずらす
+ *   "displace"   : 弱拍 1 音の startBeat を ±1/16 拍ずらす (シンコペ感)
+ *   "drop"       : 弱拍 1 音を抜く (休符化)
+ */
+function mutateChordBar(
+  base: RiffNote[],
+  rng: () => number,
+): RiffNote[] {
+  if (base.length === 0) return base;
+  const strategies = ["ghost", "flipVoice", "octShift", "displace", "drop"] as const;
+  const s = strategies[Math.floor(rng() * strategies.length)];
+  const notes = cloneRiffNotes(base);
+  const weak = weakSlots(notes);
+  switch (s) {
+    case "ghost": {
+      // 隣接 2 音の startBeat の中点に mute を差し込む (重ならない位置で)
+      if (notes.length < 2) return notes;
+      const i = Math.floor(rng() * (notes.length - 1));
+      const a = notes[i];
+      const b = notes[i + 1];
+      const gap = b.startBeat - (a.startBeat + a.durationBeats);
+      if (gap < 0.15) return notes;
+      const insertAt = a.startBeat + a.durationBeats + Math.min(0.12, gap * 0.5);
+      notes.push({
+        semitonesFromRoot: a.semitonesFromRoot,
+        startBeat: insertAt,
+        durationBeats: Math.min(0.18, gap * 0.6),
+        velocityScale: 0.5,
+        voicing: "mute",
+      });
+      return notes;
+    }
+    case "flipVoice": {
+      if (weak.length === 0) return notes;
+      const i = weak[Math.floor(rng() * weak.length)];
+      const n = notes[i];
+      const flips: Record<RiffVoicing, RiffVoicing[]> = {
+        power: ["mute"],
+        mute: ["power", "stab"],
+        full: ["stab"],
+        stab: ["full"],
+        single: ["double5"],
+        double5: ["single", "octaveUnison"],
+        double3: ["single"],
+        octaveUnison: ["double5"],
+      };
+      const opts = flips[n.voicing] ?? [];
+      if (opts.length === 0) return notes;
+      n.voicing = opts[Math.floor(rng() * opts.length)];
+      return notes;
+    }
+    case "octShift": {
+      if (weak.length === 0) return notes;
+      const i = weak[Math.floor(rng() * weak.length)];
+      const n = notes[i];
+      // power/mute は -12 すると低すぎるので +12 のみ、single 系は ±12 両方
+      const isLow = n.voicing === "power" || n.voicing === "mute";
+      n.semitonesFromRoot += isLow ? 12 : (rng() < 0.5 ? 12 : -12);
+      return notes;
+    }
+    case "displace": {
+      if (weak.length === 0) return notes;
+      const i = weak[Math.floor(rng() * weak.length)];
+      const n = notes[i];
+      const shift = (rng() < 0.5 ? -1 : 1) * 0.125; // ±1/16 拍
+      const newStart = Math.max(0, Math.min(3.95, n.startBeat + shift));
+      n.startBeat = newStart;
+      return notes;
+    }
+    case "drop": {
+      if (weak.length === 0 || notes.length <= 2) return notes;
+      const i = weak[Math.floor(rng() * weak.length)];
+      notes.splice(i, 1);
+      return notes;
+    }
+  }
+  return notes;
+}
+
+/**
+ * phrase 役の変奏ストラテジ。
+ *   "passing"   : 連続する 2 音間に通過音 (途中の半音/全音) を 16 分で挿入
+ *   "neighbor"  : 弱拍 1 音を ±1 (半音) または ±2 (全音) ずらして隣接音にする
+ *   "chordTone" : 弱拍 1 音を直近の別コードトーンに置き換える
+ *   "octFlip"   : 弱拍 1 音を 1 オクターブ上 or 下にジャンプ
+ *   "graceAdd"  : graceBefore を弱拍 1 音に付ける (ハンマリング/スライド感)
+ *   "graceDrop" : 既存 graceBefore を消す (素直なフレーズに戻す)
+ */
+function mutatePhraseBar(
+  base: RiffNote[],
+  chord: HarmonicChord,
+  rng: () => number,
+): RiffNote[] {
+  if (base.length === 0) return base;
+  const strategies = ["passing", "neighbor", "chordTone", "octFlip", "graceAdd", "graceDrop"] as const;
+  const s = strategies[Math.floor(rng() * strategies.length)];
+  const notes = cloneRiffNotes(base);
+  const weak = weakSlots(notes);
+  switch (s) {
+    case "passing": {
+      if (notes.length < 2) return notes;
+      // 跳躍 (|delta| >= 3) のある隣接 2 音を探す
+      const candidates: number[] = [];
+      for (let i = 0; i < notes.length - 1; i++) {
+        const d = notes[i + 1].semitonesFromRoot - notes[i].semitonesFromRoot;
+        if (Math.abs(d) >= 3) candidates.push(i);
+      }
+      if (candidates.length === 0) return notes;
+      const i = candidates[Math.floor(rng() * candidates.length)];
+      const a = notes[i];
+      const b = notes[i + 1];
+      const gap = b.startBeat - (a.startBeat + a.durationBeats);
+      if (gap < 0.12) return notes;
+      const dir = b.semitonesFromRoot > a.semitonesFromRoot ? 1 : -1;
+      const between = a.semitonesFromRoot + dir * Math.max(1, Math.floor(Math.abs(b.semitonesFromRoot - a.semitonesFromRoot) / 2));
+      notes.push({
+        semitonesFromRoot: between,
+        startBeat: a.startBeat + a.durationBeats + Math.min(0.1, gap * 0.4),
+        durationBeats: Math.min(0.2, gap * 0.6),
+        velocityScale: Math.max(0.55, a.velocityScale - 0.15),
+        voicing: a.voicing === "double5" || a.voicing === "octaveUnison" ? "single" : a.voicing,
+      });
+      return notes;
+    }
+    case "neighbor": {
+      if (weak.length === 0) return notes;
+      const i = weak[Math.floor(rng() * weak.length)];
+      const n = notes[i];
+      const step = rng() < 0.6 ? 1 : 2; // 半音 or 全音
+      const dir = rng() < 0.5 ? 1 : -1;
+      n.semitonesFromRoot += dir * step;
+      return notes;
+    }
+    case "chordTone": {
+      if (weak.length === 0) return notes;
+      const i = weak[Math.floor(rng() * weak.length)];
+      const n = notes[i];
+      n.semitonesFromRoot = nearestChordTone(n.semitonesFromRoot, chord, 0);
+      return notes;
+    }
+    case "octFlip": {
+      if (weak.length === 0) return notes;
+      const i = weak[Math.floor(rng() * weak.length)];
+      const n = notes[i];
+      // 高音側に行きすぎると刺さるので、現状が +12 以上なら -12、それ以外は +12
+      n.semitonesFromRoot += n.semitonesFromRoot >= 12 ? -12 : 12;
+      return notes;
+    }
+    case "graceAdd": {
+      const noGrace = notes
+        .map((n, i) => ({ n, i }))
+        .filter((x) => x.n.graceBefore === undefined && x.n.velocityScale >= 0.6);
+      if (noGrace.length === 0) return notes;
+      const { i } = noGrace[Math.floor(rng() * noGrace.length)];
+      notes[i].graceBefore = rng() < 0.5 ? -1 : 1;
+      return notes;
+    }
+    case "graceDrop": {
+      const withGrace = notes
+        .map((n, i) => ({ n, i }))
+        .filter((x) => x.n.graceBefore !== undefined);
+      if (withGrace.length === 0) return notes;
+      const { i } = withGrace[Math.floor(rng() * withGrace.length)];
+      delete notes[i].graceBefore;
+      return notes;
+    }
+  }
+  return notes;
+}
+
+/**
+ * セクション最終 bar 用の fill。次セクションへの「橋」を架ける。
+ *   chord 役  → 4 拍目に 16 分パームミュート連打 + 拍裏にアクセント power
+ *   phrase 役 → 後半 2 拍をスケール降下 (5 → 4 → 3 → 2 → root) に置き換え
+ */
+function applySectionEndFill(
+  base: RiffNote[],
+  role: GuitarRole,
+  chord: HarmonicChord,
+  rng: () => number,
+): RiffNote[] {
+  const notes = cloneRiffNotes(base);
+  if (role === "chord") {
+    // 既存 4 拍目以降の音を一旦削除して、16 分ミュート連打 + 拍裏 power に置き換え
+    const kept = notes.filter((n) => n.startBeat < 3.0);
+    const fill: RiffNote[] = [
+      { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.18, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 3.25, durationBeats: 0.18, velocityScale: 0.6,  voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.18, velocityScale: 0.65, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 3.75, durationBeats: 0.22, velocityScale: 0.95, voicing: "power" },
+    ];
+    return [...kept, ...fill];
+  }
+  // phrase 役: コードトーンを使った降下フレーズで着地
+  const kept = notes.filter((n) => n.startBeat < 2.0);
+  // コードトーン候補を高音から並べる
+  const set = chordToneSet(chord);
+  const high = [...set, ...set.map((v) => v + 12)].sort((a, b) => b - a);
+  // 上から 4 音 + root に着地
+  const pick = (i: number) => high[Math.min(i, high.length - 1)];
+  const descend: RiffNote[] = [
+    { semitonesFromRoot: pick(0),                 startBeat: 2.00, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: pick(1),                 startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: pick(2),                 startBeat: 3.00, durationBeats: 0.22, velocityScale: 0.75, voicing: "single" },
+    { semitonesFromRoot: pick(3),                 startBeat: 3.50, durationBeats: 0.22, velocityScale: 0.75, voicing: "single" },
+    { semitonesFromRoot: 0,                       startBeat: 3.75, durationBeats: 0.22, velocityScale: 0.9,  voicing: "octaveUnison", graceBefore: rng() < 0.5 ? -1 : 1 },
+  ];
+  return [...kept, ...descend];
+}
+
+/**
+ * 1 bar 分のリフを役割と repIndex/セクション位置に応じて変奏する。
+ *
+ * - repIndex === 0 かつ最終 bar でない → 骨格そのまま (リスナーに型を覚えさせる)
+ * - repIndex >= 1 → 1〜2 個のミューテーションを適用
+ * - セクション最終 bar → fill で次へ橋を架ける
+ */
+function varyRiffBar(
+  base: RiffNote[],
+  repIndex: number,
+  isLastBarOfSection: boolean,
+  role: GuitarRole,
+  chord: HarmonicChord,
+  rng: () => number,
+): RiffNote[] {
+  if (isLastBarOfSection && base.length > 0) {
+    return applySectionEndFill(base, role, chord, rng);
+  }
+  if (repIndex === 0) return base;
+  let notes = base;
+  const numMutations = 1 + (rng() < 0.35 ? 1 : 0);
+  for (let k = 0; k < numMutations; k++) {
+    notes = role === "chord"
+      ? mutateChordBar(notes, rng)
+      : mutatePhraseBar(notes, chord, rng);
+  }
+  // startBeat 順に並べ替え (ghost / passing 挿入で順序が崩れている可能性)
+  notes = [...notes].sort((a, b) => a.startBeat - b.startBeat);
+  return notes;
+}
+
 function generateGuitarLayer(
   chords: HarmonicChord[],
   sections: SongSection[],
@@ -2026,7 +2333,7 @@ function generateGuitarLayer(
     }
 
     const riff = GUITAR_RIFF_LIBRARY[style][sec.kind] ?? EMPTY_RIFF;
-    const barNotes = riff.notesPerBar[barInSec % riff.barsLength];
+    const baseBarNotes = riff.notesPerBar[barInSec % riff.barsLength];
 
     // セクションの役割 (chord = バッキング / phrase = リード) に応じて
     // ヒューマナイズを微妙に変える:
@@ -2035,6 +2342,18 @@ function generateGuitarLayer(
     const role = GUITAR_ROLE[style][sec.kind];
     const roleDurMul = role === "phrase" ? 1.05 : 0.98;
     const roleJitterMul = role === "phrase" ? 1.25 : 0.9;
+
+    // 同じ riff bar の何回目の反復か。0 = 初出、1+ = 反復 → 変奏対象。
+    const repIndex = Math.floor(barInSec / riff.barsLength);
+    const isLastBarOfSection = bar === sec.endBar - 1;
+    const barNotes = varyRiffBar(
+      baseBarNotes,
+      repIndex,
+      isLastBarOfSection,
+      role,
+      chords[bar],
+      rng,
+    );
 
     for (const n of barNotes) {
       const baseMidiForNote = root + n.semitonesFromRoot;
