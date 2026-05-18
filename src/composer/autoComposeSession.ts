@@ -184,95 +184,118 @@ export class AutoComposeSession {
 
     const tick = () => {
       if (!this.running) return;
-      const tickRealMs = performance.now();
-      const elapsedRealSec = (tickRealMs - this.startedAt) / 1000;
-      const songSec = elapsedRealSec * this.speed;
-      const horizon = songSec + LOOKAHEAD_SONG_SEC;
+      // 例外が出ても再帰チェーンを切らないように try/finally でガード。
+      // 個別のノート発音で何か (オーディオエンジン側の一時エラー等) 起きても
+      // 自動作曲セッション全体が止まらないようにする。
+      let completed = false;
+      try {
+        const tickRealMs = performance.now();
+        const elapsedRealSec = (tickRealMs - this.startedAt) / 1000;
+        const songSec = elapsedRealSec * this.speed;
+        const horizon = songSec + LOOKAHEAD_SONG_SEC;
 
-      // 1) note-on を fire (cursor 以降で startSec <= horizon のもの)
-      while (
-        cursor < this.items.length &&
-        this.items[cursor].note.startSec <= horizon
-      ) {
-        const item = this.items[cursor++];
-        this.callbacks.onAddNote(item.layerId, item.note);
-        holdOnFor(
-          item.layerId,
-          item.note.midi,
-          item.note.velocity,
-          item.note.durationSec,
-        );
-        // 持続系レイヤだけ note-off を pending に積む
-        if (
-          item.layerId !== "drum" &&
-          item.layerId !== "drumAcoustic" &&
-          item.layerId !== "fx"
+        // 1) note-on を fire (cursor 以降で startSec <= horizon のもの)
+        //    各ノート単位で try/catch することで、1 個失敗しても残りは進む。
+        while (
+          cursor < this.items.length &&
+          this.items[cursor].note.startSec <= horizon
         ) {
-          // オーディオ実時間長 (元のロジックを踏襲: speed が大きいと短縮)。
-          // ハード下限を 60ms にして、超短ノートでも必ず可聴になるようにする。
-          const audioRealDurSec = Math.max(
-            0.08,
-            Math.min(item.note.durationSec, item.note.durationSec / this.speed + 0.05),
-          );
-          // 実時間基準: 今 holdOn した瞬間 (tickRealMs) を起点に
-          // audioRealDurSec 経過後に off を打つ。catch-up でも保証される。
-          pendingOffs.push({
-            offRealMs: tickRealMs + Math.max(60, audioRealDurSec * 1000),
-            layerId: item.layerId,
-            midi: item.note.midi,
-          });
-        }
-      }
-
-      // 2) note-off を fire (offRealMs <= 現在実時間 のもの)
-      if (pendingOffs.length > 0) {
-        const nowMs = performance.now();
-        for (let i = pendingOffs.length - 1; i >= 0; i--) {
-          if (pendingOffs[i].offRealMs <= nowMs) {
-            const off = pendingOffs[i];
-            holdOffFor(off.layerId, off.midi);
-            // 末尾と入れ替えて pop (順序不問の安価な削除)
-            pendingOffs[i] = pendingOffs[pendingOffs.length - 1];
-            pendingOffs.pop();
+          const item = this.items[cursor++];
+          try {
+            this.callbacks.onAddNote(item.layerId, item.note);
+            holdOnFor(
+              item.layerId,
+              item.note.midi,
+              item.note.velocity,
+              item.note.durationSec,
+            );
+            if (
+              item.layerId !== "drum" &&
+              item.layerId !== "drumAcoustic" &&
+              item.layerId !== "fx"
+            ) {
+              const audioRealDurSec = Math.max(
+                0.08,
+                Math.min(item.note.durationSec, item.note.durationSec / this.speed + 0.05),
+              );
+              pendingOffs.push({
+                offRealMs: tickRealMs + Math.max(60, audioRealDurSec * 1000),
+                layerId: item.layerId,
+                midi: item.note.midi,
+              });
+            }
+          } catch (e) {
+            console.warn("[AutoComposeSession] note-on failed", item, e);
           }
         }
-      }
 
-      // 3) 進捗通知 (200ms 程度に間引き)
-      if (this.callbacks.onProgress) {
-        const nowMs = performance.now();
-        if (nowMs - this.lastProgressAt >= 200) {
-          this.lastProgressAt = nowMs;
-          const progress = Math.min(1, songSec / Math.max(0.01, this.song.totalSec));
-          const currentBar = Math.min(
-            this.song.chords.length,
-            Math.floor(songSec / this.barSec) + 1,
-          );
-          this.callbacks.onProgress(progress, currentBar);
+        // 2) note-off を fire (offRealMs <= 現在実時間 のもの)
+        if (pendingOffs.length > 0) {
+          const nowMs = performance.now();
+          for (let i = pendingOffs.length - 1; i >= 0; i--) {
+            if (pendingOffs[i].offRealMs <= nowMs) {
+              const off = pendingOffs[i];
+              try {
+                holdOffFor(off.layerId, off.midi);
+              } catch (e) {
+                console.warn("[AutoComposeSession] note-off failed", off, e);
+              }
+              pendingOffs[i] = pendingOffs[pendingOffs.length - 1];
+              pendingOffs.pop();
+            }
+          }
         }
-      }
 
-      // 4) 完了判定: 全 note-on/off を処理し終え、song 全長を超えたら終了
-      if (
-        cursor >= this.items.length &&
-        pendingOffs.length === 0 &&
-        songSec >= this.song.totalSec
-      ) {
-        this.running = false;
-        if (this.tickTimer !== null) {
-          window.clearTimeout(this.tickTimer);
-          this.tickTimer = null;
+        // 3) 進捗通知 (200ms 程度に間引き)
+        if (this.callbacks.onProgress) {
+          const nowMs = performance.now();
+          if (nowMs - this.lastProgressAt >= 200) {
+            this.lastProgressAt = nowMs;
+            const progress = Math.min(1, songSec / Math.max(0.01, this.song.totalSec));
+            const currentBar = Math.min(
+              this.song.chords.length,
+              Math.floor(songSec / this.barSec) + 1,
+            );
+            try {
+              this.callbacks.onProgress(progress, currentBar);
+            } catch (e) {
+              console.warn("[AutoComposeSession] onProgress failed", e);
+            }
+          }
         }
-        this.callbacks.onProgress?.(1, this.song.chords.length);
-        this.callbacks.onComplete?.();
-        return;
-      }
 
-      // 再帰的に次のティックをスケジュール (setInterval だと catch-up 時に
-      // ティックが団子になって音バーストの原因になる。setTimeout で自然に
-      // 直前ティックの実行時間ぶん back-off させる)
-      if (this.running) {
-        this.tickTimer = window.setTimeout(tick, TICK_MS) as unknown as number;
+        // 4) 完了判定: 全 note-on/off を処理し終え、song 全長を超えたら終了
+        if (
+          cursor >= this.items.length &&
+          pendingOffs.length === 0 &&
+          songSec >= this.song.totalSec
+        ) {
+          completed = true;
+          this.running = false;
+          if (this.tickTimer !== null) {
+            window.clearTimeout(this.tickTimer);
+            this.tickTimer = null;
+          }
+          try {
+            this.callbacks.onProgress?.(1, this.song.chords.length);
+          } catch (e) {
+            console.warn("[AutoComposeSession] final onProgress failed", e);
+          }
+          try {
+            this.callbacks.onComplete?.();
+          } catch (e) {
+            console.warn("[AutoComposeSession] onComplete failed", e);
+          }
+        }
+      } catch (e) {
+        // tick 全体で予期しない例外が起きた場合も再帰チェーンは止めない
+        console.warn("[AutoComposeSession] tick error", e);
+      } finally {
+        // 完了 / 停止以外は必ず次ティックを予約する。
+        // try 内で例外が出てもチェーンが切れないことを保証する。
+        if (!completed && this.running) {
+          this.tickTimer = window.setTimeout(tick, TICK_MS) as unknown as number;
+        }
       }
     };
 
