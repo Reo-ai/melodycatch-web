@@ -105,10 +105,15 @@ function holdOffFor(layerId: LayerId, midi: number): void {
   }
 }
 
-/** look-ahead 用の note-off エントリ (song-time 基準)。 */
+/** look-ahead 用の note-off エントリ (実時間基準)。
+ *  song-time 基準にしてしまうと、メインスレッドがストールして
+ *  catch-up したときに on と off が同じティックで発火し、
+ *  ノートが鳴る前に止まる (= 「音が鳴らない」現象) が起きる。
+ *  実時間で計測することで、ティックがどれだけ遅れても
+ *  各ノートが少なくとも intended な実時間長だけ鳴ることを保証する。 */
 interface PendingOff {
-  /** この時刻 (song-time 秒) を過ぎたら holdOff を呼ぶ */
-  offSongSec: number;
+  /** performance.now() ベースの実時間 ms。これを過ぎたら holdOff を呼ぶ */
+  offRealMs: number;
   layerId: LayerId;
   midi: number;
 }
@@ -179,7 +184,8 @@ export class AutoComposeSession {
 
     const tick = () => {
       if (!this.running) return;
-      const elapsedRealSec = (performance.now() - this.startedAt) / 1000;
+      const tickRealMs = performance.now();
+      const elapsedRealSec = (tickRealMs - this.startedAt) / 1000;
       const songSec = elapsedRealSec * this.speed;
       const horizon = songSec + LOOKAHEAD_SONG_SEC;
 
@@ -202,24 +208,27 @@ export class AutoComposeSession {
           item.layerId !== "drumAcoustic" &&
           item.layerId !== "fx"
         ) {
-          // オーディオ実時間長 (元のロジックを踏襲: speed が大きいと短縮)
+          // オーディオ実時間長 (元のロジックを踏襲: speed が大きいと短縮)。
+          // ハード下限を 60ms にして、超短ノートでも必ず可聴になるようにする。
           const audioRealDurSec = Math.max(
             0.08,
             Math.min(item.note.durationSec, item.note.durationSec / this.speed + 0.05),
           );
+          // 実時間基準: 今 holdOn した瞬間 (tickRealMs) を起点に
+          // audioRealDurSec 経過後に off を打つ。catch-up でも保証される。
           pendingOffs.push({
-            // song-time 換算: 実時間 audioRealDurSec → song-time は speed 倍
-            offSongSec: item.note.startSec + audioRealDurSec * this.speed,
+            offRealMs: tickRealMs + Math.max(60, audioRealDurSec * 1000),
             layerId: item.layerId,
             midi: item.note.midi,
           });
         }
       }
 
-      // 2) note-off を fire (offSongSec <= songSec のもの)
+      // 2) note-off を fire (offRealMs <= 現在実時間 のもの)
       if (pendingOffs.length > 0) {
+        const nowMs = performance.now();
         for (let i = pendingOffs.length - 1; i >= 0; i--) {
-          if (pendingOffs[i].offSongSec <= songSec) {
+          if (pendingOffs[i].offRealMs <= nowMs) {
             const off = pendingOffs[i];
             holdOffFor(off.layerId, off.midi);
             // 末尾と入れ替えて pop (順序不問の安価な削除)
@@ -251,22 +260,29 @@ export class AutoComposeSession {
       ) {
         this.running = false;
         if (this.tickTimer !== null) {
-          window.clearInterval(this.tickTimer);
+          window.clearTimeout(this.tickTimer);
           this.tickTimer = null;
         }
         this.callbacks.onProgress?.(1, this.song.chords.length);
         this.callbacks.onComplete?.();
+        return;
+      }
+
+      // 再帰的に次のティックをスケジュール (setInterval だと catch-up 時に
+      // ティックが団子になって音バーストの原因になる。setTimeout で自然に
+      // 直前ティックの実行時間ぶん back-off させる)
+      if (this.running) {
+        this.tickTimer = window.setTimeout(tick, TICK_MS) as unknown as number;
       }
     };
 
-    this.tickTimer = window.setInterval(tick, TICK_MS) as unknown as number;
-    tick(); // 初回即時実行 (startSec=0 のノートを 1 ティック待たずに発音)
+    this.tickTimer = window.setTimeout(tick, 0) as unknown as number;
   }
 
   stop(): void {
     this.running = false;
     if (this.tickTimer !== null) {
-      window.clearInterval(this.tickTimer);
+      window.clearTimeout(this.tickTimer);
       this.tickTimer = null;
     }
   }
