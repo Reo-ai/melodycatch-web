@@ -366,81 +366,294 @@ function isSectionLastBar(sec: SongSection, bar: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// コード進行テンプレート (拡張前のダイアトニック度数)
-// 1〜7 はダイアトニックの度数 (I, ii, iii, IV, V, vi, vii°)
+// コード進行: 音楽理論ベースの "機能和声" エンジン
+//
+// テンプレート (固定の度数列) を選んで回すのではなく、
+// 「機能 (T = Tonic, S = Subdominant, D = Dominant)」のマルコフ連鎖で
+// 1 小節ずつ機能を引き、その機能に属する度数をスタイル/直前コードの
+// 共通音 (ヴォイス・リーディング) を加味して選ぶ。
+//
+// これにより同じスタイル・同じセクションでも毎回違う進行が生成され、
+// 「テンプレ感」が薄れる。終止 (cadence) のみセクション毎に固定して
+// 「サビへ向かう V」「サビ末尾の I」など曲構造上必要な流れを保証する。
 // ---------------------------------------------------------------------------
-const PROGRESSION_TEMPLATES: Record<ComposerStyle, number[][]> = {
-  pop: [
-    [1, 5, 6, 4],
-    [6, 4, 1, 5],
-    [1, 6, 4, 5],
-    [4, 5, 3, 6],
-    [1, 5, 6, 3, 4, 1, 4, 5],
-    [4, 1, 5, 6],
-    [2, 5, 1, 6],
-  ],
-  ballad: [
-    [1, 3, 4, 5],
-    [6, 4, 1, 5],
-    [4, 5, 6, 1],
-    [1, 4, 6, 5],
-    [1, 5, 4, 5],
-    [1, 4, 5, 6, 4, 5, 1, 1],
-  ],
-  rock: [
-    [1, 4, 5, 5],
-    [1, 5, 4, 4],
-    [6, 4, 1, 5],
-    [1, 7, 4, 1],
-    [1, 4, 1, 5],
-    [1, 6, 4, 5, 1, 6, 7, 5],
-  ],
-  jazz: [
-    [2, 5, 1, 6],
-    [1, 6, 2, 5],
-    [3, 6, 2, 5],
-    [1, 4, 2, 5, 1, 6, 2, 5],
-    [1, 4, 7, 3, 6, 2, 5, 1],
-  ],
+
+type ChordFunction = "T" | "S" | "D";
+
+/** Major key におけるダイアトニック度数 → 機能の対応。 */
+const FUNCTION_OF_DEGREE: Record<number, ChordFunction> = {
+  1: "T", // I
+  2: "S", // ii
+  3: "T", // iii (代理 T)
+  4: "S", // IV
+  5: "D", // V
+  6: "T", // vi (代理 T)
+  7: "D", // vii°
+};
+
+/** 機能 → 候補度数。スタイル毎に重みが違う。 */
+type FunctionMembers = Record<ChordFunction, Array<{ deg: number; w: number }>>;
+
+const STYLE_FUNCTION_MEMBERS: Record<ComposerStyle, FunctionMembers> = {
+  // pop: I/vi/IV/V を主軸に、ii を時々
+  pop: {
+    T: [{ deg: 1, w: 5 }, { deg: 6, w: 4 }, { deg: 3, w: 1 }],
+    S: [{ deg: 4, w: 5 }, { deg: 2, w: 3 }],
+    D: [{ deg: 5, w: 6 }, { deg: 7, w: 1 }],
+  },
+  // rock: I-IV-V の骨格、vi はやや控えめ、iii は出にくい
+  rock: {
+    T: [{ deg: 1, w: 6 }, { deg: 6, w: 3 }, { deg: 3, w: 1 }],
+    S: [{ deg: 4, w: 6 }, { deg: 2, w: 1 }],
+    D: [{ deg: 5, w: 6 }, { deg: 7, w: 2 }],
+  },
+  // ballad: vi が強い (関係短調的)、IV/ii で陰を作る
+  ballad: {
+    T: [{ deg: 1, w: 5 }, { deg: 6, w: 5 }, { deg: 3, w: 2 }],
+    S: [{ deg: 4, w: 5 }, { deg: 2, w: 3 }],
+    D: [{ deg: 5, w: 5 }, { deg: 7, w: 1 }],
+  },
+  // jazz: ii-V-I が王道。ii が S の主役、iii/vi も T の常連
+  jazz: {
+    T: [{ deg: 1, w: 4 }, { deg: 3, w: 3 }, { deg: 6, w: 4 }],
+    S: [{ deg: 2, w: 6 }, { deg: 4, w: 3 }],
+    D: [{ deg: 5, w: 7 }, { deg: 7, w: 2 }],
+  },
 };
 
 /**
- * Pre-Chorus (B メロ) 専用の進行。
- * 「サビへ向かって緊張を高める」役割なので、IV / V / ii を多用して
- * トニック (I) で安定するのを避け、V 終止で次セクションのサビへ流れ込む。
- *
- * 典型パターン:
- *   - IV → V → IV → V       : 4 度と 5 度を往復して持ち上げる王道
- *   - vi → IV → V → V       : 暗→明→ドミナント
- *   - ii → V → ii → V       : ジャズ・ポップで頻出
- *   - IV → V → vi → V       : だんだん上がる
+ * 機能の遷移確率 (Markov chain)。
+ *   T → S, D が多い (T で安定したら動き出す)
+ *   S → D が圧倒的 (S → D は機能和声の核)
+ *   D → T が圧倒的 (D は T に解決)
+ * 同じ機能の連続 (T→T 等) は控えめにして「動き」を作る。
  */
-const PRECHORUS_TEMPLATES: Record<ComposerStyle, number[][]> = {
-  pop: [
-    [4, 5, 4, 5],
-    [6, 4, 5, 5],
-    [4, 5, 6, 5],
-    [2, 5, 2, 5],
-    [4, 4, 5, 5],
-  ],
-  ballad: [
-    [4, 5, 4, 5],
-    [2, 5, 4, 5],
-    [6, 4, 5, 5],
-    [4, 3, 6, 5],
-  ],
-  rock: [
-    [4, 5, 4, 5],
-    [4, 4, 5, 5],
-    [6, 5, 4, 5],
-    [1, 5, 4, 5],
-  ],
-  jazz: [
-    [2, 5, 2, 5],
-    [4, 5, 3, 5],
-    [6, 2, 5, 5],
-  ],
+const FUNCTION_TRANSITIONS: Record<ChordFunction, Record<ChordFunction, number>> = {
+  T: { T: 1, S: 5, D: 4 },
+  S: { T: 2, S: 1, D: 6 },
+  D: { T: 7, S: 1, D: 1 },
 };
+
+/** セクション末尾の必須終止機能 (cadence)。 */
+function cadenceFunctionFor(kind: SectionKind): ChordFunction {
+  switch (kind) {
+    case "intro":     return "D"; // verse へ
+    case "verse":     return "D"; // preChorus へ
+    case "preChorus": return "D"; // V 終止 → chorus へ
+    case "chorus":    return "T"; // 解決 (I or vi)
+    case "bridge":    return "D"; // chorus 再突入へ
+    case "break":     return "T"; // I のみ
+    case "outro":     return "T"; // I 解決
+  }
+}
+
+/** セクション先頭の推奨開始機能 (なければ null = 自由)。 */
+function startFunctionFor(kind: SectionKind): ChordFunction | null {
+  switch (kind) {
+    case "intro":     return "T";
+    case "verse":     return "T";
+    case "preChorus": return "S"; // 動き出し感
+    case "chorus":    return null; // T (1) or T (6) どちらでも、後段で決める
+    case "bridge":    return "S"; // chorus と対比
+    case "break":     return "T";
+    case "outro":     return "T";
+  }
+}
+
+/**
+ * 機能列を Markov chain で生成する。
+ *   - start で初期機能を固定
+ *   - end で最後の機能を固定 (cadence)
+ *   - 最後から 2 つ手前は cadence への自然な遷移を強制 (D→T なら直前は S または D)
+ */
+function rollFunctionSequence(
+  start: ChordFunction,
+  end: ChordFunction,
+  len: number,
+  rng: () => number,
+): ChordFunction[] {
+  if (len <= 0) return [];
+  if (len === 1) return [end];
+  if (len === 2) {
+    // 2 小節セクション: 終止前は cadence への自然遷移
+    const before: ChordFunction = end === "T" ? "D" : end === "D" ? "S" : "T";
+    return [before === start ? start : before, end];
+  }
+  const seq: ChordFunction[] = new Array(len);
+  seq[0] = start;
+  seq[len - 1] = end;
+  // 末尾の 1 つ手前は cadence に自然に繋がる機能
+  const beforeEnd: ChordFunction =
+    end === "T" ? (rng() < 0.75 ? "D" : "S") :
+    end === "D" ? (rng() < 0.7 ? "S" : "T") :
+    /* end === "S" */ "T";
+  seq[len - 2] = beforeEnd;
+  // 中間を Markov で埋める
+  let prev = seq[0];
+  for (let i = 1; i < len - 2; i++) {
+    const probs = FUNCTION_TRANSITIONS[prev];
+    const next = pickWeighted(
+      ["T", "S", "D"] as ChordFunction[],
+      ["T", "S", "D"].map((f) => probs[f as ChordFunction]),
+      rng,
+    );
+    seq[i] = next;
+    prev = next;
+  }
+  return seq;
+}
+
+/**
+ * 機能 → 度数を 1 つ選ぶ。
+ * スタイル別の基本重みに加え、直前コードとの共通音 (ヴォイス・リーディング) で加点。
+ * また直前と同じ度数になりやすい状況を避ける。
+ */
+function pickDegreeForFunction(
+  fn: ChordFunction,
+  style: ComposerStyle,
+  prevDegree: number | null,
+  dia: HarmonicChord[],
+  rng: () => number,
+): number {
+  const members = STYLE_FUNCTION_MEMBERS[style][fn];
+  const weights = members.map(({ deg, w }) => {
+    let weight = w;
+    if (prevDegree != null) {
+      // 同じ度数の連続は避ける (break 用の I 連打は別ロジック)
+      if (deg === prevDegree) weight *= 0.15;
+      // 直前のコードとの共通音数で加点 (多いほど滑らか)
+      const prevChord = dia[Math.max(0, Math.min(6, prevDegree - 1))];
+      const curChord = dia[Math.max(0, Math.min(6, deg - 1))];
+      const common = commonTones(prevChord, curChord);
+      // 共通音 1 つにつき +0.6 (最大 3 音で +1.8)
+      weight *= 1 + common * 0.3;
+      // ルートが完全 4/5 度関係なら +ボーナス (強い進行感)
+      const prevRoot = prevChord.rootPitchClass;
+      const curRoot = curChord.rootPitchClass;
+      const interval = ((curRoot - prevRoot) % 12 + 12) % 12;
+      if (interval === 5 || interval === 7) weight *= 1.25;
+    }
+    return weight;
+  });
+  return pickWeighted(members.map((m) => m.deg), weights, rng);
+}
+
+/** 2 つのコードの共通音数 (0..3)。トライアド前提。 */
+function commonTones(a: HarmonicChord, b: HarmonicChord): number {
+  const aTones = chordPitchClasses(a);
+  const bTones = chordPitchClasses(b);
+  let n = 0;
+  for (const t of aTones) if (bTones.has(t)) n++;
+  return n;
+}
+
+function chordPitchClasses(c: HarmonicChord): Set<number> {
+  // トライアド 3 音だけで判定 (拡張前のダイアトニック前提なので近似で十分)
+  const r = c.rootPitchClass;
+  const set = new Set<number>([r]);
+  if (c.quality === "minor" || c.quality === "diminished") set.add((r + 3) % 12);
+  else set.add((r + 4) % 12);
+  if (c.quality === "diminished") set.add((r + 6) % 12);
+  else if (c.quality === "augmented") set.add((r + 8) % 12);
+  else set.add((r + 7) % 12);
+  return set;
+}
+
+/**
+ * 1 セクション分の度数列を生成する。
+ * 機能列を Markov で引き → 各機能から度数をスタイル+ヴォイス・リーディングで選ぶ。
+ * Pre-Chorus は ii-V or IV-V のループを優先的に出す。
+ * Bridge は冒頭で T を避けて対比を作る。
+ */
+function buildSectionDegrees(
+  kind: SectionKind,
+  len: number,
+  style: ComposerStyle,
+  dia: HarmonicChord[],
+  prevDegree: number | null,
+  rng: () => number,
+): number[] {
+  if (kind === "break") {
+    // break は I で 1 拍ヒット (上位ロジックで処理) なので I 固定
+    return new Array(len).fill(1);
+  }
+
+  const start = startFunctionFor(kind) ?? "T";
+  const end = cadenceFunctionFor(kind);
+  const funcs = rollFunctionSequence(start, end, len, rng);
+
+  const out: number[] = [];
+  let prev = prevDegree;
+  for (let i = 0; i < funcs.length; i++) {
+    let fn = funcs[i];
+
+    // Pre-Chorus は中間でも S と D を交互にしてサビへ突き上げる
+    if (kind === "preChorus" && i > 0 && i < funcs.length - 1) {
+      const prevFn = i > 0 ? FUNCTION_OF_DEGREE[out[i - 1]] : start;
+      fn = prevFn === "S" ? "D" : "S";
+    }
+    // Bridge の冒頭 (1 小節目) は vi/iii で対比、ただし最後の cadence は D
+    if (kind === "bridge" && i === 0) {
+      // T 機能だが vi (deg 6) を優先
+      const deg = rng() < 0.65 ? 6 : 3;
+      out.push(deg);
+      prev = deg;
+      continue;
+    }
+    // Chorus の冒頭は 1 (王道) or 6 (切ない hook) どちらか
+    if (kind === "chorus" && i === 0) {
+      const deg = rng() < 0.6 ? 1 : 6;
+      out.push(deg);
+      prev = deg;
+      continue;
+    }
+    // Chorus の末尾は I で着地するのが王道だが、たまに vi で余韻
+    if (kind === "chorus" && i === funcs.length - 1) {
+      const deg = rng() < 0.75 ? 1 : 6;
+      out.push(deg);
+      prev = deg;
+      continue;
+    }
+    // Pre-Chorus 末尾は必ず V
+    if (kind === "preChorus" && i === funcs.length - 1) {
+      out.push(5);
+      prev = 5;
+      continue;
+    }
+
+    const deg = pickDegreeForFunction(fn, style, prev, dia, rng);
+    out.push(deg);
+    prev = deg;
+  }
+
+  // ジャズの場合、内部で ii-V の連結を 1 箇所注入してみる
+  if (style === "jazz" && len >= 4 && rng() < 0.6) {
+    // out 内のどこかで連続する S(2 or 4) → D(5) があれば 2→5 に強制置換
+    for (let i = 0; i < out.length - 1; i++) {
+      const fnA = FUNCTION_OF_DEGREE[out[i]];
+      const fnB = FUNCTION_OF_DEGREE[out[i + 1]];
+      if (fnA === "S" && fnB === "D") {
+        out[i] = 2;
+        out[i + 1] = 5;
+        break;
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * 与えられたスケールを keyOffsetSemitones 半音だけ平行移動した新しいスケールを返す。
+ * 転調セクション (例: 最終サビ +2) のコード進行構築に使う。
+ */
+function transposeScale(scale: Scale, keyOffsetSemitones: number): Scale {
+  if (!keyOffsetSemitones) return scale;
+  return {
+    rootPitchClass: ((scale.rootPitchClass + keyOffsetSemitones) % 12 + 12) % 12,
+    kind: scale.kind,
+  };
+}
 
 /**
  * セクションとスタイルに応じてコード拡張の "派手さ" を決める。
@@ -525,22 +738,15 @@ function enrichChord(
 }
 
 /**
- * 構造に沿ったコード進行を組み立てる。
- * セクション境界では「次セクションへ向かう」ようテンプレを切る。
- * Chorus は同じ進行を 2 回繰り返してフックを強調する。
+ * 構造に沿ったコード進行を組み立てる (機能和声エンジン版)。
+ *
+ * セクション毎に buildSectionDegrees() で度数列を生成し、
+ * Verse1↔Verse2、PreChorus1↔PreChorus2、Chorus1↔Chorus2 は
+ * 「最初に生成した度数列を memo して 2 回目以降も同じ」にすることで
+ * 「歌の繰り返し」感を保つ。
+ *
+ * 同じシードで呼ぶ限り再現性があるが、シードが違えば毎回違う進行になる。
  */
-/**
- * 与えられたスケールを keyOffsetSemitones 半音だけ平行移動した新しいスケールを返す。
- * 転調セクション (例: 最終サビ +2) のコード進行構築に使う。
- */
-function transposeScale(scale: Scale, keyOffsetSemitones: number): Scale {
-  if (!keyOffsetSemitones) return scale;
-  return {
-    rootPitchClass: ((scale.rootPitchClass + keyOffsetSemitones) % 12 + 12) % 12,
-    kind: scale.kind,
-  };
-}
-
 function buildProgression(
   scale: Scale,
   bars: number,
@@ -548,63 +754,45 @@ function buildProgression(
   sections: SongSection[],
   rng: () => number,
 ): HarmonicChord[] {
-  const templates = PROGRESSION_TEMPLATES[style];
   const out: HarmonicChord[] = new Array(bars);
+  const degMemo = new Map<SectionKind, number[]>();
+  let lastDegree: number | null = null;
 
-  // セクション kind ごとのコードテンプレ memo。
-  // Verse1 と Verse2、Chorus1 と Chorus2 が同じ進行になるように
-  // 「最初に選んだテンプレを保存して、2 回目以降は同じものを使う」。
-  // (Chorus は元から templates[0] 固定なので memo しなくても揃うが、
-  //  pre-chorus / verse はランダム選択なので memo が必要。)
-  const tplMemo = new Map<SectionKind, number[]>();
-
-  // セクションごとに 1 つテンプレを選び、その中で回す
   for (const sec of sections) {
-    // 転調セクションでは「移調後のスケール」のダイアトニックを使う
     const localScale = transposeScale(scale, sec.keyOffsetSemitones);
     const dia = diatonicTriads(localScale);
+    const len = sec.endBar - sec.startBar;
 
-    // break セクションは I で 1 拍ヒット + 残り無音の予定なので、進行は I 固定
     if (sec.kind === "break") {
-      for (let i = sec.startBar; i < sec.endBar; i++) {
-        out[i] = dia[0];
-      }
+      // break は I で 1 拍ヒット + 残り無音 (上位ロジック側で生成)
+      for (let i = sec.startBar; i < sec.endBar; i++) out[i] = dia[0];
+      lastDegree = 1;
       continue;
     }
 
-    let tpl: number[];
-    const cached = tplMemo.get(sec.kind);
-    if (cached && (sec.kind === "verse" || sec.kind === "preChorus" || sec.kind === "chorus")) {
-      // 2 回目以降の Verse / Pre-Chorus / Chorus は同じ進行を使う
-      // (Verse1 と Verse2 が違うコードだと「歌の繰り返し」感が出ないため)
-      tpl = cached;
-    } else if (sec.kind === "chorus") {
-      // Chorus は最もキャッチーなテンプレ (先頭) を使う
-      tpl = templates[0];
-    } else if (sec.kind === "preChorus") {
-      // Pre-Chorus は専用テンプレ (サビへ向かう緊張感、V 終止が多い)
-      tpl = pick(PRECHORUS_TEMPLATES[style], rng);
-    } else if (sec.kind === "bridge") {
-      // Bridge は別のテンプレを意図的に選ぶ
-      tpl = templates[Math.min(templates.length - 1, Math.floor(rng() * (templates.length - 1)) + 1)];
-    } else if (sec.kind === "intro" || sec.kind === "outro") {
-      // Intro/Outro は I と V を中心に静かに
-      tpl = [1, 4, 1, 5];
+    let degrees: number[];
+    const cached = degMemo.get(sec.kind);
+    const memoizable =
+      sec.kind === "verse" || sec.kind === "preChorus" || sec.kind === "chorus";
+    if (cached && memoizable) {
+      // 2 回目以降の Verse / Pre-Chorus / Chorus は同じ度数列を使う
+      // (Verse1 と Verse2 が違うコードだと「歌の繰り返し」感が出ない)
+      degrees = cached.slice(0, len);
+      // 長さが足りない場合は同じ列を繰り返して埋める
+      while (degrees.length < len) degrees.push(cached[degrees.length % cached.length]);
     } else {
-      tpl = pick(templates, rng);
+      degrees = buildSectionDegrees(sec.kind, len, style, dia, lastDegree, rng);
+      if (memoizable) degMemo.set(sec.kind, degrees);
     }
-    // 初出の verse / preChorus / chorus は memo に保存
-    if (!cached && (sec.kind === "verse" || sec.kind === "preChorus" || sec.kind === "chorus")) {
-      tplMemo.set(sec.kind, tpl);
-    }
-    const len = sec.endBar - sec.startBar;
+
     for (let i = 0; i < len; i++) {
-      const deg = tpl[i % tpl.length];
+      const deg = degrees[i % degrees.length];
       const idx = Math.max(0, Math.min(6, deg - 1));
       const base = dia[idx];
       const enriched = enrichChord(base, deg, sec.kind, style, rng);
       out[sec.startBar + i] = enriched;
     }
+    lastDegree = degrees[degrees.length - 1] ?? lastDegree;
   }
 
   // 万一の埋め残し対策 (元キーのトニック)
