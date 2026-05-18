@@ -1260,27 +1260,47 @@ interface GuitarRiff {
 const EMPTY_RIFF: GuitarRiff = { barsLength: 1, notesPerBar: [[]] };
 
 /**
- * ロック: パームミュート + パワーコード + オクターブ・ペンタトニック・ライン。
+ * セクションごとのギターの役割。メリハリを出すため、1 セクションは原則
+ * 1 つの役割だけを担当する。
  *
- * 旧版は「単音中心 / 拍頭にポツンと鳴るだけ」で物足りなかったので、
- *  - Verse: 16 分裏のパームミュート (mute) と表のパワーコードで「ズンズンチャン」
- *  - PreChorus: オクターブユニゾン上昇 + 半音アプローチで盛り上がり
- *  - Chorus: 2 小節リフ
- *      bar1 = 16 分のチャギング + ブルーノート (♭5) アクセント、
- *      bar2 = オクターブ下降 → ダブルストップ → パワーコード保持で締め
- *  - Bridge: ペンタトニック・ライン + ハンマリング相当の grace 装飾
- * を入れて、ちゃんと "弾いてる" 感じに。
+ *   "chord"  → リズム/バッキング担当。power, full, stab, mute をメインに使い、
+ *              コード進行を縦に刻んで楽曲を支える (= かっこよさを和音で出す)。
+ *   "phrase" → リード/フレーズ担当。single, double5, double3, octaveUnison を
+ *              メインに使い、横ラインで聴き手を魅せる (= メロディで歌う)。
+ *
+ * 多くのスタイルで Verse/Chorus = chord (土台)、Pre-Chorus/Bridge = phrase
+ * (盛り上げ/対比) という配置にし、リスナーに役割の変化を感じさせる。
+ * Ballad だけは Verse もアルペジオの phrase 担当にして「歌の伴奏」感を出す。
+ */
+type GuitarRole = "chord" | "phrase";
+const GUITAR_ROLE: Record<ComposerStyle, Record<SectionKind, GuitarRole>> = {
+  rock:   { intro: "chord", verse: "chord",  preChorus: "phrase", chorus: "chord", bridge: "phrase", break: "chord", outro: "chord" },
+  pop:    { intro: "chord", verse: "chord",  preChorus: "phrase", chorus: "chord", bridge: "phrase", break: "chord", outro: "chord" },
+  ballad: { intro: "phrase", verse: "phrase", preChorus: "phrase", chorus: "chord", bridge: "phrase", break: "chord", outro: "chord" },
+  jazz:   { intro: "chord", verse: "chord",  preChorus: "phrase", chorus: "chord", bridge: "phrase", break: "chord", outro: "chord" },
+};
+
+/**
+ * ロック:
+ *  [chord]  Intro/Verse/Chorus/Outro = パワーコード + パームミュートのみ (ズンズンチャン)
+ *  [phrase] Pre-Chorus/Bridge = single + double5 + octaveUnison のペンタトニック・リード
+ *
+ * 役割純化: 1 セクション内で voicing 集合を混在させない。
+ *   chord  → power, mute
+ *   phrase → single, double5, octaveUnison
  */
 const ROCK_RIFFS: Record<SectionKind, GuitarRiff> = {
+  // [chord] Intro: 長めのパワーコード + 後半にパームミュートでアプローチ
   intro: { barsLength: 1, notesPerBar: [[
-    // フェードイン的に長めのパワーコード + 後半に半音上アプローチで Verse へ橋渡し
-    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 2.4, velocityScale: 0.7,  voicing: "power" },
-    { semitonesFromRoot: 7,  startBeat: 2.5, durationBeats: 0.4, velocityScale: 0.6,  voicing: "double5" },
-    { semitonesFromRoot: 10, startBeat: 3.0, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single" },
-    { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.4, velocityScale: 0.8,  voicing: "octaveUnison", graceBefore: -1 },
+    { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 2.4,  velocityScale: 0.7,  voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.5,  voicing: "mute" },
+    { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+    { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
+    { semitonesFromRoot: 0, startBeat: 3.25, durationBeats: 0.22, velocityScale: 0.65, voicing: "mute" },
+    { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.85, voicing: "power" },
   ]] },
-  // Verse: 16 分パームミュートでチャギング + 拍頭にパワーコードのアクセント
-  // "ズク ズク ズク ジャン /  ズク ズク ジャ・ジャン" の感じ
+  // [chord] Verse: 16 分パームミュート + 拍頭にパワーコードのアクセント
+  // "ズク ズク ズク ジャン / ズク ズク ジャ・ジャン" の感じ — power と mute のみ
   verse: { barsLength: 2, notesPerBar: [
     [ // bar 1
       { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
@@ -1291,71 +1311,64 @@ const ROCK_RIFFS: Record<SectionKind, GuitarRiff> = {
       { semitonesFromRoot: 0, startBeat: 2.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
       { semitonesFromRoot: 0, startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
       { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
-      { semitonesFromRoot: 5, startBeat: 3.25, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single", graceBefore: -1 },
-      { semitonesFromRoot: 7, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.85, voicing: "double5" },
+      { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
     ],
-    [ // bar 2: 同じ骨格 + 終盤にペンタトニック・フィル
-      { semitonesFromRoot: 0,  startBeat: 0.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
-      { semitonesFromRoot: 0,  startBeat: 0.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0,  startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0,  startBeat: 1.00, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
-      { semitonesFromRoot: 0,  startBeat: 1.50, durationBeats: 0.4,  velocityScale: 0.85, voicing: "power" },
-      // ペンタトニック・フィル (3-5-7-10 を 16 分で駆け上がる)
-      { semitonesFromRoot: 3,  startBeat: 2.00, durationBeats: 0.22, velocityScale: 0.8,  voicing: "single" },
-      { semitonesFromRoot: 5,  startBeat: 2.25, durationBeats: 0.22, velocityScale: 0.8,  voicing: "single" },
-      { semitonesFromRoot: 7,  startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.85, voicing: "single" },
-      { semitonesFromRoot: 10, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.9,  voicing: "single", graceBefore: -1 },
-      { semitonesFromRoot: 12, startBeat: 3.00, durationBeats: 0.4,  velocityScale: 0.95, voicing: "octaveUnison" },
-      { semitonesFromRoot: 0,  startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
+    [ // bar 2: 同じ骨格、後半にパームミュート連打で煽る
+      { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 0.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 1.00, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 1.50, durationBeats: 0.4,  velocityScale: 0.85, voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 2.00, durationBeats: 0.22, velocityScale: 0.5,  voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 2.25, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.65, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
     ],
   ]},
-  // Pre-Chorus: 16 分のオクターブユニゾン上昇 + 半音スライドで Chorus へ突入
+  // [phrase] Pre-Chorus: ペンタトニック・リード — single + double5 + octaveUnison のみ
+  // 16 分でオクターブ上昇 → 半音 grace で Chorus へ突入
   preChorus: { barsLength: 1, notesPerBar: [[
-    { semitonesFromRoot: 0,  startBeat: 0.0,  durationBeats: 0.22, velocityScale: 0.75, voicing: "octaveUnison" },
-    { semitonesFromRoot: 0,  startBeat: 0.25, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
-    { semitonesFromRoot: 3,  startBeat: 0.5,  durationBeats: 0.22, velocityScale: 0.8,  voicing: "octaveUnison" },
-    { semitonesFromRoot: 3,  startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
-    { semitonesFromRoot: 5,  startBeat: 1.0,  durationBeats: 0.22, velocityScale: 0.85, voicing: "octaveUnison" },
-    { semitonesFromRoot: 7,  startBeat: 1.25, durationBeats: 0.22, velocityScale: 0.65, voicing: "single" },
-    { semitonesFromRoot: 5,  startBeat: 1.5,  durationBeats: 0.22, velocityScale: 0.8,  voicing: "octaveUnison" },
-    { semitonesFromRoot: 7,  startBeat: 1.75, durationBeats: 0.22, velocityScale: 0.65, voicing: "single" },
-    { semitonesFromRoot: 7,  startBeat: 2.0,  durationBeats: 0.4,  velocityScale: 0.9,  voicing: "octaveUnison" },
-    { semitonesFromRoot: 10, startBeat: 2.5,  durationBeats: 0.4,  velocityScale: 0.85, voicing: "octaveUnison" },
-    { semitonesFromRoot: 11, startBeat: 3.0,  durationBeats: 0.22, velocityScale: 0.8,  voicing: "single", graceBefore: -1 },
+    { semitonesFromRoot: 0,  startBeat: 0.00, durationBeats: 0.22, velocityScale: 0.75, voicing: "octaveUnison" },
+    { semitonesFromRoot: 3,  startBeat: 0.50, durationBeats: 0.22, velocityScale: 0.8,  voicing: "octaveUnison" },
+    { semitonesFromRoot: 5,  startBeat: 1.00, durationBeats: 0.22, velocityScale: 0.85, voicing: "octaveUnison" },
+    { semitonesFromRoot: 7,  startBeat: 1.25, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 5,  startBeat: 1.50, durationBeats: 0.22, velocityScale: 0.8,  voicing: "octaveUnison" },
+    { semitonesFromRoot: 7,  startBeat: 1.75, durationBeats: 0.22, velocityScale: 0.7,  voicing: "double5" },
+    { semitonesFromRoot: 7,  startBeat: 2.00, durationBeats: 0.4,  velocityScale: 0.9,  voicing: "octaveUnison" },
+    { semitonesFromRoot: 10, startBeat: 2.50, durationBeats: 0.4,  velocityScale: 0.85, voicing: "octaveUnison" },
+    { semitonesFromRoot: 11, startBeat: 3.00, durationBeats: 0.22, velocityScale: 0.8,  voicing: "single", graceBefore: -1 },
     { semitonesFromRoot: 12, startBeat: 3.25, durationBeats: 0.22, velocityScale: 0.9,  voicing: "octaveUnison" },
-    { semitonesFromRoot: 12, startBeat: 3.5,  durationBeats: 0.45, velocityScale: 1.0,  voicing: "octaveUnison" },
+    { semitonesFromRoot: 12, startBeat: 3.50, durationBeats: 0.45, velocityScale: 1.0,  voicing: "octaveUnison" },
   ]] },
-  // Chorus: 2 小節フレーズ (アンセム的なリフ)
-  //   bar 1 = 16 分チャギング + ブルー♭5 アクセント、
-  //   bar 2 = オクターブ下降→ダブルストップ→保持で締め
+  // [chord] Chorus: アンセム的にパワーコードを 8 分で押し出す + 16 分パームミュート
   chorus: { barsLength: 2, notesPerBar: [
-    [ // bar 1: 16 分連符のチャギング + ブルーノート
-      { semitonesFromRoot: 0,  startBeat: 0.00, durationBeats: 0.22, velocityScale: 0.95, voicing: "power" },
-      { semitonesFromRoot: 0,  startBeat: 0.25, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0,  startBeat: 0.50, durationBeats: 0.22, velocityScale: 0.85, voicing: "power" },
-      { semitonesFromRoot: 0,  startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0,  startBeat: 1.00, durationBeats: 0.22, velocityScale: 0.9,  voicing: "power" },
-      { semitonesFromRoot: 6,  startBeat: 1.25, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single", graceBefore: -1 }, // ♭5 ブルー
-      { semitonesFromRoot: 7,  startBeat: 1.50, durationBeats: 0.4,  velocityScale: 0.85, voicing: "double5" },
-      { semitonesFromRoot: 0,  startBeat: 2.00, durationBeats: 0.22, velocityScale: 0.95, voicing: "power" },
-      { semitonesFromRoot: 0,  startBeat: 2.25, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0,  startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.85, voicing: "power" },
-      { semitonesFromRoot: 5,  startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single" },
-      { semitonesFromRoot: 7,  startBeat: 3.00, durationBeats: 0.4,  velocityScale: 0.9,  voicing: "octaveUnison" },
-      { semitonesFromRoot: 10, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.95, voicing: "octaveUnison" },
+    [ // bar 1: 8 分でジャーン・ジャーン と支え、間にミュート
+      { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 0.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 1.00, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 1.50, durationBeats: 0.4,  velocityScale: 0.85, voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 2.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
     ],
-    [ // bar 2: 高音オクターブ下降 → ダブルストップ → パワーコード保持
-      { semitonesFromRoot: 12, startBeat: 0.00, durationBeats: 0.4,  velocityScale: 0.95, voicing: "octaveUnison" },
-      { semitonesFromRoot: 10, startBeat: 0.50, durationBeats: 0.4,  velocityScale: 0.8,  voicing: "octaveUnison" },
-      { semitonesFromRoot: 7,  startBeat: 1.00, durationBeats: 0.4,  velocityScale: 0.85, voicing: "octaveUnison" },
-      { semitonesFromRoot: 5,  startBeat: 1.50, durationBeats: 0.22, velocityScale: 0.7,  voicing: "double5", graceBefore: -1 },
-      { semitonesFromRoot: 3,  startBeat: 1.75, durationBeats: 0.22, velocityScale: 0.7,  voicing: "double3" },
-      // 後半はパワーコード保持で「ジャーン」と着地
-      { semitonesFromRoot: 0,  startBeat: 2.00, durationBeats: 1.4,  velocityScale: 1.0,  voicing: "power" },
-      { semitonesFromRoot: 0,  startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.75, voicing: "power" },
+    [ // bar 2: 後半はパワーコード保持で「ジャーン」と着地
+      { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 0.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
+      { semitonesFromRoot: 0, startBeat: 1.00, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 1.50, durationBeats: 0.4,  velocityScale: 0.85, voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 2.00, durationBeats: 1.4,  velocityScale: 1.0,  voicing: "power" },
+      { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.75, voicing: "power" },
     ],
   ]},
-  // Bridge: ペンタトニック・ライン + ハンマリング相当の grace (装飾) 多め
+  // [phrase] Bridge: ペンタトニック・ライン + grace (ハンマリング相当)
+  // single + double5 + octaveUnison のみ
   bridge: { barsLength: 2, notesPerBar: [
     [
       { semitonesFromRoot: 0,  startBeat: 0.00, durationBeats: 0.4,  velocityScale: 0.85, voicing: "single" },
@@ -1373,103 +1386,111 @@ const ROCK_RIFFS: Record<SectionKind, GuitarRiff> = {
       { semitonesFromRoot: 7,  startBeat: 0.75, durationBeats: 0.4,  velocityScale: 0.85, voicing: "double5" },
       { semitonesFromRoot: 5,  startBeat: 1.25, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single", graceBefore: -1 },
       { semitonesFromRoot: 3,  startBeat: 1.50, durationBeats: 0.22, velocityScale: 0.65, voicing: "single" },
-      { semitonesFromRoot: 0,  startBeat: 1.75, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
-      { semitonesFromRoot: 0,  startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0,  startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0,  startBeat: 3.00, durationBeats: 0.9,  velocityScale: 1.0,  voicing: "power" },
+      { semitonesFromRoot: 5,  startBeat: 1.75, durationBeats: 0.4,  velocityScale: 0.8,  voicing: "double5" },
+      { semitonesFromRoot: 7,  startBeat: 2.25, durationBeats: 0.4,  velocityScale: 0.85, voicing: "octaveUnison" },
+      { semitonesFromRoot: 10, startBeat: 2.75, durationBeats: 0.4,  velocityScale: 0.8,  voicing: "single", graceBefore: -1 },
+      { semitonesFromRoot: 12, startBeat: 3.00, durationBeats: 0.9,  velocityScale: 1.0,  voicing: "octaveUnison" },
     ],
   ]},
   break: EMPTY_RIFF,
+  // [chord] Outro: フェードアウト的に長いパワーコード保持 + ミュートで間を埋める
   outro: { barsLength: 1, notesPerBar: [[
-    // フェードアウト的に長いパワーコード + 装飾オクターブ
-    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 2.4, velocityScale: 0.7, voicing: "power" },
-    { semitonesFromRoot: 12, startBeat: 2.5, durationBeats: 0.4, velocityScale: 0.55, voicing: "octaveUnison", graceBefore: -1 },
-    { semitonesFromRoot: 0,  startBeat: 3.0, durationBeats: 0.9, velocityScale: 0.5, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 2.4, velocityScale: 0.7, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 2.5, durationBeats: 0.22, velocityScale: 0.5, voicing: "mute" },
+    { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.5, voicing: "mute" },
+    { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.9, velocityScale: 0.5, voicing: "power" },
   ]] },
 };
 
 /**
- * ポップス: カッティング + フックメロディ + ダブルストップ。
- *  - Verse: 16 分カッティング (stab = 極短コード) でファンク的な空間
- *  - PreChorus: 高音オクターブ・ホップで歌の盛り上がりを支える
- *  - Chorus: コードスタブ + ハイポジダブルストップでメロディ的なフック
- *  - Bridge: シンコペスタブ + 単音応答
+ * ポップス: カッティング/ストラム + フックメロディ。
+ *  [chord]  Intro/Verse/Chorus/Outro = full (ストラム) + stab (カッティング) のみ
+ *  [phrase] Pre-Chorus/Bridge = single + double5 + octaveUnison のフックメロディ
+ *
+ * 役割純化: 1 セクション内で voicing 集合を混在させない。
+ *   chord  → full, stab
+ *   phrase → single, double5, octaveUnison
  */
 const POP_RIFFS: Record<SectionKind, GuitarRiff> = {
+  // [chord] Intro: 軽い full ストラムを 2 拍頭に + 残響を空ける
   intro: { barsLength: 1, notesPerBar: [[
-    { semitonesFromRoot: 12, startBeat: 0.5, durationBeats: 0.3, velocityScale: 0.55, voicing: "double5", graceBefore: -1 },
-    { semitonesFromRoot: 7,  startBeat: 2.5, durationBeats: 0.3, velocityScale: 0.5,  voicing: "single" },
+    { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 1.6, velocityScale: 0.55, voicing: "full" },
+    { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 0.22, velocityScale: 0.5,  voicing: "stab" },
+    { semitonesFromRoot: 0, startBeat: 2.5, durationBeats: 0.22, velocityScale: 0.5,  voicing: "stab" },
+    { semitonesFromRoot: 0, startBeat: 3.5, durationBeats: 0.22, velocityScale: 0.55, voicing: "stab" },
   ]] },
-  // Verse: 16 分カッティング (stab) + 拍頭にコード stab、空間を多く残す
+  // [chord] Verse: 16 分カッティング (stab) + 拍頭に full ストラム、空間を多く残す
   verse: { barsLength: 2, notesPerBar: [
     [
-      { semitonesFromRoot: 0, startBeat: 0.0,  durationBeats: 0.18, velocityScale: 0.8,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 0.0,  durationBeats: 0.45, velocityScale: 0.85, voicing: "full" },
       { semitonesFromRoot: 0, startBeat: 0.75, durationBeats: 0.18, velocityScale: 0.45, voicing: "stab" },
-      { semitonesFromRoot: 0, startBeat: 1.0,  durationBeats: 0.22, velocityScale: 0.75, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 1.0,  durationBeats: 0.22, velocityScale: 0.7,  voicing: "stab" },
       { semitonesFromRoot: 0, startBeat: 1.75, durationBeats: 0.18, velocityScale: 0.5,  voicing: "stab" },
-      { semitonesFromRoot: 0, startBeat: 2.0,  durationBeats: 0.22, velocityScale: 0.8,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.0,  durationBeats: 0.45, velocityScale: 0.85, voicing: "full" },
       { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.18, velocityScale: 0.45, voicing: "stab" },
-      { semitonesFromRoot: 0, startBeat: 3.0,  durationBeats: 0.22, velocityScale: 0.75, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 3.0,  durationBeats: 0.22, velocityScale: 0.7,  voicing: "stab" },
       { semitonesFromRoot: 0, startBeat: 3.5,  durationBeats: 0.18, velocityScale: 0.5,  voicing: "stab" },
     ],
-    [ // bar 2: 上記 + 終盤に single の応答 (会話的)
-      { semitonesFromRoot: 0,  startBeat: 0.0,  durationBeats: 0.18, velocityScale: 0.8, voicing: "stab" },
-      { semitonesFromRoot: 0,  startBeat: 0.75, durationBeats: 0.18, velocityScale: 0.45, voicing: "stab" },
-      { semitonesFromRoot: 0,  startBeat: 1.0,  durationBeats: 0.22, velocityScale: 0.75, voicing: "stab" },
-      { semitonesFromRoot: 0,  startBeat: 2.0,  durationBeats: 0.22, velocityScale: 0.8, voicing: "stab" },
-      { semitonesFromRoot: 7,  startBeat: 2.5,  durationBeats: 0.22, velocityScale: 0.65, voicing: "single" },
-      { semitonesFromRoot: 9,  startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.7, voicing: "single" },
-      { semitonesFromRoot: 12, startBeat: 3.0,  durationBeats: 0.22, velocityScale: 0.85, voicing: "double5", graceBefore: -1 },
-      { semitonesFromRoot: 9,  startBeat: 3.5,  durationBeats: 0.22, velocityScale: 0.6, voicing: "single" },
+    [ // bar 2: ストラム回数を増やしてサビへ寄せる
+      { semitonesFromRoot: 0, startBeat: 0.0,  durationBeats: 0.45, velocityScale: 0.85, voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 0.75, durationBeats: 0.18, velocityScale: 0.45, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 1.0,  durationBeats: 0.22, velocityScale: 0.7,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 1.5,  durationBeats: 0.22, velocityScale: 0.6,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.0,  durationBeats: 0.45, velocityScale: 0.9,  voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 2.5,  durationBeats: 0.22, velocityScale: 0.7,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.18, velocityScale: 0.5,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 3.0,  durationBeats: 0.22, velocityScale: 0.75, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 3.5,  durationBeats: 0.45, velocityScale: 0.9,  voicing: "full" },
     ],
   ]},
-  // Pre-Chorus: オクターブの跳ね + 9th (14) で空気感を持ち上げる
+  // [phrase] Pre-Chorus: オクターブの跳ね + 9th (14) で空気感を持ち上げる
   preChorus: { barsLength: 1, notesPerBar: [[
     { semitonesFromRoot: 12, startBeat: 0.0, durationBeats: 0.4, velocityScale: 0.8,  voicing: "single" },
     { semitonesFromRoot: 7,  startBeat: 0.5, durationBeats: 0.4, velocityScale: 0.65, voicing: "single" },
     { semitonesFromRoot: 12, startBeat: 1.0, durationBeats: 0.4, velocityScale: 0.85, voicing: "octaveUnison" },
     { semitonesFromRoot: 14, startBeat: 1.5, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single", graceBefore: -1 },
     { semitonesFromRoot: 12, startBeat: 2.0, durationBeats: 0.4, velocityScale: 0.9,  voicing: "octaveUnison" },
-    { semitonesFromRoot: 7,  startBeat: 2.5, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single" },
-    { semitonesFromRoot: 14, startBeat: 3.0, durationBeats: 0.4, velocityScale: 0.95, voicing: "single" },
+    { semitonesFromRoot: 14, startBeat: 2.5, durationBeats: 0.4, velocityScale: 0.75, voicing: "double5" },
+    { semitonesFromRoot: 16, startBeat: 3.0, durationBeats: 0.4, velocityScale: 0.95, voicing: "single", graceBefore: -1 },
     { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.4, velocityScale: 0.85, voicing: "octaveUnison" },
   ]] },
-  // Chorus: 拍頭にコード、間にハイポジ・ダブルストップでフック (歌わせるリフ)
+  // [chord] Chorus: 拍頭に full ストラム + 間に 16 分 stab でフック (パワフルなバッキング)
   chorus: { barsLength: 2, notesPerBar: [
     [
-      { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.45, velocityScale: 0.95, voicing: "full" },
-      { semitonesFromRoot: 12, startBeat: 0.5, durationBeats: 0.22, velocityScale: 0.7,  voicing: "double5" },
-      { semitonesFromRoot: 14, startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.65, voicing: "single", graceBefore: -1 },
-      { semitonesFromRoot: 12, startBeat: 1.0, durationBeats: 0.4,  velocityScale: 0.85, voicing: "double5" },
-      { semitonesFromRoot: 9,  startBeat: 1.5, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "single" },
-      { semitonesFromRoot: 0,  startBeat: 2.0, durationBeats: 0.45, velocityScale: 0.95, voicing: "full" },
-      { semitonesFromRoot: 12, startBeat: 2.5, durationBeats: 0.22, velocityScale: 0.75, voicing: "double5" },
-      { semitonesFromRoot: 16, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.7, voicing: "single", graceBefore: -1 }, // メジャー3rd オクターブ上
-      { semitonesFromRoot: 14, startBeat: 3.0, durationBeats: 0.4,  velocityScale: 0.85, voicing: "double5" },
-      { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.4,  velocityScale: 0.75, voicing: "single" },
+      { semitonesFromRoot: 0, startBeat: 0.0,  durationBeats: 0.45, velocityScale: 0.95, voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 0.5,  durationBeats: 0.22, velocityScale: 0.7,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 0.75, durationBeats: 0.18, velocityScale: 0.55, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 1.0,  durationBeats: 0.45, velocityScale: 0.85, voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 1.5,  durationBeats: 0.22, velocityScale: 0.7,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.0,  durationBeats: 0.45, velocityScale: 0.95, voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 2.5,  durationBeats: 0.22, velocityScale: 0.7,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.18, velocityScale: 0.55, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 3.0,  durationBeats: 0.45, velocityScale: 0.85, voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 3.5,  durationBeats: 0.22, velocityScale: 0.75, voicing: "stab" },
     ],
-    [ // bar 2: アルペジオ的な単音応答 → コード保持
-      { semitonesFromRoot: 7,  startBeat: 0.0, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single" },
-      { semitonesFromRoot: 12, startBeat: 0.25, durationBeats: 0.22, velocityScale: 0.75, voicing: "single" },
-      { semitonesFromRoot: 16, startBeat: 0.5, durationBeats: 0.22, velocityScale: 0.8,  voicing: "single" },
-      { semitonesFromRoot: 19, startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.85, voicing: "single", graceBefore: -1 },
-      { semitonesFromRoot: 16, startBeat: 1.0, durationBeats: 0.4,  velocityScale: 0.85, voicing: "double5" },
-      { semitonesFromRoot: 12, startBeat: 1.5, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "double5" },
-      { semitonesFromRoot: 0,  startBeat: 2.0, durationBeats: 1.4,  velocityScale: 0.9,  voicing: "full" },
-      { semitonesFromRoot: 0,  startBeat: 3.5, durationBeats: 0.45, velocityScale: 0.7,  voicing: "full" },
+    [ // bar 2: 後半に full ストラムを長く伸ばして締める
+      { semitonesFromRoot: 0, startBeat: 0.0,  durationBeats: 0.45, velocityScale: 0.95, voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 0.5,  durationBeats: 0.22, velocityScale: 0.7,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 0.75, durationBeats: 0.18, velocityScale: 0.55, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 1.0,  durationBeats: 0.45, velocityScale: 0.85, voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 1.5,  durationBeats: 0.22, velocityScale: 0.7,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.0,  durationBeats: 1.4,  velocityScale: 0.9,  voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 3.5,  durationBeats: 0.45, velocityScale: 0.7,  voicing: "full" },
     ],
   ]},
-  // Bridge: シンコペスタブ + ハイポジ single
+  // [phrase] Bridge: ハイポジ single + double5 + オクターブの会話的フック
   bridge: { barsLength: 1, notesPerBar: [[
-    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.22, velocityScale: 0.85, voicing: "stab" },
-    { semitonesFromRoot: 12, startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single" },
-    { semitonesFromRoot: 0,  startBeat: 1.5, durationBeats: 0.22, velocityScale: 0.8,  voicing: "stab" },
-    { semitonesFromRoot: 14, startBeat: 2.0, durationBeats: 0.4,  velocityScale: 0.85, voicing: "double5", graceBefore: -1 },
-    { semitonesFromRoot: 0,  startBeat: 2.5, durationBeats: 0.22, velocityScale: 0.75, voicing: "stab" },
-    { semitonesFromRoot: 12, startBeat: 3.0, durationBeats: 0.4,  velocityScale: 0.8,  voicing: "double5" },
-    { semitonesFromRoot: 9,  startBeat: 3.5, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 12, startBeat: 0.0, durationBeats: 0.4, velocityScale: 0.85, voicing: "octaveUnison" },
+    { semitonesFromRoot: 14, startBeat: 0.5, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single", graceBefore: -1 },
+    { semitonesFromRoot: 12, startBeat: 1.0, durationBeats: 0.4, velocityScale: 0.8,  voicing: "double5" },
+    { semitonesFromRoot: 9,  startBeat: 1.5, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 14, startBeat: 2.0, durationBeats: 0.4, velocityScale: 0.85, voicing: "double5", graceBefore: -1 },
+    { semitonesFromRoot: 12, startBeat: 2.5, durationBeats: 0.4, velocityScale: 0.75, voicing: "single" },
+    { semitonesFromRoot: 16, startBeat: 3.0, durationBeats: 0.4, velocityScale: 0.9,  voicing: "octaveUnison", graceBefore: -1 },
+    { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.4, velocityScale: 0.8,  voicing: "single" },
   ]] },
   break: EMPTY_RIFF,
+  // [chord] Outro: 長い full ストラムを 2 回でフェードアウト
   outro: { barsLength: 1, notesPerBar: [[
     { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 1.8, velocityScale: 0.6, voicing: "full" },
     { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 1.8, velocityScale: 0.5, voicing: "full" },
@@ -1477,20 +1498,23 @@ const POP_RIFFS: Record<SectionKind, GuitarRiff> = {
 };
 
 /**
- * バラード: 繊細なアルペジオ + サビでフル和音の支え。
- *  - Verse: 8 分の上昇アルペジオ (root → 3 → 5 → octave)
- *  - PreChorus: 高音単音メロディ + 半音アプローチ
- *  - Chorus: フル和音 + アルペジオ + ハイポジ single でリリカル
- *  - Bridge: 静かな単音アルペジオ
+ * バラード: 繊細なアルペジオ/メロディ + サビでフル和音の支え。
+ *  [phrase] Intro/Verse/Pre-Chorus/Bridge = single + double5 のアルペジオ・メロディ
+ *  [chord]  Chorus/Outro = full ストラムのみ
+ *
+ * 役割純化: 1 セクション内で voicing 集合を混在させない。
+ *   chord  → full
+ *   phrase → single, double5
  */
 const BALLAD_RIFFS: Record<SectionKind, GuitarRiff> = {
+  // [phrase] Intro: 静かな単音アルペジオ (root → 5 → octave → 5)
   intro: { barsLength: 1, notesPerBar: [[
-    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.95, velocityScale: 0.4, voicing: "single" },
-    { semitonesFromRoot: 7,  startBeat: 1.0, durationBeats: 0.95, velocityScale: 0.4, voicing: "single" },
+    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.95, velocityScale: 0.4,  voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 1.0, durationBeats: 0.95, velocityScale: 0.4,  voicing: "single" },
     { semitonesFromRoot: 12, startBeat: 2.0, durationBeats: 0.95, velocityScale: 0.45, voicing: "single" },
-    { semitonesFromRoot: 7,  startBeat: 3.0, durationBeats: 0.95, velocityScale: 0.4, voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 3.0, durationBeats: 0.95, velocityScale: 0.4,  voicing: "single" },
   ]] },
-  // Verse: 8 分上昇アルペジオ
+  // [phrase] Verse: 8 分上昇アルペジオ
   verse: { barsLength: 1, notesPerBar: [[
     { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.45, velocityScale: 0.5,  voicing: "single" },
     { semitonesFromRoot: 7,  startBeat: 0.5, durationBeats: 0.45, velocityScale: 0.45, voicing: "single" },
@@ -1501,7 +1525,7 @@ const BALLAD_RIFFS: Record<SectionKind, GuitarRiff> = {
     { semitonesFromRoot: 12, startBeat: 3.0, durationBeats: 0.45, velocityScale: 0.5,  voicing: "single" },
     { semitonesFromRoot: 7,  startBeat: 3.5, durationBeats: 0.45, velocityScale: 0.45, voicing: "single" },
   ]] },
-  // Pre-Chorus: 高音メロディ + 半音アプローチ (grace) で歌の盛り上がりを誘導
+  // [phrase] Pre-Chorus: 高音メロディ + 半音アプローチ (grace) で歌の盛り上がりを誘導
   preChorus: { barsLength: 1, notesPerBar: [[
     { semitonesFromRoot: 12, startBeat: 0.0, durationBeats: 0.9, velocityScale: 0.55, voicing: "double5" },
     { semitonesFromRoot: 14, startBeat: 1.0, durationBeats: 0.4, velocityScale: 0.5,  voicing: "single", graceBefore: -1 },
@@ -1510,52 +1534,50 @@ const BALLAD_RIFFS: Record<SectionKind, GuitarRiff> = {
     { semitonesFromRoot: 14, startBeat: 2.5, durationBeats: 0.4, velocityScale: 0.55, voicing: "single" },
     { semitonesFromRoot: 19, startBeat: 3.0, durationBeats: 0.9, velocityScale: 0.65, voicing: "double5", graceBefore: -1 },
   ]] },
-  // Chorus: フル和音支え + ハイポジ・メロディ
+  // [chord] Chorus: フル和音支えのみ (リリカルなストラム保持)
   chorus: { barsLength: 2, notesPerBar: [
     [
-      { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 1.9, velocityScale: 0.6,  voicing: "full" },
-      { semitonesFromRoot: 12, startBeat: 2.0, durationBeats: 0.45, velocityScale: 0.55, voicing: "double5" },
-      { semitonesFromRoot: 16, startBeat: 2.5, durationBeats: 0.45, velocityScale: 0.5,  voicing: "single", graceBefore: -1 },
-      { semitonesFromRoot: 19, startBeat: 3.0, durationBeats: 0.9, velocityScale: 0.65, voicing: "double5" },
+      { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 1.9, velocityScale: 0.7,  voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 1.9, velocityScale: 0.65, voicing: "full" },
     ],
     [
-      { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.95, velocityScale: 0.6, voicing: "full" },
-      { semitonesFromRoot: 16, startBeat: 1.0, durationBeats: 0.45, velocityScale: 0.55, voicing: "single" },
-      { semitonesFromRoot: 14, startBeat: 1.5, durationBeats: 0.45, velocityScale: 0.5, voicing: "single" },
-      { semitonesFromRoot: 12, startBeat: 2.0, durationBeats: 0.95, velocityScale: 0.6, voicing: "double5" },
-      { semitonesFromRoot: 7,  startBeat: 3.0, durationBeats: 0.95, velocityScale: 0.5, voicing: "single" },
+      { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 1.9, velocityScale: 0.7,  voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 0.9, velocityScale: 0.6,  voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.9, velocityScale: 0.65, voicing: "full" },
     ],
   ]},
+  // [phrase] Bridge: 静かな単音アルペジオ
   bridge: { barsLength: 1, notesPerBar: [[
     { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.9, velocityScale: 0.45, voicing: "single" },
     { semitonesFromRoot: 5,  startBeat: 1.0, durationBeats: 0.9, velocityScale: 0.4,  voicing: "single", graceBefore: -1 },
-    { semitonesFromRoot: 7,  startBeat: 2.0, durationBeats: 0.9, velocityScale: 0.5,  voicing: "single" },
+    { semitonesFromRoot: 7,  startBeat: 2.0, durationBeats: 0.9, velocityScale: 0.5,  voicing: "double5" },
     { semitonesFromRoot: 12, startBeat: 3.0, durationBeats: 0.9, velocityScale: 0.55, voicing: "single", graceBefore: -1 },
   ]] },
   break: EMPTY_RIFF,
+  // [chord] Outro: 長い full 1 発で締める
   outro: { barsLength: 1, notesPerBar: [[
     { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 3.8, velocityScale: 0.4, voicing: "full" },
   ]] },
 };
 
 /**
- * ジャズ: Freddie Green 4 ビートコンプ + ウォーキングライン + コードスタブ。
- *  - Intro: 軽い 4 ビートで導入
- *  - Verse: 4 拍コンプ (1, 2, 3, 4 全てに stab) を緩く、シンコペ stab を後半に
- *  - PreChorus: ウォーキング単音 (root-3-5-6) + クロマチック・アプローチ
- *  - Chorus: 2 小節フレーズ — bar1 = 4 ビート comp + ハイポジ応答、
- *           bar2 = ビバップ的なシンコペ + 13th / ♭9 アプローチ
- *  - Bridge: コード stab + 半音/全音アプローチ
- *  - Outro: 締めの長 full
+ * ジャズ: Freddie Green 4 ビートコンプ + ウォーキング/ビバップライン。
+ *  [chord]  Intro/Verse/Chorus/Outro = stab + full のみ (4 ビートコンプ)
+ *  [phrase] Pre-Chorus/Bridge = single のみ (ウォーキング/ビバップライン)
+ *
+ * 役割純化: 1 セクション内で voicing 集合を混在させない。
+ *   chord  → stab, full
+ *   phrase → single
  */
 const JAZZ_RIFFS: Record<SectionKind, GuitarRiff> = {
+  // [chord] Intro: 軽い 4 ビート stab で導入
   intro: { barsLength: 1, notesPerBar: [[
     { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 0.35, velocityScale: 0.45, voicing: "stab" },
     { semitonesFromRoot: 0, startBeat: 1.0, durationBeats: 0.35, velocityScale: 0.4,  voicing: "stab" },
     { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 0.35, velocityScale: 0.45, voicing: "stab" },
     { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.35, velocityScale: 0.5,  voicing: "stab" },
   ]] },
-  // Verse: 4 ビートの Freddie Green コンプ (各拍に短いコード)。後半にシンコペ stab。
+  // [chord] Verse: Freddie Green 4 ビート (各拍に短い stab)。bar2 にシンコペ + 拍頭の full アクセント
   verse: { barsLength: 2, notesPerBar: [
     [
       { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
@@ -1563,61 +1585,57 @@ const JAZZ_RIFFS: Record<SectionKind, GuitarRiff> = {
       { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
       { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.32, velocityScale: 0.5,  voicing: "stab" },
     ],
-    [ // bar 2: 3 拍目裏にシンコペ stab、4 拍目に半音上のアプローチ single
-      { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
-      { semitonesFromRoot: 0,  startBeat: 1.0, durationBeats: 0.32, velocityScale: 0.45, voicing: "stab" },
-      { semitonesFromRoot: 0,  startBeat: 2.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
-      { semitonesFromRoot: 0,  startBeat: 2.5, durationBeats: 0.32, velocityScale: 0.5,  voicing: "stab" }, // シンコペ
-      { semitonesFromRoot: 11, startBeat: 3.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "single", graceBefore: -1 },
-      { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.32, velocityScale: 0.6,  voicing: "single" },
+    [ // bar 2: 1 拍目に full アクセント + 3 拍裏にシンコペ stab
+      { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 0.4,  velocityScale: 0.65, voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 1.0, durationBeats: 0.32, velocityScale: 0.45, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.5, durationBeats: 0.32, velocityScale: 0.5,  voicing: "stab" }, // シンコペ
+      { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 3.5, durationBeats: 0.32, velocityScale: 0.5,  voicing: "stab" }, // シンコペ
     ],
   ]},
-  // Pre-Chorus: ウォーキング単音 (root-3-5-6) + 各拍頭に軽い stab
+  // [phrase] Pre-Chorus: ウォーキング/ビバップ単音 — single のみ
+  // root → 3 → 5 → 6 → 7 → octave → 9 → 10 でコードトーン + クロマチック上昇
   preChorus: { barsLength: 1, notesPerBar: [[
-    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
-    { semitonesFromRoot: 4,  startBeat: 0.5, durationBeats: 0.4,  velocityScale: 0.65, voicing: "single", graceBefore: -1 },
-    { semitonesFromRoot: 7,  startBeat: 1.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
-    { semitonesFromRoot: 9,  startBeat: 1.5, durationBeats: 0.4,  velocityScale: 0.65, voicing: "single" },
-    { semitonesFromRoot: 11, startBeat: 2.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
-    { semitonesFromRoot: 12, startBeat: 2.5, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "single", graceBefore: -1 },
-    { semitonesFromRoot: 14, startBeat: 3.0, durationBeats: 0.32, velocityScale: 0.6,  voicing: "stab" },
-    { semitonesFromRoot: 16, startBeat: 3.5, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.4, velocityScale: 0.55, voicing: "single" },
+    { semitonesFromRoot: 4,  startBeat: 0.5, durationBeats: 0.4, velocityScale: 0.65, voicing: "single", graceBefore: -1 },
+    { semitonesFromRoot: 7,  startBeat: 1.0, durationBeats: 0.4, velocityScale: 0.6,  voicing: "single" },
+    { semitonesFromRoot: 9,  startBeat: 1.5, durationBeats: 0.4, velocityScale: 0.65, voicing: "single" },
+    { semitonesFromRoot: 11, startBeat: 2.0, durationBeats: 0.4, velocityScale: 0.6,  voicing: "single", graceBefore: -1 },
+    { semitonesFromRoot: 12, startBeat: 2.5, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single" },
+    { semitonesFromRoot: 14, startBeat: 3.0, durationBeats: 0.4, velocityScale: 0.65, voicing: "single" },
+    { semitonesFromRoot: 16, startBeat: 3.5, durationBeats: 0.4, velocityScale: 0.7,  voicing: "single", graceBefore: -1 },
   ]] },
-  // Chorus: 2 小節 — bar1 = 4 ビートコンプ + ハイポジ応答、bar2 = ビバップ的シンコペ
+  // [chord] Chorus: 2 小節 — bar1 = 4 ビート stab コンプ、bar2 = ビバップシンコペ + full アクセント
   chorus: { barsLength: 2, notesPerBar: [
     [
-      { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.32, velocityScale: 0.6,  voicing: "stab" },
-      { semitonesFromRoot: 12, startBeat: 0.5, durationBeats: 0.3,  velocityScale: 0.55, voicing: "single" },
-      { semitonesFromRoot: 0,  startBeat: 1.0, durationBeats: 0.32, velocityScale: 0.5,  voicing: "stab" },
-      { semitonesFromRoot: 14, startBeat: 1.5, durationBeats: 0.3,  velocityScale: 0.6,  voicing: "single", graceBefore: -1 }, // 9th
-      { semitonesFromRoot: 0,  startBeat: 2.0, durationBeats: 0.32, velocityScale: 0.6,  voicing: "stab" },
-      { semitonesFromRoot: 16, startBeat: 2.5, durationBeats: 0.3,  velocityScale: 0.65, voicing: "single" }, // メジャー3 上
-      { semitonesFromRoot: 0,  startBeat: 3.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
-      { semitonesFromRoot: 19, startBeat: 3.5, durationBeats: 0.3,  velocityScale: 0.7,  voicing: "single", graceBefore: -1 }, // 5度オクターブ
+      { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 1.0, durationBeats: 0.32, velocityScale: 0.5,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 0.4,  velocityScale: 0.65, voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" },
     ],
-    [ // bar 2: ビバップシンコペ — 4 ビートコンプを崩しつつ ♭9/13 アプローチ
-      { semitonesFromRoot: 0,  startBeat: 0.0, durationBeats: 0.32, velocityScale: 0.6,  voicing: "full" },
-      { semitonesFromRoot: 13, startBeat: 0.5, durationBeats: 0.25, velocityScale: 0.55, voicing: "single" }, // ♭9
-      { semitonesFromRoot: 12, startBeat: 0.75, durationBeats: 0.25, velocityScale: 0.55, voicing: "single" },
-      { semitonesFromRoot: 0,  startBeat: 1.25, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" }, // シンコペ
-      { semitonesFromRoot: 0,  startBeat: 2.0, durationBeats: 0.32, velocityScale: 0.6,  voicing: "stab" },
-      { semitonesFromRoot: 9,  startBeat: 2.5, durationBeats: 0.25, velocityScale: 0.55, voicing: "single" }, // 13
-      { semitonesFromRoot: 10, startBeat: 2.75, durationBeats: 0.25, velocityScale: 0.55, voicing: "single", graceBefore: -1 }, // ♭7
-      { semitonesFromRoot: 0,  startBeat: 3.0, durationBeats: 0.9,  velocityScale: 0.7,  voicing: "full" },
+    [ // bar 2: 1 拍目に full + シンコペ stab を散りばめて 4 拍目に full で着地
+      { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "full" },
+      { semitonesFromRoot: 0, startBeat: 1.0, durationBeats: 0.32, velocityScale: 0.5,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 1.5, durationBeats: 0.32, velocityScale: 0.5,  voicing: "stab" }, // シンコペ
+      { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 0.32, velocityScale: 0.6,  voicing: "stab" },
+      { semitonesFromRoot: 0, startBeat: 2.5, durationBeats: 0.32, velocityScale: 0.55, voicing: "stab" }, // シンコペ
+      { semitonesFromRoot: 0, startBeat: 3.0, durationBeats: 0.9,  velocityScale: 0.75, voicing: "full" },
     ],
   ]},
-  // Bridge: コード stab + 半音/全音アプローチでテンションを上げる
+  // [phrase] Bridge: ビバップライン — single のみで半音/全音アプローチを多用
   bridge: { barsLength: 1, notesPerBar: [[
     { semitonesFromRoot: -1, startBeat: 0.0, durationBeats: 0.32, velocityScale: 0.6,  voicing: "single" },
-    { semitonesFromRoot: 0,  startBeat: 0.5, durationBeats: 0.35, velocityScale: 0.7,  voicing: "stab" },
+    { semitonesFromRoot: 0,  startBeat: 0.5, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "single" },
     { semitonesFromRoot: 5,  startBeat: 1.0, durationBeats: 0.3,  velocityScale: 0.6,  voicing: "single", graceBefore: -1 },
     { semitonesFromRoot: 6,  startBeat: 1.5, durationBeats: 0.3,  velocityScale: 0.6,  voicing: "single" },
-    { semitonesFromRoot: 7,  startBeat: 2.0, durationBeats: 0.35, velocityScale: 0.7,  voicing: "stab" },
+    { semitonesFromRoot: 7,  startBeat: 2.0, durationBeats: 0.4,  velocityScale: 0.7,  voicing: "single" },
     { semitonesFromRoot: 10, startBeat: 2.5, durationBeats: 0.3,  velocityScale: 0.65, voicing: "single" },
     { semitonesFromRoot: 11, startBeat: 3.0, durationBeats: 0.3,  velocityScale: 0.65, voicing: "single", graceBefore: -1 },
-    { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.35, velocityScale: 0.75, voicing: "full" },
+    { semitonesFromRoot: 12, startBeat: 3.5, durationBeats: 0.4,  velocityScale: 0.75, voicing: "single" },
   ]] },
   break: EMPTY_RIFF,
+  // [chord] Outro: 締めの長 full
   outro: { barsLength: 1, notesPerBar: [[
     { semitonesFromRoot: 0, startBeat: 0.0, durationBeats: 1.8, velocityScale: 0.55, voicing: "full" },
     { semitonesFromRoot: 0, startBeat: 2.0, durationBeats: 1.8, velocityScale: 0.45, voicing: "full" },
@@ -1673,6 +1691,14 @@ function generateGuitarLayer(
     const riff = GUITAR_RIFF_LIBRARY[style][sec.kind] ?? EMPTY_RIFF;
     const barNotes = riff.notesPerBar[barInSec % riff.barsLength];
 
+    // セクションの役割 (chord = バッキング / phrase = リード) に応じて
+    // ヒューマナイズを微妙に変える:
+    //   phrase 役 → 少しレガート + タイミング揺らぎ大きめ (歌う)
+    //   chord  役 → 少しタイト + タイミング揺らぎ小さめ (刻む)
+    const role = GUITAR_ROLE[style][sec.kind];
+    const roleDurMul = role === "phrase" ? 1.05 : 0.98;
+    const roleJitterMul = role === "phrase" ? 1.25 : 0.9;
+
     for (const n of barNotes) {
       const baseMidiForNote = root + n.semitonesFromRoot;
       let pitches: number[];
@@ -1720,10 +1746,11 @@ function generateGuitarLayer(
       }
 
       // 微妙な timing / velocity ジッタで人間味を出す (±5ms / ±6%)
-      const tJitter = (rng() - 0.5) * 0.010; // 秒
+      // role に応じてジッタ幅とレガート量を微調整
+      const tJitter = (rng() - 0.5) * 0.010 * roleJitterMul; // 秒
       const vJitter = 1 + (rng() - 0.5) * 0.12;
       const startSec = barStart + n.startBeat * beatSec + tJitter;
-      const durationSec = Math.max(0.04, n.durationBeats * beatSec * durMul);
+      const durationSec = Math.max(0.04, n.durationBeats * beatSec * durMul * roleDurMul);
       const vel = Math.max(0.18, Math.min(1, vel0 * n.velocityScale * velMul * vJitter));
 
       // graceBefore: 開始 1/16 拍前に半音 ±1 のアプローチノートを 1 つ前置く
