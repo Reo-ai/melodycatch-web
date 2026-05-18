@@ -470,6 +470,14 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const progressionTimersRef = useRef<number[]>([]);
   const drumPadRef = useRef<DrumPadHandle | null>(null);
   const autoComposeRef = useRef<AutoComposeSession | null>(null);
+  // 自動作曲中のノート書き込みバッファ。
+  // per-note setState だと 1000+ ノートで再描画が爆発するため、
+  // レイヤーごとにバッファに溜めて 100ms ごとに 1 回だけ setState する。
+  const autoComposeBufferRef = useRef<Record<LayerId, NoteEvent[]>>({
+    melody: [], chord: [], bass: [], drum: [], synth: [],
+    guitar: [], acoustic: [], vocal: [], drumAcoustic: [], fx: [],
+  });
+  const autoComposeFlushTimerRef = useRef<number | null>(null);
 
   // ---- stale closure 対策: 常に最新の state/armed を参照する ref ---------
   const stateRef = useRef<ArmState>("idle");
@@ -1746,31 +1754,64 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     setAutoComposing(true);
     setAutoComposeProgress({ pct: 0, bar: 1, totalBars: song.chords.length });
 
+    // バッファに溜まったノートをレイヤーごとに 1 回 の setState で flush。
+    // 何も入っていないレイヤーは setState 自体しない (= 不要な再描画なし)。
+    const flushAutoComposeBuffer = () => {
+      const buf = autoComposeBufferRef.current;
+      const drain = (layerId: LayerId): NoteEvent[] => {
+        const taken = buf[layerId];
+        if (taken.length === 0) return [];
+        buf[layerId] = [];
+        return taken;
+      };
+      const apply = (
+        setter: React.Dispatch<React.SetStateAction<Layer>>,
+        batch: NoteEvent[],
+      ) => {
+        if (batch.length === 0) return;
+        setter((cur) => ({ ...cur, notes: [...cur.notes, ...batch] }));
+      };
+      apply(setMelody, drain("melody"));
+      apply(setChord, drain("chord"));
+      apply(setBass, drain("bass"));
+      apply(setDrum, drain("drum"));
+      apply(setSynth, drain("synth"));
+      apply(setGuitar, drain("guitar"));
+      apply(setAcoustic, drain("acoustic"));
+      apply(setVocal, drain("vocal"));
+      apply(setDrumAcoustic, drain("drumAcoustic"));
+      apply(setFx, drain("fx"));
+    };
+
+    const stopAutoComposeFlush = () => {
+      if (autoComposeFlushTimerRef.current !== null) {
+        window.clearInterval(autoComposeFlushTimerRef.current);
+        autoComposeFlushTimerRef.current = null;
+      }
+    };
+
+    // 既に走っている flush timer があれば止めてから開始 (二重起動防止)
+    stopAutoComposeFlush();
+    autoComposeFlushTimerRef.current = window.setInterval(
+      flushAutoComposeBuffer,
+      100,
+    ) as unknown as number;
+
     const session = new AutoComposeSession(
       song,
       {
         onAddNote: (layerId, note) => {
-          const append = (cur: Layer): Layer => ({
-            ...cur,
-            notes: [...cur.notes, note],
-          });
-          switch (layerId) {
-            case "melody": setMelody(append); break;
-            case "chord": setChord(append); break;
-            case "bass": setBass(append); break;
-            case "drum": setDrum(append); break;
-            case "synth": setSynth(append); break;
-            case "guitar": setGuitar(append); break;
-            case "acoustic": setAcoustic(append); break;
-            case "vocal": setVocal(append); break;
-            case "drumAcoustic": setDrumAcoustic(append); break;
-            case "fx": setFx(append); break;
-          }
+          // バッファに push するだけ。実際の setState は 100ms ごとの flush で
+          // まとめて 1 回だけ行う (per-note 再描画を 1000+ 回 → 数十回に削減)。
+          autoComposeBufferRef.current[layerId].push(note);
         },
         onProgress: (pct, bar) => {
           setAutoComposeProgress({ pct, bar, totalBars: song.chords.length });
         },
         onComplete: () => {
+          // 残りバッファを書き出してから timer を止める
+          flushAutoComposeBuffer();
+          stopAutoComposeFlush();
           setAutoComposing(false);
           autoComposeRef.current = null;
           // 終了時に念のため全エンジン解放
@@ -1792,6 +1833,35 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (autoComposeRef.current) {
       autoComposeRef.current.stop();
       autoComposeRef.current = null;
+    }
+    // 中断時もバッファ残りを flush してから timer を止める
+    const buf = autoComposeBufferRef.current;
+    const drain = (layerId: LayerId): NoteEvent[] => {
+      const taken = buf[layerId];
+      if (taken.length === 0) return [];
+      buf[layerId] = [];
+      return taken;
+    };
+    const apply = (
+      setter: React.Dispatch<React.SetStateAction<Layer>>,
+      batch: NoteEvent[],
+    ) => {
+      if (batch.length === 0) return;
+      setter((cur) => ({ ...cur, notes: [...cur.notes, ...batch] }));
+    };
+    apply(setMelody, drain("melody"));
+    apply(setChord, drain("chord"));
+    apply(setBass, drain("bass"));
+    apply(setDrum, drain("drum"));
+    apply(setSynth, drain("synth"));
+    apply(setGuitar, drain("guitar"));
+    apply(setAcoustic, drain("acoustic"));
+    apply(setVocal, drain("vocal"));
+    apply(setDrumAcoustic, drain("drumAcoustic"));
+    apply(setFx, drain("fx"));
+    if (autoComposeFlushTimerRef.current !== null) {
+      window.clearInterval(autoComposeFlushTimerRef.current);
+      autoComposeFlushTimerRef.current = null;
     }
     setAutoComposing(false);
     setAutoComposeProgress(null);
