@@ -317,6 +317,12 @@ export default function PianoRoll({
   const pxPerSec = BASE_pxPerSec * zoomX;
   const rowHeight = BASE_rowHeight * zoomY;
 
+  // ビューポート (可視 X 範囲) を 200px バケットに丸めて保持。
+  // スクロール時に rAF で計測し、バケット境界を跨いだ時のみ setState する。
+  // これで culling のオーバーヘッド (毎フレーム setState) を回避しつつ、
+  // 画面外のノート (数千個になり得る) を SVG DOM から省いて描画コストを下げる。
+  const [viewportPx, setViewportPx] = useState<{ left: number; right: number } | null>(null);
+
   // 編集モードを抜けたら選択クリア
   useEffect(() => {
     if (!editMode) {
@@ -331,6 +337,40 @@ export default function PianoRoll({
       scrollRef.current.scrollLeft = 0;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ビューポート計測 (culling 用)。
+  // - scroll / resize を rAF で coalesce
+  // - 200px バケットに丸め、バケットが変わったときだけ setState
+  //   → スクロール中もほとんど re-render を起こさず、節境界を跨いだ時だけ更新
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const BUCKET = 200;
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const e = scrollRef.current;
+      if (!e) return;
+      const left = Math.floor(e.scrollLeft / BUCKET) * BUCKET;
+      const right = Math.ceil((e.scrollLeft + e.clientWidth) / BUCKET) * BUCKET;
+      setViewportPx((cur) => {
+        if (cur && cur.left === left && cur.right === right) return cur;
+        return { left, right };
+      });
+    };
+    const schedule = () => {
+      if (raf !== 0) return;
+      raf = requestAnimationFrame(measure);
+    };
+    measure();
+    el.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    return () => {
+      if (raf !== 0) cancelAnimationFrame(raf);
+      el.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+    };
   }, []);
 
   /** ズーム適用 (X)。anchorClientX を中心に拡大して、スクロール位置を補正。 */
@@ -994,6 +1034,16 @@ export default function PianoRoll({
     return selection.has(selKey(layerId, index));
   }
 
+  /** ノートが現在の可視範囲 (viewportPx) に交差していれば true。
+   *  viewportPx が未計測の初回フレームは安全側で全描画。
+   *  既に 200px バケットに余白が乗っているのでマージン追加は不要。 */
+  function isNoteVisible(startSec: number, durationSec: number): boolean {
+    if (!viewportPx) return true;
+    const noteLeft = startSec * pxPerSec;
+    const noteRight = (startSec + durationSec) * pxPerSec;
+    return noteRight >= viewportPx.left && noteLeft <= viewportPx.right;
+  }
+
   function renderPitchNote(
     layerId: LayerId,
     n: { midi: number; startSec: number; durationSec: number },
@@ -1564,8 +1614,9 @@ export default function PianoRoll({
                 </text>
               ))}
 
-          {/* ドラムノート */}
+          {/* ドラムノート (viewport culling: 画面外はスキップ) */}
           {drum.notes.map((n, i) => {
+            if (!isNoteVisible(n.startSec, n.durationSec)) return null;
             const kind = drumKindOf(n.midi);
             if (!kind) return null;
             const lane = DRUM_LANES.find((l) => l.kind === kind);
@@ -1611,10 +1662,12 @@ export default function PianoRoll({
             );
           })}
 
-          {/* pitch 帯ノート (背面〜前面の順に重ねる) */}
+          {/* pitch 帯ノート (背面〜前面の順に重ねる)。viewport culling 適用 */}
           {layers.map(({ id, layer, color, opacity }) =>
             layer.notes.map((n, i) =>
-              renderPitchNote(id, n, i, color, opacity),
+              isNoteVisible(n.startSec, n.durationSec)
+                ? renderPitchNote(id, n, i, color, opacity)
+                : null,
             ),
           )}
 
