@@ -321,3 +321,155 @@ export function guitarReleaseAll(): void {
     v.triggerRelease();
   }
 }
+
+// ===========================================================================
+// リードギター (2 本目) 用の並列チェーン
+// ---------------------------------------------------------------------------
+// バンド演奏で「クリーン + ディストーション」「バッキング + リード」のように
+// 2 本のギターを同時に鳴らすため、独立した内部チェーン + ボイスプールを用意する。
+// プライマリ (上の API) は手動演奏 + バッキング兼用。
+// このリードチャネルは自動作曲のリードパート再生専用。
+// ===========================================================================
+
+let currentLeadGuitarType: GuitarType = "clean";
+
+let leadReverb: Tone.Reverb | null = null;
+let leadChorus: Tone.Chorus | null = null;
+let leadLowpass: Tone.Filter | null = null;
+let leadMidPeak: Tone.Filter | null = null;
+let leadBodyPeak: Tone.Filter | null = null;
+let leadHighpass: Tone.Filter | null = null;
+let leadChebyshev: Tone.Chebyshev | null = null;
+let leadDistortion: Tone.Distortion | null = null;
+let leadPreGain: Tone.Gain | null = null;
+let leadGain: Tone.Gain | null = null;
+let leadVoices: Tone.PluckSynth[] = [];
+let leadVoiceCursor = 0;
+
+function disposeLeadGuitarInternal(): void {
+  for (const v of leadVoices) {
+    try { v.triggerRelease(); } catch { /* noop */ }
+    v.dispose();
+  }
+  leadVoices = [];
+  leadPreGain?.dispose();
+  leadDistortion?.dispose();
+  leadChebyshev?.dispose();
+  leadHighpass?.dispose();
+  leadBodyPeak?.dispose();
+  leadMidPeak?.dispose();
+  leadLowpass?.dispose();
+  leadChorus?.dispose();
+  leadGain?.dispose();
+  leadReverb?.dispose();
+  leadPreGain = null;
+  leadDistortion = null;
+  leadChebyshev = null;
+  leadHighpass = null;
+  leadBodyPeak = null;
+  leadMidPeak = null;
+  leadLowpass = null;
+  leadChorus = null;
+  leadGain = null;
+  leadReverb = null;
+}
+
+export function setLeadGuitarType(type: GuitarType): void {
+  if (type === currentLeadGuitarType && leadVoices.length > 0) return;
+  disposeLeadGuitarInternal();
+  currentLeadGuitarType = type;
+}
+
+export function getLeadGuitarType(): GuitarType {
+  return currentLeadGuitarType;
+}
+
+function ensureLeadGuitar() {
+  if (leadVoices.length > 0) return;
+
+  if (currentLeadGuitarType === "distortion") {
+    // リード用ディストーション: バッキングより少し明るめ、リバーブやや深め
+    leadReverb = new Tone.Reverb({ decay: 1.8, wet: 0.22 }).toDestination();
+    leadGain = new Tone.Gain(0.5).connect(leadReverb);
+    leadChorus = new Tone.Chorus({
+      frequency: 1.1,
+      delayTime: 2.2,
+      depth: 0.2,
+      wet: 0.15,
+    }).connect(leadGain).start();
+    leadLowpass = new Tone.Filter({ frequency: 5400, type: "lowpass", Q: 0.6, rolloff: -24 }).connect(leadChorus);
+    // リード用に中域をもう少し前に出す
+    leadMidPeak = new Tone.Filter({ frequency: 1700, type: "peaking", Q: 1.0, gain: 6 }).connect(leadLowpass);
+    leadHighpass = new Tone.Filter({ frequency: 130, type: "highpass" }).connect(leadMidPeak);
+    leadChebyshev = new Tone.Chebyshev({ order: 14, wet: 0.55 }).connect(leadHighpass);
+    leadDistortion = new Tone.Distortion({ distortion: 0.78, oversample: "4x", wet: 1.0 }).connect(leadChebyshev);
+    leadPreGain = new Tone.Gain(1.9).connect(leadDistortion);
+
+    for (let i = 0; i < VOICE_COUNT; i++) {
+      const v = new Tone.PluckSynth({
+        attackNoise: 1.6,
+        dampening: 4500,
+        resonance: 0.975,
+        release: 0.7,
+      });
+      v.volume.value = -2;
+      v.connect(leadPreGain);
+      leadVoices.push(v);
+    }
+  } else {
+    // リード用クリーン: コーラスを深めに、リバーブも深めにして "歌う" 雰囲気
+    leadReverb = new Tone.Reverb({ decay: 2.6, wet: 0.3 }).toDestination();
+    leadGain = new Tone.Gain(0.6).connect(leadReverb);
+    leadChorus = new Tone.Chorus({
+      frequency: 0.55,
+      delayTime: 3.5,
+      depth: 0.4,
+      wet: 0.25,
+    }).connect(leadGain).start();
+    leadLowpass = new Tone.Filter({ frequency: 7800, type: "lowpass", Q: 0.5, rolloff: -24 }).connect(leadChorus);
+    leadMidPeak = new Tone.Filter({ frequency: 2000, type: "peaking", Q: 0.9, gain: 2 }).connect(leadLowpass);
+    leadBodyPeak = new Tone.Filter({ frequency: 220, type: "peaking", Q: 1.0, gain: 1.5 }).connect(leadMidPeak);
+    leadHighpass = new Tone.Filter({ frequency: 90, type: "highpass" }).connect(leadBodyPeak);
+
+    for (let i = 0; i < VOICE_COUNT; i++) {
+      const v = new Tone.PluckSynth({
+        attackNoise: 1.3,
+        dampening: 4800,
+        resonance: 0.98,
+        release: 0.9,
+      });
+      v.volume.value = -1;
+      v.connect(leadHighpass);
+      leadVoices.push(v);
+    }
+  }
+}
+
+function nextLeadVoice(): Tone.PluckSynth {
+  const v = leadVoices[leadVoiceCursor];
+  leadVoiceCursor = (leadVoiceCursor + 1) % leadVoices.length;
+  return v;
+}
+
+/**
+ * リードギター: 自動作曲のスケジューラから 1 音ずつ発音する。
+ * バッキング側 (guitarTriggerNote) と独立した音色チェーンで鳴る。
+ */
+export function leadGuitarTriggerNote(
+  midi: number,
+  durationSec: number,
+  velocity = 0.85,
+  time?: number,
+): void {
+  ensureLeadGuitar();
+  const v = nextLeadVoice();
+  v.volume.value =
+    (currentLeadGuitarType === "clean" ? -1 : -2) + (clamp01(velocity) - 0.85) * 8;
+  v.triggerAttackRelease(midiToNoteString(midi), Math.max(0.05, durationSec), time);
+}
+
+export function leadGuitarReleaseAll(): void {
+  for (const v of leadVoices) {
+    try { v.triggerRelease(); } catch { /* noop */ }
+  }
+}

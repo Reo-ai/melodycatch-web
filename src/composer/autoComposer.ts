@@ -82,6 +82,26 @@ export const COMPOSER_STYLE_LABEL_JA: Record<ComposerStyle, string> = {
   jazz: "ジャズ",
 };
 
+/**
+ * ギターのボイシング指定 (Verse 等の "chord 役" セクションの弾き方を強制する)。
+ *   - "auto"       : style/section ごとの自然な振り分けに任せる (デフォルト)
+ *   - "lead"       : リード (single-note ペンタトニック・フレーズ) に強制
+ *   - "powerChord" : 開放パワーコード 8 分連打 (ジャンジャン…)
+ *   - "palmMute"   : ブリッジミュート・パワーコード 8 分連打 (ズクズク…)
+ *
+ * "auto" の場合は style の既定 (例: rock の verse = palmMute, chorus = power) を尊重。
+ * それ以外の場合、verse / preChorus / chorus / outro 等の "chord 役" セクションを
+ * 指定の voicing で上書きする (intro/bridge/break は元のまま)。
+ */
+export type GuitarVoicingStyle = "auto" | "lead" | "powerChord" | "palmMute";
+
+export const GUITAR_VOICING_STYLE_LABEL_JA: Record<GuitarVoicingStyle, string> = {
+  auto: "おまかせ",
+  lead: "リード",
+  powerChord: "パワーコード",
+  palmMute: "ブリッジミュート",
+};
+
 export interface AutoComposeOptions {
   scale: Scale;
   bpm: number;
@@ -90,6 +110,8 @@ export interface AutoComposeOptions {
   style: ComposerStyle;
   /** 同じ seed なら同じ曲が生成される。省略時は時刻ベース。 */
   seed?: number;
+  /** ギターのボイシング指定 (Verse 等の弾き方を強制)。省略時は "auto"。 */
+  guitarVoicing?: GuitarVoicingStyle;
   includeMelody?: boolean;
   includeChord?: boolean;
   includeBass?: boolean;
@@ -121,6 +143,17 @@ export type SectionKind =
   | "break"
   | "outro";
 
+/**
+ * ロックのイントロ展開パターン。同じイントロでも 3 種類のドラマ性を作り分けるためにある。
+ *   - "vocalLed"             : ヴォーカル先行型。先発はベース + ハイハットのみ。
+ *                              後半でバンド全部 IN。歌に焦点を当てる入り方。
+ *   - "riffLed"              : リフ先行型 (邦ロック王道)。先発からエレキのパームミュート
+ *                              リフが走り、ドラム/ベースは半分のところで一気に IN。
+ *   - "cleanArpDistortion"   : 静→動展開。先発はクリーンギターのアルペジオで静かに。
+ *                              後半で歪みリフ + バンド IN (ONE OK ROCK Mighty Long Fall 型)。
+ */
+export type RockIntroPattern = "vocalLed" | "riffLed" | "cleanArpDistortion";
+
 export interface SongSection {
   kind: SectionKind;
   startBar: number; // inclusive
@@ -133,6 +166,28 @@ export interface SongSection {
    * 0 のときは転調なし。
    */
   keyOffsetSemitones: number;
+  /**
+   * (rock + intro 限定) イントロの 3 種類の展開パターン。planSections で
+   * シードに基づき割り当てる。各レイヤー生成器はこれを読んで preEntry / bandEntry
+   * 期 (前半/後半) で挙動を切り替える。
+   */
+  rockIntroPattern?: RockIntroPattern;
+}
+
+/**
+ * イントロ section 内で、いま preEntry (前半=助走) か bandEntry (後半=突入) かを返す。
+ * 4 小節イントロなら bars 0-1 = preEntry、bars 2-3 = bandEntry。
+ * "riffLed" のみ前半からリフを鳴らすので最初から bandEntry 扱いに寄せる
+ * (= サブパターンとしてドラム/ベース等の入りだけ遅らせる)。
+ */
+export function getRockIntroPhase(
+  sec: SongSection,
+  bar: number,
+): "preEntry" | "bandEntry" {
+  const len = sec.endBar - sec.startBar;
+  const half = Math.floor(len / 2);
+  const localBar = bar - sec.startBar;
+  return localBar < half ? "preEntry" : "bandEntry";
 }
 
 export interface ComposedSong {
@@ -232,7 +287,7 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
   if (style === "jazz") {
     if (bars >= 96) {
       // 1 ラウンド AABA → ピアノソロ(bridge) → 2 ラウンド AABA を +5 半音 (4 度上) で
-      push("intro", 4);
+      push("intro", 8);
       push("verse", 8);
       push("verse", 8);
       push("bridge", 8);
@@ -245,7 +300,7 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
       push("outro", bars - cur);
     } else if (bars >= 64) {
       // AABA + キー上げの A
-      push("intro", 4);
+      push("intro", 8);
       push("verse", 8);
       push("verse", 8);
       push("bridge", 8);
@@ -262,8 +317,9 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
       push("verse", bars - cur - 2); // A
       push("outro", bars - cur);
     } else if (bars >= 16) {
-      push("intro", 2);
-      push("verse", 6);
+      // 16 小節でも頭 4 小節をしっかりイントロに使うことで「序奏 → 本題」の起伏を出す。
+      push("intro", 4);
+      push("verse", 4);
       push("bridge", 4);
       push("verse", bars - cur - 2);
       push("outro", bars - cur);
@@ -272,14 +328,15 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
       push("bridge", Math.max(1, Math.floor(bars / 4)));
       push("verse", bars - cur);
     }
-    return sections.filter((s) => s.endBar > s.startBar);
+    return progressIntensity(sections.filter((s) => s.endBar > s.startBar));
   }
 
   // pop / ballad / rock の一般的な構成
   if (bars >= 96) {
     // 大型構成: Intro / V1 / Pre / C1 / V2 / Pre / C2 / Solo(bridge) / Bridge / Break /
     //          V3(+2) / Pre(+2) / Final Chorus x2(+2) / Outro
-    push("intro", 4);
+    // 96+ 小節クラスは 8 小節イントロで聴き手を導入する (バンドサウンドの幅を見せる)。
+    push("intro", 8);
     push("verse", 8);
     push("preChorus", 4);
     push("chorus", 8);
@@ -296,7 +353,8 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
     push("outro", bars - cur);
   } else if (bars >= 64) {
     // Intro / V1 / Pre / C1 / V2 / Pre / C2 / Bridge / Break / Final C(+2) / Outro
-    push("intro", 4);
+    // 64+ も 8 小節イントロで起伏を作る。
+    push("intro", 8);
     push("verse", 8);
     push("preChorus", 4);
     push("chorus", 8);
@@ -334,13 +392,16 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
     push("chorus", Math.max(2, bars - cur - 2), 2);
     push("outro", bars - cur);
   } else if (bars >= 16) {
-    push("intro", 2);
+    // 16 小節クラスでも 4 小節イントロを確保して「序奏 → 本題」の流れを残す。
+    // 全体の尺を圧迫しないように preChorus を省略し、verse → chorus → verse の最小構成。
+    push("intro", 4);
     push("verse", 4);
-    push("preChorus", 2);
     push("chorus", 4);
     push("verse", Math.max(2, bars - cur - 2));
     push("outro", bars - cur);
   } else if (bars >= 8) {
+    // 8 小節クラスは尺が短いので 1 小節カウントオフ的なイントロに留める
+    // (4 小節入れると本編が消えてしまう)。
     push("intro", 1);
     push("verse", 3);
     push("chorus", 3);
@@ -350,7 +411,48 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
     push("chorus", bars - cur);
   }
 
-  return sections.filter((s) => s.endBar > s.startBar);
+  const finalized = progressIntensity(sections.filter((s) => s.endBar > s.startBar));
+  // ロックのイントロには 3 種の展開パターン (vocalLed / riffLed / cleanArpDistortion)
+  // をシードに応じて割り当てる。短すぎる (< 2 小節) イントロは preEntry が作れないので
+  // 既存の riffLed (= 既存挙動互換) に固定。
+  if (style === "rock") {
+    const patterns: RockIntroPattern[] = ["vocalLed", "riffLed", "cleanArpDistortion"];
+    for (const sec of finalized) {
+      if (sec.kind !== "intro") continue;
+      const len = sec.endBar - sec.startBar;
+      sec.rockIntroPattern = len < 2 ? "riffLed" : pick(patterns, rng);
+    }
+  }
+  return finalized;
+}
+
+/**
+ * 同種セクションの "N 回目" を辿り、後半ほど盛り上げる progressive intensity。
+ *   - chorus / verse / preChorus は「最初は控えめ → 最終回が最高」になる
+ *   - サビが 2 回しかなければ 2 回目を +0.06、3 回なら 1/2/3 で +0.0/+0.04/+0.10
+ *   - intensity 上限 1.0
+ *   - 最終 chorus にはわずかな超過 (+0.05) を許して "max effort" を演出
+ */
+function progressIntensity(sections: SongSection[]): SongSection[] {
+  const counts: Partial<Record<SectionKind, number>> = {};
+  for (const s of sections) counts[s.kind] = (counts[s.kind] ?? 0) + 1;
+  const seen: Partial<Record<SectionKind, number>> = {};
+  for (const s of sections) {
+    seen[s.kind] = (seen[s.kind] ?? 0) + 1;
+    const idx = seen[s.kind]! - 1; // 0-based
+    const total = counts[s.kind]!;
+    if (total <= 1) continue;
+    // 0..1 の正規化位置 (0 = 最初, 1 = 最後)
+    const p = idx / (total - 1);
+    if (s.kind === "chorus") {
+      // 最初の chorus は -0.05、最後は +0.05 まで持ち上げる
+      s.intensity = Math.max(0.5, Math.min(1.0, s.intensity - 0.05 + p * 0.12));
+    } else if (s.kind === "verse" || s.kind === "preChorus") {
+      // verse / preChorus は最初を抑え、最後でやや盛り上げる
+      s.intensity = Math.max(0.4, Math.min(0.95, s.intensity - 0.04 + p * 0.08));
+    }
+  }
+  return sections;
 }
 
 /** 小節 → セクション解決ヘルパ。 */
@@ -805,6 +907,49 @@ function buildProgression(
   return out;
 }
 
+/**
+ * ロック特有の "♭VII 借用コード" を進行に注入する (ミクソリディアン色)。
+ *
+ * Sweet Child o' Mine / With or Without You / Born to Run / 多くの邦ロックで
+ * 「I → ♭VII → IV」(または i → ♭VII → ♭VI → V のアンダルシア下降) が定番。
+ * ダイアトニックに閉じた進行だけだとロックの "粗っぽさ" が出ないため、
+ * Verse / Chorus 内で 4 小節周期の 3 小節目 (= 中盤の "山") を確率的に ♭VII へ置換する。
+ *
+ * 置換条件:
+ *   - 現コードが I 系 (major) または vi 系 (minor) のときだけ (I→♭VII / vi→♭VII が自然)
+ *   - セクション末尾 (= cadence 小節) は触らない
+ *   - 短いセクション (3 小節未満) は触らない
+ */
+function applyRockBorrowedChords(
+  chords: HarmonicChord[],
+  scale: Scale,
+  sections: SongSection[],
+  rng: () => number,
+): void {
+  const TONIC_QUALS = new Set<ChordQuality>(["major", "maj7", "maj6", "maj9", "add9", "sus2", "sus4"]);
+  const SUBMED_QUALS = new Set<ChordQuality>(["minor", "min7", "min6", "min9", "minAdd9"]);
+  for (const sec of sections) {
+    if (sec.kind !== "chorus" && sec.kind !== "verse") continue;
+    const len = sec.endBar - sec.startBar;
+    if (len < 3) continue;
+    const localScale = transposeScale(scale, sec.keyOffsetSemitones);
+    const bVIIRoot = (localScale.rootPitchClass + 10) % 12;
+    const tonicRoot = localScale.rootPitchClass;
+    const subMediantRoot = (localScale.rootPitchClass + 9) % 12;
+    // 4 小節周期で 3 小節目 (idx % 4 === 2) を狙う。最終小節は除外。
+    for (let i = 2; i < len - 1; i += 4) {
+      const bar = sec.startBar + i;
+      const ch = chords[bar];
+      if (!ch) continue;
+      const isTonic = ch.rootPitchClass === tonicRoot && TONIC_QUALS.has(ch.quality);
+      const isSubmed = ch.rootPitchClass === subMediantRoot && SUBMED_QUALS.has(ch.quality);
+      if ((isTonic || isSubmed) && rng() < 0.55) {
+        chords[bar] = { rootPitchClass: bVIIRoot, quality: "major", roman: "♭VII" };
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // メロディ生成
 // ---------------------------------------------------------------------------
@@ -1047,6 +1192,7 @@ function generateMelody(
   sections: SongSection[],
   bpm: number,
   style: ComposerStyle,
+  hasOtherLead: boolean,
   rng: () => number,
 ): NoteEvent[] {
   const beatSec = 60 / bpm;
@@ -1155,8 +1301,54 @@ function generateMelody(
       continue;
     }
 
-    // Intro/Outro は半分以上を休符にして "間" を作る
-    if ((sec.kind === "intro" || sec.kind === "outro") && rng() < 0.5) {
+    // intro / bridge: ギター/アコギがリードを担当しているなら
+    // ピアノは静かな寄り添い (= ほぼ休符)。担当楽器がいなければピアノが
+    // leadPhraseForBar で "歌う" リードフレーズを担当する。
+    if (sec.kind === "intro" || sec.kind === "bridge") {
+      const barStart = bar * 4 * beatSec;
+      if (hasOtherLead) {
+        // ギター系がリード → ピアノはルート保持音のみ (任意で 1 音)
+        if (rng() < 0.35) {
+          const pitch = pick(range.filter((m) => chordPCs.has(m % 12)), rng)
+            ?? range[Math.floor(range.length / 2)];
+          events.push({
+            midi: pitch,
+            startSec: barStart + 2 * beatSec,
+            durationSec: 2 * beatSec * 0.9,
+            velocity: vel * 0.55,
+          });
+          prevMidi = pitch;
+        }
+      } else {
+        // ピアノがリードフレーズを担当
+        const isLastBar = isSectionLastBar(sec, bar);
+        const phrase = leadPhraseForBar(
+          chords[bar],
+          localScale,
+          style,
+          barInSec,
+          isLastBar,
+          lo,
+          hi,
+          vel,
+          rng,
+        );
+        for (const n of phrase) {
+          events.push({
+            midi: n.midi,
+            startSec: barStart + n.startBeat * beatSec,
+            durationSec: Math.max(0.05, n.durationBeats * beatSec * 0.95),
+            velocity: n.velocity,
+          });
+          prevMidi = n.midi;
+        }
+      }
+      barInSec++;
+      continue;
+    }
+
+    // Outro は半分以上を休符にして "間" を作る
+    if (sec.kind === "outro" && rng() < 0.5) {
       // 2 拍休む → 半小節だけ短いフレーズ
       const barStart = bar * 4 * beatSec;
       const pitch = pick(range.filter((m) => chordPCs.has(m % 12)), rng) ?? range[Math.floor(range.length / 2)];
@@ -1374,7 +1566,9 @@ function generateMelody(
       dur = Math.max(0.08, dur);
 
       // セクションのダイナミクスで全体ベロシティ + 強拍プラス
-      const v = Math.max(0.25, Math.min(1, vel + (slot.strong ? 0.05 : -0.08) + (rng() - 0.5) * 0.05));
+      // フックオープナー (サビ頭ピーク) は+0.08 ベロシティでアクセント
+      const hookBoost = isChorusHookOpener ? 0.10 : 0;
+      const v = Math.max(0.25, Math.min(1, vel + (slot.strong ? 0.05 : -0.08) + (rng() - 0.5) * 0.05 + hookBoost));
 
       events.push({
         midi: pickMidi,
@@ -1406,6 +1600,65 @@ function generateMelody(
       }
       prevMidi = pickMidi;
       t += slotDurSec;
+    }
+
+    // ===== ピックアップ (アナクルーシス) =====
+    // preChorus 最終小節の 4 拍目裏 (= 16 分 4 つ目) に「サビへの繋ぎ」音を 1 つ。
+    // ONE OK ROCK 系の「ダー、(息継ぎ)、↑」の感覚を狙う。
+    // 次バーがサビなら、サビ最初のコード root の 半音下 (leading tone) を
+    // 短く差し込む。次がサビでなければ何もしない。
+    if (sec.kind === "preChorus" && isLastInSec) {
+      const nextSec = sections[
+        sections.findIndex((s) => s === sec) + 1
+      ];
+      if (nextSec && nextSec.kind === "chorus") {
+        const nextChord = chords[bar + 1];
+        if (nextChord) {
+          // 次サビ chord の root に向けて leading tone (半音下) を選択。
+          // 不協を避けるため、scale 内にあれば scale step 下を優先。
+          const nextLocalScale = transposeScale(scale, nextSec.keyOffsetSemitones);
+          const nextRange = scaleTonesInRange(nextLocalScale, lo, hi);
+          // 候補: scale 内で root の半音下 or 全音下
+          const targetPc = nextChord.rootPitchClass;
+          const downHalf = ((targetPc - 1) + 12) % 12;
+          const downWhole = ((targetPc - 2) + 12) % 12;
+          let pickup: number | null = null;
+          // 半音下 (leading tone) が scale 内なら最優先
+          for (const m of nextRange) {
+            if (m % 12 === downHalf) {
+              if (pickup === null || Math.abs(m - (prevMidi ?? 72)) < Math.abs(pickup - (prevMidi ?? 72))) pickup = m;
+            }
+          }
+          // 無ければ全音下
+          if (pickup === null) {
+            for (const m of nextRange) {
+              if (m % 12 === downWhole) {
+                if (pickup === null || Math.abs(m - (prevMidi ?? 72)) < Math.abs(pickup - (prevMidi ?? 72))) pickup = m;
+              }
+            }
+          }
+          if (pickup !== null) {
+            const pickupStart = barStart + 3.75 * beatSec;
+            const pickupDur = 0.25 * beatSec * 0.85;
+            const pickupVel = Math.max(0.4, Math.min(1, vel + 0.05));
+            events.push({
+              midi: pickup,
+              startSec: pickupStart,
+              durationSec: pickupDur,
+              velocity: pickupVel,
+            });
+            if (recordBar) {
+              recordBar.push({
+                midi: pickup,
+                offsetInBarSec: pickupStart - barStart,
+                durSec: pickupDur,
+                velocity: pickupVel,
+              });
+            }
+            prevMidi = pickup;
+          }
+        }
+      }
     }
 
     if (isRepeatableKind) barInSec++;
@@ -1452,91 +1705,191 @@ function generateChordLayer(
     const effectiveVoicing =
       sec.kind === "intro" || sec.kind === "outro" ? voicing.slice(0, 3) : voicing;
 
+    // -------------------------------------------------------------------
+    // リズム・テンプレート: hit = "そのタイミングでフルコード", arp = "1音だけ"
+    // 同じコードを毎拍ベタ打ちすると単調になるので、各セクションで
+    //   ① シンコペーション (拍頭以外も使う)
+    //   ② アルペジオ ↔ ブロックコードの混在
+    //   ③ 休符の挿入 (ストロークの "切り")
+    // の 3 つで変化を出す。
+    // -------------------------------------------------------------------
+    interface CompHit {
+      offset: number;     // 拍 (0..4)
+      kind: "block" | "arp" | "topOnly";
+      durBeats: number;
+      vel: number;
+      arpIndex?: number;  // arp の場合に使う voicing index
+    }
+    const v0 = vel0;
+    const top = effectiveVoicing[effectiveVoicing.length - 1];
+    const mid = effectiveVoicing[Math.floor(effectiveVoicing.length / 2)] ?? top;
+
+    let pattern: CompHit[] = [];
+
     if (style === "ballad") {
-      // アルペジオ。Chorus 中だけ 8 分にして密度を上げる
-      const sub = sec.kind === "chorus" ? 0.5 : 1;
-      const reps = 4 / sub;
-      for (let i = 0; i < reps; i++) {
-        const m = effectiveVoicing[i % effectiveVoicing.length];
-        out.push({
-          midi: m,
-          startSec: barStart + i * sub * beatSec,
-          durationSec: sub * beatSec * 1.4,
-          velocity: vel0 * 0.7,
-        });
+      // ballad: アルペジオ基本だが、コード全和音をところどころ挟む
+      if (sec.kind === "chorus") {
+        // 8 分アルペジオ + 1 拍頭はブロックコード
+        pattern = [
+          { offset: 0,    kind: "block",   durBeats: 0.45, vel: v0 * 0.85 },
+          { offset: 0.5,  kind: "arp",     durBeats: 0.45, vel: v0 * 0.55, arpIndex: 2 },
+          { offset: 1,    kind: "arp",     durBeats: 0.45, vel: v0 * 0.6,  arpIndex: 3 },
+          { offset: 1.5,  kind: "arp",     durBeats: 0.45, vel: v0 * 0.55, arpIndex: 2 },
+          { offset: 2,    kind: "block",   durBeats: 0.45, vel: v0 * 0.78 },
+          { offset: 2.5,  kind: "arp",     durBeats: 0.45, vel: v0 * 0.55, arpIndex: 2 },
+          { offset: 3,    kind: "arp",     durBeats: 0.45, vel: v0 * 0.6,  arpIndex: 3 },
+          { offset: 3.5,  kind: "arp",     durBeats: 0.45, vel: v0 * 0.55, arpIndex: 2 },
+        ];
+      } else {
+        // verse/intro/outro: 16 分まじりのアルペジオ (ぐっと感のあるバラード伴奏)
+        // root(low) → 3rd → 5th → top → 5th → 3rd の流れ + 拍頭にブロック
+        pattern = [
+          { offset: 0,    kind: "block", durBeats: 1.4, vel: v0 * 0.7 },
+          { offset: 1,    kind: "arp",   durBeats: 0.5, vel: v0 * 0.5, arpIndex: 2 },
+          { offset: 1.5,  kind: "arp",   durBeats: 0.5, vel: v0 * 0.55, arpIndex: 3 },
+          { offset: 2,    kind: "arp",   durBeats: 0.5, vel: v0 * 0.5,  arpIndex: 2 },
+          { offset: 2.5,  kind: "arp",   durBeats: 0.5, vel: v0 * 0.5,  arpIndex: 1 },
+          { offset: 3,    kind: "arp",   durBeats: 0.5, vel: v0 * 0.55, arpIndex: 3 },
+          { offset: 3.5,  kind: "arp",   durBeats: 0.5, vel: v0 * 0.5,  arpIndex: 2 },
+        ];
       }
     } else if (style === "jazz") {
-      // 2/4 コンプ (チャールストン気味)。Bridge では裏拍を強調
-      const offsets = sec.kind === "bridge" ? [0.5, 1.5, 2.5, 3.5] : [1, 3];
-      for (const off of offsets) {
-        for (const m of effectiveVoicing) {
-          out.push({
-            midi: m,
-            startSec: barStart + off * beatSec,
-            durationSec: beatSec * 0.55,
-            velocity: vel0 * 0.6 + (rng() - 0.5) * 0.05,
-          });
-        }
+      // jazz: チャールストン (1, 2.5) + bridge は 4 つ叩き、稀に "anticipation" (3.5)
+      const useAnticipation = rng() < 0.4 && sec.kind !== "bridge";
+      if (sec.kind === "bridge") {
+        pattern = [
+          { offset: 0.5, kind: "block", durBeats: 0.5, vel: v0 * 0.6 },
+          { offset: 1.5, kind: "block", durBeats: 0.5, vel: v0 * 0.55 },
+          { offset: 2.5, kind: "block", durBeats: 0.5, vel: v0 * 0.6 },
+          { offset: 3.5, kind: "block", durBeats: 0.5, vel: v0 * 0.7 },
+        ];
+      } else if (useAnticipation) {
+        // 1, 2.5, "3.5(次小節先取り)" のチャールストン+先取り
+        pattern = [
+          { offset: 0,   kind: "block", durBeats: 0.5, vel: v0 * 0.7 },
+          { offset: 2.5, kind: "block", durBeats: 0.5, vel: v0 * 0.55 },
+          { offset: 3.5, kind: "block", durBeats: 0.5, vel: v0 * 0.65 },
+        ];
+      } else {
+        pattern = [
+          { offset: 1,   kind: "block", durBeats: 0.55, vel: v0 * 0.6 },
+          { offset: 3,   kind: "block", durBeats: 0.55, vel: v0 * 0.6 },
+        ];
       }
     } else if (style === "rock") {
-      // ブロックコード + Chorus で 8 分カッティング
+      // rock (ONE OK ROCK / 邦ロック 系):
+      //   ピアノ/コード層はギター・ベース・ドラムが主役の "土台" の中で
+      //   "色を足す" 役割なので、原則スカスカにしてギターの帯域を空ける。
+      //   逆に密にするとピアノバラードっぽくなって "ロックぽくない" 原因になる。
+      //
+      //   verse: 1 拍頭のみ (= ロングトーン 2 ビート保持) で、ギターのリフを邪魔しない
+      //   preChorus: 4 つ持ち (1,2,3,4 拍) で徐々に積み上げ + 4 拍裏で先取り
+      //   chorus: 1+3 拍頭でドーン系 + 2,4 拍裏に上声シンコペで "突き上げ"
+      //   bridge: 1 拍頭のロングトーン (= フレーズに譲る)
       if (sec.kind === "chorus") {
-        for (let b = 0; b < 8; b++) {
-          for (const m of effectiveVoicing) {
-            out.push({
-              midi: m,
-              startSec: barStart + b * (beatSec / 2),
-              durationSec: beatSec * 0.4,
-              velocity: vel0 * (b % 2 === 0 ? 0.8 : 0.55),
-            });
-          }
-        }
+        // 力強い 1/3 拍頭ロングトーン + 2.75 のシンコペで "突き上げ"
+        // 4 分基調なので 8 分密打のような pop ぽさが出ない
+        pattern = [
+          { offset: 0,    kind: "block",   durBeats: 0.9, vel: v0 * 0.95 },
+          { offset: 1.5,  kind: "topOnly", durBeats: 0.4, vel: v0 * 0.45 }, // 上声 ghost
+          { offset: 2,    kind: "block",   durBeats: 0.7, vel: v0 * 0.88 },
+          { offset: 2.75, kind: "topOnly", durBeats: 0.25, vel: v0 * 0.5 }, // シンコペ (上声のみ)
+          { offset: 3.5,  kind: "block",   durBeats: 0.5, vel: v0 * 0.7 },  // 次小節への接続
+        ];
+      } else if (sec.kind === "preChorus") {
+        // 4 つ持ち (盛り上げ) + 4 拍目を 16 分プッシュで突入
+        pattern = [
+          { offset: 0,    kind: "block", durBeats: 0.9,  vel: v0 * 0.85 },
+          { offset: 1,    kind: "block", durBeats: 0.9,  vel: v0 * 0.75 },
+          { offset: 2,    kind: "block", durBeats: 0.9,  vel: v0 * 0.8 },
+          { offset: 3,    kind: "block", durBeats: 0.25, vel: v0 * 0.9 },
+          { offset: 3.5,  kind: "block", durBeats: 0.25, vel: v0 * 0.85 },
+          { offset: 3.75, kind: "block", durBeats: 0.25, vel: v0 * 0.95 }, // 突入アクセント
+        ];
+      } else if (sec.kind === "bridge") {
+        // フレーズ役 (ギター) に譲る — 1 拍頭のロングトーンだけ
+        pattern = [
+          { offset: 0,   kind: "block", durBeats: 1.8, vel: v0 * 0.65 },
+          { offset: 2.5, kind: "block", durBeats: 1.4, vel: v0 * 0.6 },
+        ];
       } else {
-        for (const m of effectiveVoicing) {
-          out.push({
-            midi: m,
-            startSec: barStart,
-            durationSec: barSec * 0.95,
-            velocity: vel0 * 0.7,
-          });
-        }
+        // verse/intro/outro: 1 拍頭の "ジャーン" のみ — ギターリフが主役
+        // (以前は 4 hit だったがロックでは過密だった)
+        pattern = [
+          { offset: 0, kind: "block", durBeats: 2.0, vel: v0 * 0.75 },
+          { offset: 2, kind: "block", durBeats: 1.8, vel: v0 * 0.65 },
+        ];
       }
     } else {
-      // pop: セクションによって density を変える
+      // pop (BUMP OF CHICKEN 系):
+      //   verse: シンコペした 3 hit + 上ボイスのアルペジオを散らす
+      //   preChorus: 8 分のはずみ + 4 拍目で 16 分プッシュ
+      //   chorus: 8 分カッティング + 1 拍頭ロング + シンコペ
+      //   bridge: ゆったり半拍ずらし
       if (sec.kind === "chorus") {
-        // 8 分ストロークでサビ感
-        for (let b = 0; b < 8; b++) {
-          for (const m of effectiveVoicing) {
-            out.push({
-              midi: m,
-              startSec: barStart + b * (beatSec / 2),
-              durationSec: beatSec * 0.45,
-              velocity: vel0 * (b === 0 ? 0.95 : b % 2 === 0 ? 0.78 : 0.55),
-            });
-          }
-        }
+        pattern = [
+          { offset: 0,    kind: "block",   durBeats: 0.5,  vel: v0 * 0.92 },
+          { offset: 0.5,  kind: "block",   durBeats: 0.4,  vel: v0 * 0.6 },
+          { offset: 1,    kind: "topOnly", durBeats: 0.4,  vel: v0 * 0.55 },
+          { offset: 1.5,  kind: "block",   durBeats: 0.4,  vel: v0 * 0.6 },
+          { offset: 2,    kind: "block",   durBeats: 0.4,  vel: v0 * 0.8 },
+          { offset: 2.5,  kind: "topOnly", durBeats: 0.4,  vel: v0 * 0.55 },
+          { offset: 2.75, kind: "block",   durBeats: 0.25, vel: v0 * 0.65 }, // シンコペ
+          { offset: 3.5,  kind: "block",   durBeats: 0.5,  vel: v0 * 0.65 },
+        ];
       } else if (sec.kind === "preChorus") {
-        // 4 分のはずみ
-        for (let b = 0; b < 4; b++) {
-          for (const m of effectiveVoicing) {
-            out.push({
-              midi: m,
-              startSec: barStart + b * beatSec,
-              durationSec: beatSec * 0.85,
-              velocity: vel0 * (b === 0 ? 0.9 : 0.7),
-            });
-          }
+        pattern = [
+          { offset: 0,    kind: "block",   durBeats: 0.45, vel: v0 * 0.85 },
+          { offset: 0.5,  kind: "topOnly", durBeats: 0.45, vel: v0 * 0.5 },
+          { offset: 1,    kind: "block",   durBeats: 0.45, vel: v0 * 0.75 },
+          { offset: 1.5,  kind: "topOnly", durBeats: 0.45, vel: v0 * 0.5 },
+          { offset: 2,    kind: "block",   durBeats: 0.45, vel: v0 * 0.8 },
+          { offset: 2.5,  kind: "topOnly", durBeats: 0.45, vel: v0 * 0.55 },
+          { offset: 3,    kind: "block",   durBeats: 0.25, vel: v0 * 0.85 },
+          { offset: 3.25, kind: "block",   durBeats: 0.25, vel: v0 * 0.7 },
+          { offset: 3.5,  kind: "block",   durBeats: 0.25, vel: v0 * 0.85 },
+          { offset: 3.75, kind: "block",   durBeats: 0.25, vel: v0 * 0.75 },
+        ];
+      } else if (sec.kind === "bridge") {
+        pattern = [
+          { offset: 0,    kind: "block",   durBeats: 0.9, vel: v0 * 0.7 },
+          { offset: 1.5,  kind: "topOnly", durBeats: 0.5, vel: v0 * 0.5 },
+          { offset: 2,    kind: "block",   durBeats: 0.5, vel: v0 * 0.7 },
+          { offset: 2.5,  kind: "topOnly", durBeats: 0.5, vel: v0 * 0.5 },
+          { offset: 3.5,  kind: "block",   durBeats: 0.5, vel: v0 * 0.65 },
+        ];
+      } else {
+        // verse / intro / outro: シンコペした 3 hit + 上ボイスアルペジオで密度確保
+        pattern = [
+          { offset: 0,    kind: "block",   durBeats: 0.7, vel: v0 * 0.75 },
+          { offset: 0.75, kind: "topOnly", durBeats: 0.4, vel: v0 * 0.45 },
+          { offset: 1.5,  kind: "block",   durBeats: 0.5, vel: v0 * 0.55 },
+          { offset: 2,    kind: "topOnly", durBeats: 0.4, vel: v0 * 0.45 },
+          { offset: 2.5,  kind: "block",   durBeats: 0.7, vel: v0 * 0.7 },
+          { offset: 3.25, kind: "topOnly", durBeats: 0.4, vel: v0 * 0.45 },
+        ];
+      }
+    }
+
+    // パターンを実際の NoteEvent へ展開
+    for (const hit of pattern) {
+      const start = barStart + hit.offset * beatSec;
+      const dur = hit.durBeats * beatSec;
+      if (hit.kind === "block") {
+        for (const m of effectiveVoicing) {
+          out.push({ midi: m, startSec: start, durationSec: dur, velocity: hit.vel });
+        }
+      } else if (hit.kind === "topOnly") {
+        // 上 2 音だけ (= "色付け" の高い音)
+        const upper = effectiveVoicing.slice(-2);
+        for (const m of upper) {
+          out.push({ midi: m, startSec: start, durationSec: dur, velocity: hit.vel });
         }
       } else {
-        // verse/intro/outro はホワイトノート長め
-        for (const m of effectiveVoicing) {
-          out.push({
-            midi: m,
-            startSec: barStart,
-            durationSec: barSec * 0.95,
-            velocity: vel0 * 0.65,
-          });
-        }
+        // arp: 指定 index か、上から 2 番目
+        const idx = hit.arpIndex ?? Math.max(0, effectiveVoicing.length - 2);
+        const m = effectiveVoicing[Math.min(idx, effectiveVoicing.length - 1)] ?? mid;
+        out.push({ midi: m, startSec: start, durationSec: dur, velocity: hit.vel });
       }
     }
   }
@@ -1578,6 +1931,7 @@ type RiffVoicing =
   | "double5"
   | "double3"
   | "mute"
+  | "palmMute"
   | "stab";
 
 interface RiffNote {
@@ -1612,7 +1966,7 @@ const EMPTY_RIFF: GuitarRiff = { barsLength: 1, notesPerBar: [[]] };
  */
 type GuitarRole = "chord" | "phrase";
 const GUITAR_ROLE: Record<ComposerStyle, Record<SectionKind, GuitarRole>> = {
-  rock:   { intro: "chord", verse: "chord",  preChorus: "phrase", chorus: "chord", bridge: "phrase", break: "chord", outro: "chord" },
+  rock:   { intro: "chord", verse: "chord",  preChorus: "chord",  chorus: "chord", bridge: "phrase", break: "chord", outro: "chord" },
   pop:    { intro: "chord", verse: "chord",  preChorus: "phrase", chorus: "chord", bridge: "phrase", break: "chord", outro: "chord" },
   ballad: { intro: "phrase", verse: "phrase", preChorus: "phrase", chorus: "chord", bridge: "phrase", break: "chord", outro: "chord" },
   jazz:   { intro: "chord", verse: "chord",  preChorus: "phrase", chorus: "chord", bridge: "phrase", break: "chord", outro: "chord" },
@@ -1637,49 +1991,54 @@ const ROCK_RIFFS: Record<SectionKind, GuitarRiff> = {
     { semitonesFromRoot: 0, startBeat: 3.25, durationBeats: 0.22, velocityScale: 0.65, voicing: "mute" },
     { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.85, voicing: "power" },
   ]] },
-  // [chord] Verse: 16 分パームミュート + 拍頭にパワーコードのアクセント
-  // "ズク ズク ズク ジャン / ズク ズク ジャ・ジャン" の感じ — power と mute のみ
+  // [chord] Verse: 「ベースのように連続で刻む」8 分ブリッジミュート・チャグ
+  //   ONE OK ROCK / Foo Fighters の Aメロでよく使われる「ズクズクズクズク…」と
+  //   8 分音符で休まずブリッジミュート (palm mute) で power chord を刻むパターン。
+  //   ・全音 palmMute (root + 5 + octave、durMul 0.7 / velMul 0.85) で短く詰まった音
+  //   ・1, 3 拍頭はアクセント (= 0.95)、その他 8 分は中位 (= 0.78–0.82) で粒揃え
+  //   ・2 小節目の 4 拍裏に 1 発だけ 16 分のオープン power を入れて「ジャッ!」と煽る
   verse: { barsLength: 2, notesPerBar: [
-    [ // bar 1
-      { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
-      { semitonesFromRoot: 0, startBeat: 0.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 1.00, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 1.50, durationBeats: 0.4,  velocityScale: 0.85, voicing: "power" },
-      { semitonesFromRoot: 0, startBeat: 2.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
-      { semitonesFromRoot: 0, startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
+    [ // bar 1: 8 分 8 連続 palmMute (ズクズクズクズク…)
+      { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 0.42, velocityScale: 0.95, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 0.50, durationBeats: 0.42, velocityScale: 0.78, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 1.00, durationBeats: 0.42, velocityScale: 0.82, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 1.50, durationBeats: 0.42, velocityScale: 0.78, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 2.00, durationBeats: 0.42, velocityScale: 0.95, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 2.50, durationBeats: 0.42, velocityScale: 0.78, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.42, velocityScale: 0.85, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.42, velocityScale: 0.8,  voicing: "palmMute" },
     ],
-    [ // bar 2: 同じ骨格、後半にパームミュート連打で煽る
-      { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
-      { semitonesFromRoot: 0, startBeat: 0.50, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 0.75, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 1.00, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 1.50, durationBeats: 0.4,  velocityScale: 0.85, voicing: "power" },
-      { semitonesFromRoot: 0, startBeat: 2.00, durationBeats: 0.22, velocityScale: 0.5,  voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 2.25, durationBeats: 0.22, velocityScale: 0.55, voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.6,  voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.65, voicing: "mute" },
-      { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.45, velocityScale: 0.95, voicing: "power" },
-      { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.45, velocityScale: 0.9,  voicing: "power" },
+    [ // bar 2: 8 連続 palmMute + 4 拍裏 16 分 1 発はオープン power (= "ズクズク…ジャッ!" の煽り)
+      { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 0.42, velocityScale: 0.95, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 0.50, durationBeats: 0.42, velocityScale: 0.78, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 1.00, durationBeats: 0.42, velocityScale: 0.82, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 1.50, durationBeats: 0.42, velocityScale: 0.78, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 2.00, durationBeats: 0.42, velocityScale: 0.95, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 2.50, durationBeats: 0.42, velocityScale: 0.78, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.42, velocityScale: 0.88, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.22, velocityScale: 0.85, voicing: "palmMute" },
+      { semitonesFromRoot: 0, startBeat: 3.75, durationBeats: 0.22, velocityScale: 0.95, voicing: "power" },
     ],
   ]},
-  // [phrase] Pre-Chorus: ペンタトニック・リード — single + double5 + octaveUnison のみ
-  // 16 分でオクターブ上昇 → 半音 grace で Chorus へ突入
+  // [chord] Pre-Chorus: 「ベースのように連続」+ 16 分ビルドアップ
+  //   旧: ペンタトニック・リード (single/double5/octaveUnison) → サビ前のリード過多
+  //   新: 8 分 → 16 分へとパワーコードの密度が増していくビルドアップ。
+  //       前半 (0–2 拍): 8 分 4 発 / 後半 (2–4 拍): 16 分 8 発で「ザクザクザクザク」とサビに突入
   preChorus: { barsLength: 1, notesPerBar: [[
-    { semitonesFromRoot: 0,  startBeat: 0.00, durationBeats: 0.22, velocityScale: 0.75, voicing: "octaveUnison" },
-    { semitonesFromRoot: 3,  startBeat: 0.50, durationBeats: 0.22, velocityScale: 0.8,  voicing: "octaveUnison" },
-    { semitonesFromRoot: 5,  startBeat: 1.00, durationBeats: 0.22, velocityScale: 0.85, voicing: "octaveUnison" },
-    { semitonesFromRoot: 7,  startBeat: 1.25, durationBeats: 0.22, velocityScale: 0.7,  voicing: "single" },
-    { semitonesFromRoot: 5,  startBeat: 1.50, durationBeats: 0.22, velocityScale: 0.8,  voicing: "octaveUnison" },
-    { semitonesFromRoot: 7,  startBeat: 1.75, durationBeats: 0.22, velocityScale: 0.7,  voicing: "double5" },
-    { semitonesFromRoot: 7,  startBeat: 2.00, durationBeats: 0.4,  velocityScale: 0.9,  voicing: "octaveUnison" },
-    { semitonesFromRoot: 10, startBeat: 2.50, durationBeats: 0.4,  velocityScale: 0.85, voicing: "octaveUnison" },
-    { semitonesFromRoot: 11, startBeat: 3.00, durationBeats: 0.22, velocityScale: 0.8,  voicing: "single", graceBefore: -1 },
-    { semitonesFromRoot: 12, startBeat: 3.25, durationBeats: 0.22, velocityScale: 0.9,  voicing: "octaveUnison" },
-    { semitonesFromRoot: 12, startBeat: 3.50, durationBeats: 0.45, velocityScale: 1.0,  voicing: "octaveUnison" },
+    // 前半: 8 分 4 発 (連続)
+    { semitonesFromRoot: 0, startBeat: 0.00, durationBeats: 0.42, velocityScale: 0.85, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 0.50, durationBeats: 0.42, velocityScale: 0.78, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 1.00, durationBeats: 0.42, velocityScale: 0.88, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 1.50, durationBeats: 0.42, velocityScale: 0.82, voicing: "power" },
+    // 後半: 16 分 8 発 (密度上昇 = build-up)
+    { semitonesFromRoot: 0, startBeat: 2.00, durationBeats: 0.22, velocityScale: 0.9,  voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 2.25, durationBeats: 0.22, velocityScale: 0.82, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 2.50, durationBeats: 0.22, velocityScale: 0.88, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 2.75, durationBeats: 0.22, velocityScale: 0.85, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 3.00, durationBeats: 0.22, velocityScale: 0.95, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 3.25, durationBeats: 0.22, velocityScale: 0.9,  voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 3.50, durationBeats: 0.22, velocityScale: 0.98, voicing: "power" },
+    { semitonesFromRoot: 0, startBeat: 3.75, durationBeats: 0.22, velocityScale: 1.0,  voicing: "power" },
   ]] },
   // [chord] Chorus: アンセム的にパワーコードを 8 分で押し出す + 16 分パームミュート
   chorus: { barsLength: 2, notesPerBar: [
@@ -2089,8 +2448,9 @@ function mutateChordBar(
       const i = weak[Math.floor(rng() * weak.length)];
       const n = notes[i];
       const flips: Record<RiffVoicing, RiffVoicing[]> = {
-        power: ["mute"],
-        mute: ["power", "stab"],
+        power: ["palmMute", "mute"],
+        palmMute: ["power", "mute"],
+        mute: ["palmMute", "power"],
         full: ["stab"],
         stab: ["full"],
         single: ["double5"],
@@ -2293,12 +2653,210 @@ function varyRiffBar(
   return notes;
 }
 
+// ---------------------------------------------------------------------------
+// フィーチャー・リード (intro / bridge 用ソロフレーズ)
+//
+// 「イントロや間奏で、ギターを使っているときはギターで、ピアノを使っている
+// ときはピアノでかっこいいフレーズを入れる」ためのフレーズビルダ。
+//
+// 1 小節分のメロディックリードを (startBeat, durationBeats, midi, velocity)
+// として返す。midi は絶対値、velocity も絶対値 (0..1)。
+//
+// 思想:
+//   - 強拍 (1, 3 拍目) はコードトーンで着地させる
+//   - 弱拍 (1.5, 2.5, 3.5 拍目) はスケール経過音/隣接音で歌う
+//   - barInSec に応じてフレーズ形を変えて単調さを避ける
+//       bar 0: 「お題提示」(コール) — 後半に長音で間を作る
+//       bar 1: 「展開」(8分主体のフレーズライン)
+//       bar 2+: 「ペンタトニック / ビバップ風リック」(シンコペ)
+//       最終 bar: 「解決」(下降してルートにロングトーン着地)
+//   - loMidi..hiMidi 範囲を超える音は出さない (= 楽器の音域に従う)
+//   - スケール外音は出さない (= 音外し防止)
+//
+// 戻り値は startBeat 昇順とは限らないため、呼び出し側でソートすること。
+// ---------------------------------------------------------------------------
+interface LeadNote {
+  startBeat: number;
+  durationBeats: number;
+  midi: number;
+  velocity: number;
+}
+
+function leadPhraseForBar(
+  chord: HarmonicChord,
+  scale: Scale,
+  _style: ComposerStyle,
+  barInSec: number,
+  isLastBar: boolean,
+  loMidi: number,
+  hiMidi: number,
+  velBase: number,
+  rng: () => number,
+): LeadNote[] {
+  const scaleTones = scaleTonesInRange(scale, loMidi, hiMidi);
+  if (scaleTones.length < 4) return [];
+  const chordIntervals = chordToneSet(chord);
+  const chordPCSet = new Set(
+    chordIntervals.map((iv) => (((chord.rootPitchClass + iv) % 12) + 12) % 12),
+  );
+  const chordTones = scaleTones.filter((m) => chordPCSet.has(((m % 12) + 12) % 12));
+  if (chordTones.length === 0) return [];
+
+  const centerMidi = Math.floor((loMidi + hiMidi) / 2);
+  const clampToRange = (m: number) => Math.max(loMidi, Math.min(hiMidi, m));
+
+  const nearestChordTo = (target: number): number => {
+    let best = chordTones[0];
+    let bd = Math.abs(best - target);
+    for (const m of chordTones) {
+      const d = Math.abs(m - target);
+      if (d < bd) {
+        best = m;
+        bd = d;
+      }
+    }
+    return best;
+  };
+  const stepInScale = (cur: number, dir: 1 | -1): number => {
+    const i = scaleTones.indexOf(cur);
+    if (i === -1) {
+      // cur がスケール外なら最も近い chord トーンに飛ぶ (= レンジ内に必ず戻る)
+      return nearestChordTo(cur + dir);
+    }
+    const j = Math.max(0, Math.min(scaleTones.length - 1, i + dir));
+    return scaleTones[j];
+  };
+  const nearestChordAbove = (cur: number): number => {
+    const above = chordTones.filter((m) => m > cur);
+    return above.length ? above[0] : chordTones[chordTones.length - 1];
+  };
+  const nearestChordBelow = (cur: number): number => {
+    const below = chordTones.filter((m) => m < cur);
+    return below.length ? below[below.length - 1] : chordTones[0];
+  };
+
+  const out: LeadNote[] = [];
+  const push = (sb: number, db: number, midi: number, vel: number) => {
+    out.push({
+      startBeat: sb,
+      durationBeats: db,
+      midi: clampToRange(midi),
+      velocity: Math.max(0.18, Math.min(1, vel)),
+    });
+  };
+
+  // ---- 最終 bar: 解決ロングトーン ----
+  if (isLastBar) {
+    const rootInRange = scaleTones.find((m) => m % 12 === chord.rootPitchClass);
+    const rootCenter = rootInRange ?? nearestChordTo(centerMidi);
+    let cur = nearestChordTo(centerMidi + 5); // 高めから降りる
+    const rhythm = [0.0, 0.5, 1.0, 1.5, 2.0];
+    for (let i = 0; i < rhythm.length; i++) {
+      push(rhythm[i], 0.45, cur, velBase * (0.6 + i * 0.04));
+      cur = stepInScale(cur, -1);
+    }
+    // 半音アプローチ → ルート着地 (ロング)
+    push(2.5, 0.22, rootCenter + 1, velBase * 0.7);
+    push(2.75, 1.2, rootCenter, velBase * 0.95);
+    return out;
+  }
+
+  // ---- bar 0: オープン (コール風) ----
+  if (barInSec === 0) {
+    const high = nearestChordTo(centerMidi + 5);
+    const helper = stepInScale(high, -1);
+    const land = nearestChordTo(centerMidi);
+    const above = nearestChordAbove(land);
+    push(0.0, 0.45, high, velBase * 0.85);
+    push(0.5, 0.22, helper, velBase * 0.65);
+    push(0.75, 0.22, high, velBase * 0.7);
+    push(1.5, 0.5, stepInScale(high, -1), velBase * 0.7);
+    push(2.0, 0.45, above, velBase * 0.8);
+    push(2.5, 0.22, stepInScale(above, 1), velBase * 0.6);
+    push(3.0, 0.9, land, velBase * 0.85);
+    return out;
+  }
+
+  // ---- bar 1: 展開 (8 分主体のラインで上下) ----
+  if (barInSec === 1) {
+    let cur = nearestChordTo(centerMidi - 3);
+    const rhythm = [0.0, 0.5, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 3.5];
+    const dirs: (1 | -1)[] = [1, 1, 1, 1, -1, 1, -1, -1, -1];
+    for (let i = 0; i < rhythm.length; i++) {
+      const isStrong = i % 2 === 0;
+      push(
+        rhythm[i],
+        i === rhythm.length - 1 ? 0.5 : 0.42,
+        cur,
+        velBase * (isStrong ? 0.8 : 0.6) + (rng() - 0.5) * 0.04,
+      );
+      cur = stepInScale(cur, dirs[i]);
+    }
+    return out;
+  }
+
+  // ---- bar 2+: ペンタトニック / ビバップ風リック ----
+  const high = nearestChordTo(centerMidi + 7);
+  const mid = nearestChordTo(centerMidi);
+  const low = nearestChordBelow(mid);
+  const aboveLow = nearestChordAbove(low);
+  push(0.0, 0.42, high, velBase * 0.9);
+  push(0.5, 0.22, stepInScale(high, -1), velBase * 0.6);
+  push(0.75, 0.22, mid, velBase * 0.7);
+  push(1.0, 0.42, stepInScale(mid, 1), velBase * 0.75);
+  push(1.5, 0.42, high, velBase * 0.85);
+  push(2.0, 0.22, stepInScale(high, -1), velBase * 0.65);
+  push(2.25, 0.22, mid, velBase * 0.7);
+  push(2.5, 0.42, stepInScale(mid, -1), velBase * 0.7);
+  push(3.0, 0.5, low, velBase * 0.75);
+  push(3.5, 0.45, aboveLow, velBase * 0.8);
+  return out;
+}
+
+/**
+ * ボイシング指定 (lead/powerChord/palmMute) を 1 小節分の RiffNote に適用する。
+ * chord 役セクション (verse/preChorus/chorus/outro) のみ対象。
+ * intro / bridge / break は元のフレーズ生成器に任せる (歌うリード/フィル等)。
+ */
+function overrideVoicingForBar(
+  baseBarNotes: RiffNote[],
+  voicing: GuitarVoicingStyle,
+  beatsPerBar = 4,
+): RiffNote[] {
+  if (voicing === "auto") return baseBarNotes;
+  if (voicing === "lead") {
+    // リード強制: 既存リフを廃棄して 8 分のペンタトニック単音ラインに置き換える
+    //   1, 3, 5, 7 度を交互に上下するシンプルな線。
+    const degrees = [0, 7, 12, 7, 10, 7, 5, 3];
+    return Array.from({ length: 8 }, (_, i) => ({
+      semitonesFromRoot: degrees[i] ?? 0,
+      startBeat: i * (beatsPerBar / 8),
+      durationBeats: (beatsPerBar / 8) * 0.92,
+      velocityScale: i % 2 === 0 ? 0.9 : 0.75,
+      voicing: "single" as RiffVoicing,
+    }));
+  }
+  // powerChord / palmMute: 8 分連打を生成
+  const targetVoicing: RiffVoicing = voicing === "powerChord" ? "power" : "palmMute";
+  const accentVelocity = voicing === "powerChord" ? 0.95 : 0.92;
+  const passVelocity = voicing === "powerChord" ? 0.78 : 0.78;
+  return Array.from({ length: 8 }, (_, i) => ({
+    semitonesFromRoot: 0,
+    startBeat: i * (beatsPerBar / 8),
+    durationBeats: (beatsPerBar / 8) * (voicing === "powerChord" ? 0.95 : 0.84),
+    velocityScale: (i === 0 || i === 4) ? accentVelocity : passVelocity,
+    voicing: targetVoicing,
+  }));
+}
+
 function generateGuitarLayer(
   chords: HarmonicChord[],
+  scale: Scale,
   sections: SongSection[],
   bpm: number,
   style: ComposerStyle,
   rng: () => number,
+  guitarVoicing: GuitarVoicingStyle = "auto",
 ): NoteEvent[] {
   const beatSec = 60 / bpm;
   const barSec = beatSec * 4;
@@ -2332,8 +2890,119 @@ function generateGuitarLayer(
       continue;
     }
 
+    // intro / bridge: 静的リフの代わりに leadPhraseForBar で
+    // 「コード&スケール対応の歌うリードフレーズ」をその場で生成する。
+    // ギター音域 E3 (52) .. E5 (76)。各拍頭にオクターブ下を薄く重ねて
+    // 太い "オクターブユニゾン" 感を出す。
+    if (sec.kind === "intro" || sec.kind === "bridge") {
+      // ロックのイントロ: 「歌うリード」ではなく、ONE OK ROCK / Foo Fighters 系の
+      // パームミュート 8 分 + コード突き刺し ("ザクザクザクザクジャーン" のリフ) を生成。
+      // これは Sweet Child o' Mine 型のオクターブ・ラインではなく、より日本のロックバンド
+      // (= 全パートが頭から鳴っている塊感) を狙ったパターン。
+      if (style === "rock" && sec.kind === "intro") {
+        const pattern: RockIntroPattern = sec.rockIntroPattern ?? "riffLed";
+        const phase = getRockIntroPhase(sec, bar);
+        const power = [root, root + 7, root + 12];
+        const fullPower = fullVoicing.slice(0, 4);
+        const emitRiffBar = () => {
+          // 既存のパームミュート 8 分 + 4 拍裏突き刺し
+          for (let i = 0; i < 8; i++) {
+            const t = barStart + i * (beatSec / 2);
+            const isAccent = i === 0 || i === 4;
+            const isStab = i === 7;
+            if (isStab) {
+              for (const m of fullPower) {
+                out.push({ midi: m, startSec: t, durationSec: beatSec * 0.85, velocity: Math.min(1, vel0 * 1.1) });
+              }
+            } else {
+              const dur = beatSec * 0.22;
+              const vel = Math.max(0.5, vel0 * (isAccent ? 1.0 : 0.78));
+              for (const m of power) {
+                out.push({ midi: m, startSec: t, durationSec: dur, velocity: vel });
+              }
+            }
+          }
+        };
+        const emitCleanArpBar = () => {
+          // クリーンアルペジオ: 単音で root, 5度, oct, 3度上 を上昇 (8 分音符 8 個)
+          const third = fullVoicing.find((m) => ((m - root) % 12 + 12) % 12 === 4 || ((m - root) % 12 + 12) % 12 === 3) ?? root + 4;
+          const arpNotes = [root, root + 7, root + 12, third + 12, root + 12, root + 7, third, root];
+          for (let i = 0; i < 8; i++) {
+            const t = barStart + i * (beatSec / 2);
+            const dur = beatSec * 0.55;
+            const vel = Math.max(0.4, vel0 * 0.7);
+            out.push({ midi: arpNotes[i], startSec: t, durationSec: dur, velocity: vel });
+          }
+        };
+        if (pattern === "vocalLed") {
+          // preEntry はギター無音 → バンドインで全力リフ
+          if (phase === "preEntry") {
+            barInSec++;
+            continue;
+          }
+          emitRiffBar();
+          barInSec++;
+          continue;
+        }
+        if (pattern === "cleanArpDistortion") {
+          // preEntry はクリーンアルペジオ → バンドインで歪みリフ
+          if (phase === "preEntry") {
+            emitCleanArpBar();
+          } else {
+            emitRiffBar();
+          }
+          barInSec++;
+          continue;
+        }
+        // riffLed (既存): イントロ全体で歪みリフ
+        emitRiffBar();
+        barInSec++;
+        continue;
+      }
+      const localScale = transposeScale(scale, sec.keyOffsetSemitones);
+      const isLastBar = isSectionLastBar(sec, bar);
+      const phrase = leadPhraseForBar(
+        chords[bar],
+        localScale,
+        style,
+        barInSec,
+        isLastBar,
+        52,
+        76,
+        Math.max(0.5, vel0 * 1.05),
+        rng,
+      );
+      for (const n of phrase) {
+        const startSec = barStart + n.startBeat * beatSec;
+        const durationSec = Math.max(0.05, n.durationBeats * beatSec * 0.95);
+        out.push({ midi: n.midi, startSec, durationSec, velocity: n.velocity });
+        // 拍頭 (整数拍) は太く: オクターブ下を半分の音量で重ねる
+        const beatFrac = n.startBeat - Math.floor(n.startBeat);
+        if (beatFrac < 0.05 && n.midi - 12 >= 40) {
+          out.push({
+            midi: n.midi - 12,
+            startSec,
+            durationSec: Math.max(0.05, durationSec * 0.7),
+            velocity: n.velocity * 0.55,
+          });
+        }
+      }
+      barInSec++;
+      continue;
+    }
+
     const riff = GUITAR_RIFF_LIBRARY[style][sec.kind] ?? EMPTY_RIFF;
-    const baseBarNotes = riff.notesPerBar[barInSec % riff.barsLength];
+    let baseBarNotes = riff.notesPerBar[barInSec % riff.barsLength];
+
+    // ユーザーがギターのボイシングを明示指定している場合、
+    // chord 役セクション (verse/preChorus/chorus/outro) を上書きする。
+    // intro / bridge / break は上の早期 return 分岐で扱われているのでここには来ない。
+    //   - "lead"       → 8 分ペンタトニック・リード (single)
+    //   - "powerChord" → 8 分パワーコード連打 (power)
+    //   - "palmMute"   → 8 分パームミュート連打 (palmMute)
+    if (guitarVoicing !== "auto") {
+      baseBarNotes = overrideVoicingForBar(baseBarNotes, guitarVoicing);
+    }
 
     // セクションの役割 (chord = バッキング / phrase = リード) に応じて
     // ヒューマナイズを微妙に変える:
@@ -2384,10 +3053,18 @@ function generateGuitarLayer(
           pitches = [baseMidiForNote, baseMidiForNote + 3];
           break;
         case "mute":
-          // パームミュート相当 — パワーコードの低 2 音だけを短く弱く
+          // 軽いパームミュート/スクラッチ相当 — パワーコードの低 2 音だけを短く弱く
           pitches = [baseMidiForNote, baseMidiForNote + 7];
           durMul = 0.55;
           velMul = 0.7;
+          break;
+        case "palmMute":
+          // フル・ブリッジミュート — power と同じ root + 5 + octave を、
+          // ブリッジ寄りで掌底ミュートして「ズクズク」と 8 分連続で刻む向け。
+          // power よりは短く・少しソフトだが、mute よりは芯が残る中間的サステイン。
+          pitches = [baseMidiForNote, baseMidiForNote + 7, baseMidiForNote + 12];
+          durMul = 0.7;
+          velMul = 0.85;
           break;
         case "stab":
           // ファンキースタブ — フル和音を極短に
@@ -2445,9 +3122,11 @@ function generateGuitarLayer(
 // ---------------------------------------------------------------------------
 function generateAcousticLayer(
   chords: HarmonicChord[],
+  scale: Scale,
   sections: SongSection[],
   bpm: number,
   style: ComposerStyle,
+  hasGuitarLead: boolean,
   rng: () => number,
 ): NoteEvent[] {
   const beatSec = 60 / bpm;
@@ -2465,14 +3144,86 @@ function generateAcousticLayer(
     const root = voicing[0];
     const barStart = bar * barSec;
     const vel0 = sec.intensity;
+    const barInSec = bar - sec.startBar;
 
     if (sec.kind === "break") {
       // 1 拍目に低音 root のみ余韻
       out.push({ midi: root, startSec: barStart, durationSec: beatSec * 0.7, velocity: 0.55 });
       continue;
     }
-    if (sec.kind === "intro" || sec.kind === "outro") {
-      // 静かな分散和音
+    if (sec.kind === "intro" || sec.kind === "bridge") {
+      // ロックイントロ: パターン別の挙動 (cleanArpDistortion の preEntry をアコギで前に出す)
+      if (style === "rock" && sec.kind === "intro") {
+        const pattern: RockIntroPattern = sec.rockIntroPattern ?? "riffLed";
+        const phase = getRockIntroPhase(sec, bar);
+        if (pattern === "vocalLed" && phase === "preEntry") {
+          // 歌だけ: アコギも休む
+          continue;
+        }
+        if (pattern === "cleanArpDistortion" && phase === "preEntry") {
+          // クリーン・アルペジオ (アコギで歌うように。8 分粒で root - 3rd - 5th - oct - 5th - 3rd - 5th - 3rd)
+          const arpPattern = [0, 1, 2, 3, 2, 1, 2, 1];
+          for (let i = 0; i < 8; i++) {
+            out.push({
+              midi: arp[arpPattern[i] % arp.length],
+              startSec: barStart + i * (beatSec / 2),
+              durationSec: beatSec * 0.7,
+              velocity: Math.max(0.45, vel0 * (i === 0 ? 0.85 : 0.65)),
+            });
+          }
+          continue;
+        }
+        if (pattern === "riffLed" || phase === "bandEntry") {
+          // バンドイン: アコギは静かな分散和音でエレキの陰に隠れる
+          for (let i = 0; i < 4; i++) {
+            out.push({
+              midi: arp[i % arp.length],
+              startSec: barStart + i * beatSec,
+              durationSec: beatSec * 1.1,
+              velocity: vel0 * 0.4,
+            });
+          }
+          continue;
+        }
+      }
+      if (!hasGuitarLead) {
+        // ギターがいないので acoustic がリードフレーズを担当
+        const localScale = transposeScale(scale, sec.keyOffsetSemitones);
+        const isLastBar = isSectionLastBar(sec, bar);
+        const phrase = leadPhraseForBar(
+          chords[bar],
+          localScale,
+          style,
+          barInSec,
+          isLastBar,
+          48, // C3
+          72, // C5
+          Math.max(0.45, vel0 * 0.95),
+          rng,
+        );
+        for (const n of phrase) {
+          out.push({
+            midi: n.midi,
+            startSec: barStart + n.startBeat * beatSec,
+            durationSec: Math.max(0.05, n.durationBeats * beatSec),
+            velocity: n.velocity,
+          });
+        }
+      } else {
+        // ギターがリードを取るので静かな分散和音で寄り添う
+        for (let i = 0; i < 4; i++) {
+          out.push({
+            midi: arp[i % arp.length],
+            startSec: barStart + i * beatSec,
+            durationSec: beatSec * 1.1,
+            velocity: vel0 * 0.45,
+          });
+        }
+      }
+      continue;
+    }
+    if (sec.kind === "outro") {
+      // 静かな分散和音 (アウトロは余韻)
       for (let i = 0; i < 4; i++) {
         out.push({
           midi: arp[i % arp.length],
@@ -2719,6 +3470,13 @@ function generateBass(
   const out: NoteEvent[] = [];
   const baseMidi = 36; // C2
 
+  // 最終サビ直前のセクションを特定 (ラスサビ前ドロップ用)
+  let finalChorusIdx = -1;
+  for (let i = sections.length - 1; i >= 0; i--) {
+    if (sections[i].kind === "chorus") { finalChorusIdx = i; break; }
+  }
+  const preFinal = finalChorusIdx > 0 ? sections[finalChorusIdx - 1] : null;
+
   for (let bar = 0; bar < chords.length; bar++) {
     const sec = sectionAtBar(sections, bar);
     const ch = chords[bar];
@@ -2730,6 +3488,19 @@ function generateBass(
     const third = root + 4; // 簡易: メジャー想定。微差は許容
     const barStart = bar * 4 * beatSec;
     const vel0 = sec.intensity;
+    // ラスサビ直前の最終小節: 前半だけ鳴らして後半を完全に "落とす"
+    const dropBeforeFinal =
+      preFinal !== null && sec === preFinal && isSectionLastBar(sec, bar);
+    if (dropBeforeFinal) {
+      // 2 拍だけ強めのルート (= 最後の溜め)
+      out.push({
+        midi: root,
+        startSec: barStart,
+        durationSec: 2 * beatSec * 0.9,
+        velocity: vel0 * 0.95,
+      });
+      continue;
+    }
 
     // ブレイク: 1 拍目だけ短いベース、あとは無音
     if (sec.kind === "break") {
@@ -2744,6 +3515,37 @@ function generateBass(
 
     // Intro / Outro は控えめ (1 拍目だけ)
     if (sec.kind === "intro" || sec.kind === "outro") {
+      // ロックイントロ: パターン別の挙動
+      if (style === "rock" && sec.kind === "intro") {
+        const pattern: RockIntroPattern = sec.rockIntroPattern ?? "riffLed";
+        const phase = getRockIntroPhase(sec, bar);
+        if (pattern === "vocalLed" && phase === "preEntry") {
+          // 歌だけのプリエントリー: ベース無音
+          continue;
+        }
+        if (pattern === "cleanArpDistortion" && phase === "preEntry") {
+          // クリーンアルペジオ中: ベースは長音ルートで薄く支える
+          out.push({
+            midi: root,
+            startSec: barStart,
+            durationSec: 4 * beatSec * 0.95,
+            velocity: vel0 * 0.5,
+          });
+          continue;
+        }
+        // バンドイン / riffLed: 8 分ルートドライブ (ギターのリフに同期)
+        for (let i = 0; i < 8; i++) {
+          const t = barStart + i * (beatSec / 2);
+          const isAccent = i === 0 || i === 4;
+          out.push({
+            midi: root,
+            startSec: t,
+            durationSec: beatSec * 0.42,
+            velocity: Math.max(0.5, vel0 * (isAccent ? 0.95 : 0.75)),
+          });
+        }
+        continue;
+      }
       out.push({
         midi: root,
         startSec: barStart,
@@ -2778,20 +3580,66 @@ function generateBass(
         });
       }
     } else if (style === "rock") {
-      // 8 分刻み。Chorus は 16 分混じり
-      const sub = sec.kind === "chorus" ? 0.25 : 0.5;
-      const reps = 4 / sub;
-      for (let b = 0; b < reps; b++) {
-        const isThirdBeat = b === reps / 2;
-        out.push({
-          midi: isThirdBeat ? fifth : root,
-          startSec: barStart + b * sub * beatSec,
-          durationSec: beatSec * sub * 0.9,
-          velocity: vel0 * (b % 2 === 0 ? 0.9 : 0.65),
-        });
+      // ロック (ONE OK ROCK 系): セクションごとに表情を変える
+      //   verse: 8 分ルートドライブ + 拍頭強・裏弱 + 時々オクターブジャンプ
+      //   preChorus: 4 つ打ち + 4 拍目で 16 分シンコペ (サビへの加速)
+      //   chorus: 8 分の ルート⇄オクターブ 上下 (ヒーロー感) + 3 拍目 5 度
+      //   bridge: フィルイン的な動き (タイミング崩し)
+      if (sec.kind === "chorus") {
+        // 8 分: root-root-oct-fifth-root-oct-fifth-(approach to next)
+        // ONE OK ROCK サビの「重く跳ねる」感を狙う。
+        // バックビート同期: 2 拍 (b=2) と 4 拍 (b=6) のアクセントを更に強くし、
+        // スネアと一体感を作る (= ロックの "ハマる" 感)。
+        const seq = [root, root, octave, fifth, root, octave, fifth, octave];
+        for (let b = 0; b < 8; b++) {
+          const isOnBeat = b % 2 === 0;
+          const isBackbeat = b === 2 || b === 6; // 2 拍頭 / 4 拍頭
+          const isDownbeat = b === 0 || b === 4; // 1 拍頭 / 3 拍頭
+          const vScale = isBackbeat ? 1.0
+            : isDownbeat ? 0.92
+            : isOnBeat ? 0.85
+            : 0.68;
+          out.push({
+            midi: seq[b],
+            startSec: barStart + b * (beatSec / 2),
+            durationSec: beatSec * 0.45,
+            velocity: vel0 * vScale,
+          });
+        }
+      } else if (sec.kind === "preChorus") {
+        // 4 つ打ち (1,2,3 拍) + 4 拍目を 16 分 root-root-root-approach で煽る
+        for (let b = 0; b < 3; b++) {
+          out.push({
+            midi: root,
+            startSec: barStart + b * beatSec,
+            durationSec: beatSec * 0.92,
+            velocity: vel0 * 0.92,
+          });
+        }
+        // 4 拍目 = 16 分プッシュ (サビへの「ダッ・ダッ・ダッ・ダ」)
+        for (let i = 0; i < 4; i++) {
+          out.push({
+            midi: root,
+            startSec: barStart + 3 * beatSec + i * (beatSec / 4),
+            durationSec: beatSec * 0.22,
+            velocity: vel0 * (0.85 + i * 0.04),
+          });
+        }
+      } else {
+        // verse: 8 分ドライブ、拍頭強。3 拍目で 5 度に上がる定番形
+        for (let b = 0; b < 8; b++) {
+          const isThirdBeat = b === 4; // 3 拍目頭
+          const isOctAccent = b === 6 && rng() < 0.4; // 4 拍目頭でオクターブジャンプ
+          out.push({
+            midi: isOctAccent ? octave : (isThirdBeat ? fifth : root),
+            startSec: barStart + b * (beatSec / 2),
+            durationSec: beatSec * 0.45,
+            velocity: vel0 * (b % 2 === 0 ? 0.9 : 0.62),
+          });
+        }
       }
     } else {
-      // pop
+      // pop (BUMP OF CHICKEN 系): メロディアスで動きのあるベース
       if (sec.kind === "chorus") {
         // 1-and-2-and pattern (跳ねるベースライン)
         const seq = [root, root, fifth, root, octave, root, fifth, root];
@@ -2804,13 +3652,21 @@ function generateBass(
           });
         }
       } else if (sec.kind === "preChorus") {
-        // 4 つ打ち気味
-        for (let b = 0; b < 4; b++) {
+        // 1,2,3 拍 4 つ打ち + 4 拍目 16 分ドライブ
+        for (let b = 0; b < 3; b++) {
           out.push({
             midi: root,
             startSec: barStart + b * beatSec,
             durationSec: beatSec * 0.9,
-            velocity: vel0 * 0.85,
+            velocity: vel0 * 0.88,
+          });
+        }
+        for (let i = 0; i < 4; i++) {
+          out.push({
+            midi: i === 3 ? octave : root,
+            startSec: barStart + 3 * beatSec + i * (beatSec / 4),
+            durationSec: beatSec * 0.22,
+            velocity: vel0 * (0.8 + i * 0.05),
           });
         }
       } else {
@@ -2826,19 +3682,26 @@ function generateBass(
       }
     }
 
-    // 小節最後でアプローチノート (次コードへの導音)
-    if (bar + 1 < chords.length && rng() < 0.35) {
+    // 小節最後で次コードへのクロマチック/全音アプローチノート
+    // 確率を 35% → 60% に。ロック・ポップで「歌うベースライン」を作る。
+    // 次ルートの高低に応じて半音上 or 半音下を選ぶ (= 自然な下降/上昇導音)。
+    // (break/intro/outro はこの時点で continue 済み)
+    if (bar + 1 < chords.length) {
       const next = chords[bar + 1];
       let nextRoot = baseMidi;
       while (nextRoot % 12 !== next.rootPitchClass) nextRoot += 1;
       if (nextRoot > 48) nextRoot -= 12;
-      const approach = nextRoot + (rng() < 0.5 ? -1 : 1);
-      out.push({
-        midi: approach,
-        startSec: barStart + 3.5 * beatSec,
-        durationSec: beatSec * 0.45,
-        velocity: vel0 * 0.5,
-      });
+      const useChromatic = rng() < 0.6;
+      if (useChromatic && nextRoot !== root) {
+        // 次ルートが上なら半音下から、下なら半音上から接近 (= 自然な歌うベース)
+        const approach = nextRoot + (nextRoot > root ? -1 : 1);
+        out.push({
+          midi: approach,
+          startSec: barStart + 3.5 * beatSec,
+          durationSec: beatSec * 0.45,
+          velocity: vel0 * 0.55,
+        });
+      }
     }
   }
 
@@ -2883,12 +3746,45 @@ function generateDrums(
   const beatSec = 60 / bpm;
   const out: NoteEvent[] = [];
 
+  // 最終サビ (最後の chorus セクション) のインデックスを特定。
+  // ONE OK ROCK / BUMP OF CHICKEN 系では「ラスサビ直前の一瞬の無音」が定番。
+  let finalChorusIdx = -1;
+  for (let i = sections.length - 1; i >= 0; i--) {
+    if (sections[i].kind === "chorus") { finalChorusIdx = i; break; }
+  }
+  const finalChorus = finalChorusIdx >= 0 ? sections[finalChorusIdx] : null;
+  // ラスサビ直前のセクション (通常 preChorus or bridge)
+  const preFinal = finalChorusIdx > 0 ? sections[finalChorusIdx - 1] : null;
+
+  // セクション kind 別の「何回目の登場か」を 1-indexed で記録
+  //   = 1番Aメロ / 2番Aメロ / 落ちサビ / 1番Bメロ / 2番Bメロ ... を区別するための情報。
+  // これで「2番Aメロは1番より密度高め」「2回目のブリッジはタム中心」等の展開を作れる。
+  const occIndex = new Map<SongSection, number>();
+  const countByKind: Record<SectionKind, number> = {
+    intro: 0, verse: 0, preChorus: 0, chorus: 0, bridge: 0, break: 0, outro: 0,
+  };
+  for (const s of sections) {
+    countByKind[s.kind] += 1;
+    occIndex.set(s, countByKind[s.kind]);
+  }
+
+  // セクションが「ラスサビ直前」かどうか
+  const isPreFinal = (s: SongSection) =>
+    preFinal !== null && s === preFinal;
+  // セクションが「ラスサビ本体」かどうか
+  const isFinalChorus = (s: SongSection) =>
+    finalChorus !== null && s === finalChorus;
+
   for (let bar = 0; bar < bars; bar++) {
     const sec = sectionAtBar(sections, bar);
     const barStart = bar * 4 * beatSec;
     const intensity = sec.intensity;
     const isSectionStart = bar === sec.startBar;
     const isSectionLast = isSectionLastBar(sec, bar);
+    // ラスサビ直前の最終小節 → ドラム後半を完全に止める ("溜め")
+    const dropBeforeFinal = isPreFinal(sec) && isSectionLast;
+    // ラスサビの 1 小節目 → クラッシュ/キックをさらに強める
+    const finalChorusHead = isFinalChorus(sec) && isSectionStart;
 
     // ブレイク (ドロップ): ドラムをほぼ完全に止める。
     //   - 先頭にだけクラップを 1 発
@@ -2909,11 +3805,64 @@ function generateDrums(
 
     // セクション開始: クラッシュ + 強キック (Intro/Outro 以外)
     if (isSectionStart && sec.kind !== "intro" && sec.kind !== "outro") {
-      addNote(out, DRUM_CRASH_MIDI, barStart, Math.min(1, intensity + 0.05));
-      addNote(out, DRUM_KICK_MIDI, barStart, 0.95);
+      // ラスサビ頭は更に強い "爆発"
+      const headBoost = finalChorusHead ? 0.15 : 0;
+      addNote(out, DRUM_CRASH_MIDI, barStart, Math.min(1, intensity + 0.05 + headBoost));
+      addNote(out, DRUM_KICK_MIDI, barStart, Math.min(1, 0.95 + headBoost));
+      // ラスサビ頭は左右に大クラッシュ感を出すため2枚目クラッシュ
+      if (finalChorusHead) {
+        addNote(out, DRUM_CRASH_MIDI, barStart + beatSec * 0.05, 0.85);
+      }
+    }
+    // サビの 4 小節毎にもクラッシュを追加 (= "うねり" を作る)
+    // ONE OK ROCK の Chorus は 1 + 5 拍目にしっかりシンバルが入る
+    if (
+      sec.kind === "chorus" &&
+      !isSectionStart &&
+      (bar - sec.startBar) % 4 === 0
+    ) {
+      addNote(out, DRUM_CRASH_MIDI, barStart, intensity * 0.9);
     }
 
     if (sec.kind === "intro" || sec.kind === "outro") {
+      // ロックイントロ: パターン別の挙動
+      if (style === "rock" && sec.kind === "intro") {
+        const pattern: RockIntroPattern = sec.rockIntroPattern ?? "riffLed";
+        const phase = getRockIntroPhase(sec, bar);
+        if (pattern === "vocalLed" && phase === "preEntry") {
+          // 完全無音 (歌だけのプリエントリー)
+          continue;
+        }
+        if (pattern === "cleanArpDistortion" && phase === "preEntry") {
+          // クリーンアルペジオ中: ハイハット 4 分のみで支える
+          for (let b = 0; b < 4; b++) {
+            addNote(out, DRUM_HIHAT_MIDI, barStart + b * beatSec, intensity * 0.45);
+          }
+          continue;
+        }
+        // バンドイン / riffLed: 8 ビートでバンドの塊感を出す
+        // フィル: イントロ最終小節は派手にフィルイン
+        addNote(out, DRUM_KICK_MIDI, barStart, intensity * 1.0);
+        addNote(out, DRUM_SNARE_MIDI, barStart + 2 * beatSec, intensity * 0.95);
+        if (!isSectionLast) {
+          addNote(out, DRUM_KICK_MIDI, barStart + 2.5 * beatSec, intensity * 0.8);
+        }
+        // 8 分ハイハット
+        for (let b = 0; b < 8; b++) {
+          const t = barStart + b * (beatSec / 2);
+          const isOpen = b === 7;
+          addNote(out, isOpen ? DRUM_HIHAT_OPEN_MIDI : DRUM_HIHAT_MIDI, t, intensity * (b % 2 === 0 ? 0.7 : 0.55));
+        }
+        // バンドイン最初の小節: クラッシュ強打
+        if (phase === "bandEntry" && (bar - sec.startBar) === Math.floor((sec.endBar - sec.startBar) / 2)) {
+          addNote(out, DRUM_CRASH_MIDI, barStart, intensity * 1.0);
+        }
+        if (isSectionLast) {
+          addNote(out, DRUM_TOM_LO_MIDI, barStart + 3 * beatSec, intensity * 0.85);
+          addNote(out, DRUM_TOM_MID_MIDI, barStart + 3.5 * beatSec, intensity * 0.9);
+        }
+        continue;
+      }
       // Intro/Outro: キックとハットを薄く、スネアは弱
       addNote(out, DRUM_KICK_MIDI, barStart, intensity * 0.85);
       if (bar % 2 === 1) {
@@ -2965,20 +3914,142 @@ function generateDrums(
       }
     } else {
       // pop / rock: セクションに応じた密度
+      //
+      // 【サビ・パターン・ローテーション】
+      // サビごとに 4 種類のパターンを切替 (= 「FX のあとは必ずライド」を回避):
+      //   pattern 0 : 王道 8 ビート (closed hat 8th + 4 拍裏オープン)        … rock デフォルト
+      //   pattern 1 : ONE OK ROCK「完全感覚Dreamer」サビ風 (全拍クラッシュ)    … 爆発的
+      //   pattern 2 : 16 分閉じハット (= Tomoya 風アップダウン)               … 疾走感
+      //   pattern 3 : 裏拍ライド (= pop デフォルト、jazz 寄り広がり)            … 広がり
+      // chorusPatternId は「サビセクションの startBar」で決まる (= 毎サビ違う)
+      const chorusPatternId = sec.kind === "chorus"
+        ? (style === "rock"
+            // rock: 0 / 1 / 2 を中心にローテ (ride は出さない)
+            ? [0, 1, 2, 0, 1, 2][sec.startBar % 6] ?? 0
+            // pop: 0 / 3 / 1 をローテ (ride 比率を下げる)
+            : [0, 3, 1, 0, 3, 1][sec.startBar % 6] ?? 0)
+        : 0;
+
+      // 【Verse パターンローテ】1番Aメロ / 2番Aメロ / 3番... の登場順で雰囲気を変える。
+      //   0: 標準 8 ビート (1番Aメロ = シンプルに歌を聞かせる)
+      //   1: 16 分密度 + キックシンコペ (2番Aメロ = 一度サビを通った後の "戻り" を密度で表現)
+      //   2: ハーフタイム感 (3番以降 / 落ちAメロ = リリース感)
+      // ※ rock の場合は元々スリップビート等で変化が付くため、Aメロ密度を半分の確率で上書きする
+      const verseOcc = occIndex.get(sec) ?? 1;
+      const versePatternId = sec.kind === "verse"
+        ? Math.min(2, verseOcc - 1)
+        : 0;
+
+      // 【Bridge パターンローテ】曲中に複数登場するブリッジを変化させる。
+      //   0: 標準 (既存の 8 ビート + ライド) — 1 回目のブリッジ
+      //   1: タムワーク中心 (= breakdown 感) — 2 回目のブリッジ
+      //   2: ハーフタイム / ライドオンリー (= 落ちブリッジ) — 3 回目以降
+      const bridgeOcc = occIndex.get(sec) ?? 1;
+      const bridgePatternId = sec.kind === "bridge"
+        ? Math.min(2, bridgeOcc - 1)
+        : 0;
+
+      // 【PreChorus 段階的盛り上げ】サビ前は 1 小節目→終盤に向けて密度を上げる。
+      //   セクション長が 2 小節以上の時、後半小節は前半より 16 分密度を上げる。
+      const preChorusBarPos = bar - sec.startBar;
+      const preChorusLen = sec.endBar - sec.startBar;
+      // 0 (序盤) 〜 1 (終盤) の度合い
+      const preChorusBuildRatio = preChorusLen > 1
+        ? preChorusBarPos / Math.max(1, preChorusLen - 1)
+        : 1;
       // キック
-      const kickSlots = sec.kind === "chorus"
-        ? [0, 2.5, 3]      // ロックらしい
-        : sec.kind === "preChorus"
-          ? [0, 1.5, 2, 3.5]
+      //   chorus: 王道 8 ビート「ドン・カッ・ドコッ・カッ」(= 0, 2, 2.5) を基本に、
+      //           パターン 1 (爆発) と 2 (16 分) で踏み変える。
+      //   preChorus: 16 分シンコペ
+      //   verse: シンプル 1+3。ただし Tomoya「スリップビート」(スネア半拍遅れ) も時々入る。
+      // verse の occurrence 別キック:
+      //   pattern 0 (1番Aメロ): シンプル「ドンカッ・ドンドンカッ」基本
+      //   pattern 1 (2番Aメロ): 16 分シンコペで密度↑
+      //   pattern 2 (落ちAメロ): ハーフタイム = キック [0] のみ
+      const verseKickRock = versePatternId === 1
+        ? [0, 1.5, 2, 2.5]        // 2番: シンコペ密度
+        : versePatternId === 2
+          ? [0]                    // 落ち: 1 発のみ
+          : [0, 2, 2.5];           // 1番: 標準 8 beat
+      const verseKickPop = versePatternId === 1
+        ? [0, 1.5, 2, 3]
+        : versePatternId === 2
+          ? [0]
           : [0, 2];
+      // bridge の occurrence 別キック:
+      //   pattern 0: 標準 8 ビート感
+      //   pattern 1: タムワーク中心 = キック [0, 2.5] (薄め)
+      //   pattern 2: ハーフタイム = キック [0] のみ
+      const bridgeKickRock = bridgePatternId === 1
+        ? [0, 2.5]
+        : bridgePatternId === 2
+          ? [0]
+          : [0, 2, 2.5];
+      const bridgeKickPop = bridgePatternId === 1
+        ? [0, 2.5]
+        : bridgePatternId === 2
+          ? [0]
+          : [0, 1.75, 2];
+
+      const kickSlots = style === "rock"
+        ? (sec.kind === "chorus"
+            // chorus パターン別キック (rock は常に「ドンカッ・ドンドンカッ」8 ビート系。
+            // ポップな 4 つ打ちは pop 専用。):
+            //   0: 王道 8 ビート 「ドンカッ・ドコッカッ」 (1 / 3 / 3+8th)
+            //   1: 全拍クラッシュ伴でも、キックは 8 ビート (1 / 3 / 3+8th)
+            //   2: 16 分跳ね、キック密度高め
+            ? (chorusPatternId === 2
+                ? [0, 1.5, 2, 2.5, 3.5]      // Tomoya 16 分シンコペ
+                : [0, 2, 2.5])                // 王道 8 beat ドンカッ・ドコッカッ (0/1 共通)
+            : sec.kind === "preChorus"
+              ? [0, 1.5, 2, 3.5]
+              : sec.kind === "bridge"
+                ? bridgeKickRock
+                : verseKickRock)
+        : (sec.kind === "chorus"
+            ? (chorusPatternId === 1
+                ? [0, 1, 2, 3]                  // 4 つ打ち
+                : chorusPatternId === 3
+                  ? [0, 1.5, 2, 2.75, 3]       // pop シンコペ
+                  : [0, 2, 2.5])                // 王道 8 beat
+            : sec.kind === "preChorus"
+              ? [0, 1.5, 2, 3.5]
+              : sec.kind === "bridge"
+                ? bridgeKickPop
+                : verseKickPop);
       for (const off of kickSlots) {
+        // ラスサビ直前の最終小節: 後半 (2 拍以降) のキックを抜く
+        if (dropBeforeFinal && off >= 2) continue;
         addNote(out, DRUM_KICK_MIDI, barStart + off * beatSec, intensity * (off === 0 ? 0.98 : 0.85));
       }
-      // スネア (2,4)
-      addNote(out, DRUM_SNARE_MIDI, barStart + 1 * beatSec, intensity * 0.92);
-      addNote(out, DRUM_SNARE_MIDI, barStart + 3 * beatSec, intensity * 0.95);
-      // ゴーストノート
-      if (rng() < 0.4 && sec.kind !== "verse") {
+      // スネア (2,4) — ラスサビ前ドロップでは 4 拍目スネアを抜く ("間")
+      // ロックはバックビートが命なので、キックより前に出るくらい強く叩く。
+      // verse の rock スタイル: 2 小節ごとに Tomoya「スリップビート」 (4 拍目スネアを半拍遅らせて 4.5 に配置) を交互に適用
+      //   = ONE OK ROCK「完全感覚Dreamer」Aメロの特徴 (スネアが 4 拍目ウラ)
+      const snareVel2 = style === "rock" ? Math.min(1, intensity * 1.05) : intensity * 0.92;
+      const snareVel4 = style === "rock" ? Math.min(1, intensity * 1.08) : intensity * 0.95;
+      const slipBeat = style === "rock" && sec.kind === "verse" && versePatternId === 0 && ((bar - sec.startBar) % 4 === 1 || (bar - sec.startBar) % 4 === 3);
+      // ハーフタイム感: verse / bridge pattern 2 では 2 拍目スネアを抜き、3 拍目のみ叩く
+      const halfTime = (sec.kind === "verse" && versePatternId === 2) || (sec.kind === "bridge" && bridgePatternId === 2);
+      if (!halfTime) {
+        addNote(out, DRUM_SNARE_MIDI, barStart + 1 * beatSec, snareVel2);
+      }
+      if (!dropBeforeFinal) {
+        if (halfTime) {
+          // ハーフタイム: 3 拍目のみスネア (ハーフタイム感)
+          addNote(out, DRUM_SNARE_MIDI, barStart + 2 * beatSec, snareVel4 * 0.95);
+        } else {
+          // スリップビート時は 4 拍目を 4.5 (= 4 拍裏) にずらす
+          const snare4Off = slipBeat ? 3.5 : 3;
+          addNote(out, DRUM_SNARE_MIDI, barStart + snare4Off * beatSec, snareVel4 * (slipBeat ? 0.95 : 1));
+        }
+      }
+      // ゴーストノート (verse pattern 1 では密度を上げて 16分裏に多めに配置)
+      if (sec.kind === "verse" && versePatternId === 1) {
+        // 2番Aメロ: 16 分裏のゴーストスネアを 2 箇所追加 (密度↑)
+        if (rng() < 0.7) addNote(out, DRUM_SNARE_MIDI, barStart + 1.75 * beatSec, intensity * 0.25);
+        if (rng() < 0.55) addNote(out, DRUM_SNARE_MIDI, barStart + 3.75 * beatSec, intensity * 0.22);
+      } else if (rng() < 0.4 && sec.kind !== "verse") {
         addNote(out, DRUM_SNARE_MIDI, barStart + 2.5 * beatSec, intensity * 0.25);
       }
       // クラップは Chorus で 2,4 重ね
@@ -2986,20 +4057,151 @@ function generateDrums(
         addNote(out, DRUM_CLAP_MIDI, barStart + 1 * beatSec, intensity * 0.55);
         addNote(out, DRUM_CLAP_MIDI, barStart + 3 * beatSec, intensity * 0.55);
       }
-      // ハットは Chorus は ride 多め、それ以外は閉じハット
+      // ハイハット / シンバル (サビ4パターン + その他は従来通り)
+      //   chorus pattern 0: 王道 8 分閉じハット + 4 拍裏オープン
+      //   chorus pattern 1: 全拍クラッシュ (ONE OK ROCK「完全感覚Dreamer」サビ風)
+      //   chorus pattern 2: 16 分閉じハット (Tomoya 風 / 疾走感)
+      //   chorus pattern 3: 表ハット / 裏ライド (pop 広がり) ← 旧 pop デフォルト
+      //   preChorus: 16 分 (盛り上げ) + 最終小節後半は崩す
+      //   bridge: 8 分閉じハット + 拍頭ライド
+      //   verse: 8 分閉じハット + 4 拍目裏のオープン (時々)
       if (sec.kind === "chorus") {
-        for (let b = 0; b < 8; b++) {
-          const isOff = b % 2 === 1;
-          // 裏拍は時々オープン
-          if (isOff && rng() < 0.25) {
-            addNote(out, DRUM_HIHAT_OPEN_MIDI, barStart + b * (beatSec / 2), intensity * 0.65);
-          } else {
-            addNote(out, isOff ? DRUM_RIDE_MIDI : DRUM_HIHAT_MIDI, barStart + b * (beatSec / 2), intensity * (b % 2 === 0 ? 0.75 : 0.55));
+        if (chorusPatternId === 1) {
+          // 【パターン 1】完全感覚Dreamer サビ風: 4 分でクラッシュを全拍に
+          //   ハイハットは無し、または極薄。クラッシュの "うねり" でサビの爆発を演出。
+          // 1 拍目: セクション頭 or 4 小節毎クラッシュと重ならない時のみ追加
+          const beat1AlreadyHit = isSectionStart || (bar - sec.startBar) % 4 === 0;
+          for (let b = 0; b < 4; b++) {
+            if (b === 0 && beat1AlreadyHit) continue;
+            addNote(out, DRUM_CRASH_MIDI, barStart + b * beatSec, intensity * (b % 2 === 0 ? 0.85 : 0.7));
+          }
+          // 8 分裏に薄い閉じハット (= "粒" を入れる)
+          for (let b = 1; b < 8; b += 2) {
+            addNote(out, DRUM_HIHAT_MIDI, barStart + b * (beatSec / 2), intensity * 0.35);
+          }
+        } else if (chorusPatternId === 2) {
+          // 【パターン 2】Tomoya 16 分閉じハット: アップダウン奏法のシミュレート。
+          //   拍頭・拍裏は強く、16 分の "and-of" は弱く (アップストロークの音圧差)。
+          for (let b = 0; b < 16; b++) {
+            const onBeat = b % 4 === 0;        // 拍頭 (ダウン)
+            const offBeat = b % 4 === 2;       // 拍裏 (ダウン)
+            const isOpen = b === 14 && rng() < 0.6;  // 4 拍裏オープン (時々)
+            if (isOpen) {
+              addNote(out, DRUM_HIHAT_OPEN_MIDI, barStart + b * (beatSec / 4), intensity * 0.7);
+            } else {
+              const v = onBeat ? 0.85 : offBeat ? 0.7 : 0.5;
+              addNote(out, DRUM_HIHAT_MIDI, barStart + b * (beatSec / 4), intensity * v);
+            }
+          }
+          // 16 分の裏拍にゴーストスネア (Tomoya 風 16th-back ghost)
+          if (rng() < 0.5) {
+            addNote(out, DRUM_SNARE_MIDI, barStart + 1.75 * beatSec, intensity * 0.2);
+            addNote(out, DRUM_SNARE_MIDI, barStart + 3.75 * beatSec, intensity * 0.22);
+          }
+        } else if (chorusPatternId === 3) {
+          // 【パターン 3】pop / バラード寄り広がり: 表ハット / 裏ライド
+          for (let b = 0; b < 8; b++) {
+            const isOff = b % 2 === 1;
+            const isLastOff = b === 7;
+            if (isLastOff) {
+              addNote(out, DRUM_HIHAT_OPEN_MIDI, barStart + b * (beatSec / 2), intensity * 0.75);
+              continue;
+            }
+            addNote(out, isOff ? DRUM_RIDE_MIDI : DRUM_HIHAT_MIDI, barStart + b * (beatSec / 2), intensity * (b % 2 === 0 ? 0.78 : 0.55));
+          }
+        } else {
+          // 【パターン 0】王道 8 ビート: 8 分閉じハット + 4 拍裏オープン
+          for (let b = 0; b < 8; b++) {
+            const isOff = b % 2 === 1;
+            const isLastOff = b === 7;
+            if (isLastOff) {
+              addNote(out, DRUM_HIHAT_OPEN_MIDI, barStart + b * (beatSec / 2), intensity * (style === "rock" ? 0.85 : 0.75));
+              continue;
+            }
+            if (isOff && rng() < (style === "rock" ? 0.15 : 0.25)) {
+              addNote(out, DRUM_HIHAT_OPEN_MIDI, barStart + b * (beatSec / 2), intensity * 0.65);
+              continue;
+            }
+            addNote(out, DRUM_HIHAT_MIDI, barStart + b * (beatSec / 2), intensity * (isOff ? 0.7 : 0.85));
           }
         }
       } else if (sec.kind === "preChorus") {
-        for (let b = 0; b < 16; b++) {
-          addNote(out, DRUM_HIHAT_MIDI, barStart + b * (beatSec / 4), intensity * (b % 4 === 0 ? 0.75 : 0.45));
+        // 段階的盛り上げ: 前半は 8 分基調、後半は 16 分に密度を上げる。
+        //   buildRatio = 0 (序盤) → 8 分のみ
+        //   buildRatio = 1 (終盤) → 16 分全部
+        // 最終小節は前半 (2 拍まで) のみで止めて、後半をタムフィルが占拠する空間を作る
+        // ラスサビ前ドロップでは更に短く (1 拍まで) して "完全な間" を作る
+        const stopAt = dropBeforeFinal ? 4 : (isSectionLast ? 8 : 16);
+        // 16分の各位置を「拍頭 / 16分裏 / 8分裏 / 16分裏」と区別
+        for (let b = 0; b < stopAt; b++) {
+          const mod = b % 4;
+          // 拍頭 (mod=0): 常に鳴らす
+          // 8 分裏 (mod=2): buildRatio が 0.3 以上で鳴らす
+          // 16 分裏 (mod=1,3): buildRatio が 0.6 以上で鳴らす
+          let play = false;
+          if (mod === 0) play = true;
+          else if (mod === 2) play = preChorusBuildRatio >= 0.3;
+          else play = preChorusBuildRatio >= 0.6;
+          if (!play) continue;
+          addNote(out, DRUM_HIHAT_MIDI, barStart + b * (beatSec / 4), intensity * (mod === 0 ? 0.78 : 0.45));
+        }
+      } else if (sec.kind === "bridge") {
+        // 【Bridge パターン別ハイハット】
+        //   0: 既存 8 分閉じハット + 拍頭ライド感 (汎用)
+        //   1: タムワーク中心 = ハットなし、代わりにタムを刻む (= breakdown 感)
+        //   2: ハーフタイム = 4 分ライド (= 落ちブリッジ)
+        if (bridgePatternId === 1) {
+          // breakdown 風: ハットなし、タム (Lo/Mid) を 8 分で刻む
+          for (let b = 0; b < 8; b++) {
+            const tom = b % 4 === 0 ? DRUM_TOM_LO_MIDI : b % 4 === 2 ? DRUM_TOM_MID_MIDI : DRUM_TOM_LO_MIDI;
+            // 8 分裏は弱めにゴースト
+            const v = b % 2 === 0 ? 0.7 : 0.4;
+            if (b % 2 === 0 || rng() < 0.5) {
+              addNote(out, tom, barStart + b * (beatSec / 2), intensity * v);
+            }
+          }
+        } else if (bridgePatternId === 2) {
+          // 落ちブリッジ: 4 分ライドのみ
+          for (let b = 0; b < 4; b++) {
+            addNote(out, DRUM_RIDE_MIDI, barStart + b * beatSec, intensity * 0.65);
+          }
+        } else {
+          // 標準: 8 分閉じハット + 4 拍目裏オープン (時々)
+          for (let b = 0; b < 8; b++) {
+            if (b === 7 && rng() < 0.3) {
+              addNote(out, DRUM_HIHAT_OPEN_MIDI, barStart + b * (beatSec / 2), intensity * 0.6);
+            } else {
+              addNote(out, DRUM_HIHAT_MIDI, barStart + b * (beatSec / 2), intensity * (b % 2 === 0 ? 0.7 : 0.5));
+            }
+          }
+        }
+      } else if (sec.kind === "verse") {
+        // 【Verse パターン別ハイハット】
+        //   0: 標準 8 分閉じハット + 4 拍裏オープン時々 (1番Aメロ)
+        //   1: 16 分閉じハット (2番Aメロ = 密度↑)
+        //   2: 4 分ライド (落ちAメロ = ハーフタイム広がり)
+        if (versePatternId === 1) {
+          // 16 分閉じハット: 拍頭・拍裏を強く、16 分の "and-of" を弱く
+          for (let b = 0; b < 16; b++) {
+            const onBeat = b % 4 === 0;
+            const offBeat = b % 4 === 2;
+            const v = onBeat ? 0.7 : offBeat ? 0.55 : 0.35;
+            addNote(out, DRUM_HIHAT_MIDI, barStart + b * (beatSec / 4), intensity * v);
+          }
+        } else if (versePatternId === 2) {
+          // 落ちAメロ: 4 分ライド + 拍頭にハットを薄く重ねる
+          for (let b = 0; b < 4; b++) {
+            addNote(out, DRUM_RIDE_MIDI, barStart + b * beatSec, intensity * 0.55);
+          }
+        } else {
+          // 1番Aメロ: 標準 8 分ハット
+          for (let b = 0; b < 8; b++) {
+            if (b === 7 && rng() < 0.3) {
+              addNote(out, DRUM_HIHAT_OPEN_MIDI, barStart + b * (beatSec / 2), intensity * 0.6);
+            } else {
+              addNote(out, DRUM_HIHAT_MIDI, barStart + b * (beatSec / 2), intensity * (b % 2 === 0 ? 0.7 : 0.5));
+            }
+          }
         }
       } else {
         for (let b = 0; b < 8; b++) {
@@ -3013,11 +4215,18 @@ function generateDrums(
       }
     }
 
-    // セクション最終小節: フィルイン (Intro/Outro は上の continue で抜けてるのでここに来ない)
-    if (isSectionLast) {
-      // Chorus → 次セクションへ向かう大きなフィル / それ以外は小フィル
-      const big = sec.kind === "chorus" || sec.kind === "bridge";
+    // セクション最終小節: フィルイン
+    //   chorus / bridge → 大フィル (次セクションへ向かう)
+    //   preChorus → 大フィル必須 (= サビへ向かう「タムロール突入」)
+    //   verse → 小フィル
+    //   ラスサビ前ドロップ → フィル無し (完全な無音で "落とす")
+    if (isSectionLast && !dropBeforeFinal) {
+      const big = sec.kind === "chorus" || sec.kind === "bridge" || sec.kind === "preChorus";
       appendFill(out, barStart, beatSec, big ? "big" : "small", rng);
+    }
+    // ラスサビ前ドロップの最終小節: 3 拍目だけスネアの "コツン" を残して残りは無音
+    if (dropBeforeFinal) {
+      addNote(out, DRUM_SNARE_MIDI, barStart + 2.5 * beatSec, intensity * 0.35);
     }
   }
 
@@ -3126,6 +4335,274 @@ function generateFx(
 }
 
 // ---------------------------------------------------------------------------
+// アレンジ (各楽器のセクション毎の「鳴る/休む/薄く」を制御)
+// ---------------------------------------------------------------------------
+/**
+ * 楽器ごとに、各セクションでどれだけ存在感を出すかのテーブル。
+ * 0 = そのセクションでは完全に休符 (ノートを削除)
+ * 1 = フル
+ * 0..1 中間値 = ベロシティをその比率にスケールして残す
+ *
+ * 「曲っぽさ」の核心は楽器の出入り。
+ * イントロ〜1番Aメロでドラム/ピアノコンプを休ませて、Bメロ→サビで「ドン!」と全員入ると
+ * 聴き手は「あ、サビが来た!」と感じる。
+ */
+type ArrangeLayer =
+  | "melody" | "chord" | "bass" | "drums"
+  | "guitar" | "acoustic" | "vocal" | "synth";
+
+function applyArrangement(
+  notes: NoteEvent[],
+  layer: ArrangeLayer,
+  sections: SongSection[],
+  bpm: number,
+  style: ComposerStyle,
+): NoteEvent[] {
+  if (notes.length === 0 || sections.length === 0) return notes;
+
+  const barSec = (60 / bpm) * 4;
+
+  // 各 SongSection が「その kind の何回目の登場か」を 1-indexed で記録
+  const occIndex = new Map<SongSection, number>();
+  const countByKind: Record<SectionKind, number> = {
+    intro: 0, verse: 0, preChorus: 0, chorus: 0, bridge: 0, break: 0, outro: 0,
+  };
+  for (const s of sections) {
+    countByKind[s.kind] += 1;
+    occIndex.set(s, countByKind[s.kind]);
+  }
+
+  // 最終 chorus の参照
+  let finalChorus: SongSection | null = null;
+  for (let i = sections.length - 1; i >= 0; i--) {
+    if (sections[i].kind === "chorus") { finalChorus = sections[i]; break; }
+  }
+
+  const presence = (sec: SongSection): number => {
+    const occ = occIndex.get(sec) ?? 1;
+    const isFirst = occ === 1;
+    const isFinal = sec === finalChorus;
+
+    // ===== ロック専用アレンジ =====
+    // ロックは「静かに始めて積み上げる」のではなく「最初からバンド全員でドカン」が定番。
+    // (Highway to Hell / Smells Like Teen Spirit / 邦ロックのイントロ)
+    // ピアノは完全に引っ込み、ギター+ベース+ドラムでイントロから走る。
+    if (style === "rock") {
+      switch (layer) {
+        case "drums":
+          switch (sec.kind) {
+            case "intro": return isFirst ? 0.85 : 1;     // イントロから 8 ビート全開
+            case "verse": return isFirst ? 0.9 : 0.95;   // 1番からドラムあり
+            case "preChorus": return 1;
+            case "chorus": return 1;
+            case "bridge": return 0.85;
+            case "break": return 0;
+            case "outro": return 0.85;
+          }
+          break;
+        case "chord":
+          // ロックではピアノコンプは "色付け" のみ。サビ以外はほぼ無音。
+          switch (sec.kind) {
+            case "intro": return 0;
+            case "verse": return 0;
+            case "preChorus": return 0.4;
+            case "chorus": return 0.7;
+            case "bridge": return 0.5;
+            case "break": return 0;
+            case "outro": return 0.2;
+          }
+          break;
+        case "bass":
+          switch (sec.kind) {
+            case "intro": return isFirst ? 0.85 : 1;     // イントロからベース全開
+            case "verse": return 1;
+            case "preChorus": return 1;
+            case "chorus": return 1;
+            case "bridge": return 0.9;
+            case "break": return 0;
+            case "outro": return 0.85;
+          }
+          break;
+        case "guitar":
+          // ロックの主役。イントロで最大級、全セクション通して目立つ。
+          switch (sec.kind) {
+            case "intro": return 1;                       // ギターリフ = 楽曲の顔
+            case "verse": return 1;
+            case "preChorus": return 1;
+            case "chorus": return 1;
+            case "bridge": return 1;
+            case "break": return 0;
+            case "outro": return 1;
+          }
+          break;
+        case "acoustic":
+          // ロックではアコギは控えめ (主役はエレキ)。サビで重ねる程度。
+          switch (sec.kind) {
+            case "intro": return 0.25;
+            case "verse": return 0.4;
+            case "preChorus": return 0.5;
+            case "chorus": return 0.6;
+            case "bridge": return 0.45;
+            case "break": return 0;
+            case "outro": return 0.35;
+          }
+          break;
+        case "melody":
+          switch (sec.kind) {
+            case "intro": return isFirst ? 0.65 : 0.85;
+            case "verse": return 1;
+            case "preChorus": return 1;
+            case "chorus": return 1;
+            case "bridge": return 0.9;
+            case "break": return 0;
+            case "outro": return 0.7;
+          }
+          break;
+        case "vocal":
+          switch (sec.kind) {
+            case "intro": return 0;
+            case "verse": return 1;
+            case "preChorus": return 1;
+            case "chorus": return 1;
+            case "bridge": return isFinal ? 1 : 0.7;
+            case "break": return 0;
+            case "outro": return 0.4;
+          }
+          break;
+        case "synth":
+          // ロックではシンセはサブ。サビでパッド的に薄く重ねる程度。
+          switch (sec.kind) {
+            case "intro": return 0.3;
+            case "verse": return 0.2;
+            case "preChorus": return 0.5;
+            case "chorus": return 0.7;
+            case "bridge": return 0.6;
+            case "break": return 0;
+            case "outro": return 0.3;
+          }
+          break;
+      }
+      return 1;
+    }
+
+    // ===== pop / ballad / jazz の従来アレンジ (静かに立ち上げる型) =====
+    switch (layer) {
+      case "drums":
+        switch (sec.kind) {
+          case "intro": return 0;                       // ドラムは完全休符
+          case "verse": return isFirst ? 0 : 0.85;      // 1番Aメロもドラムなし (魅せる)
+          case "preChorus": return 1;
+          case "chorus": return isFinal ? 1 : 0.95;
+          case "bridge": return 0.55;
+          case "break": return 0;
+          case "outro": return 0.3;
+        }
+        break;
+      case "chord":
+        switch (sec.kind) {
+          case "intro": return 0;                       // ピアノコンプ休符
+          case "verse": return isFirst ? 0 : 0.7;       // 1番はピアノ無し
+          case "preChorus": return 0.85;
+          case "chorus": return 1;
+          case "bridge": return 0.9;
+          case "break": return 0;
+          case "outro": return 0.5;
+        }
+        break;
+      case "bass":
+        switch (sec.kind) {
+          case "intro": return isFirst ? 0 : 0.55;      // 1回目イントロはベース無し
+          case "verse": return isFirst ? 0.7 : 0.9;
+          case "preChorus": return 1;
+          case "chorus": return 1;
+          case "bridge": return 0.85;
+          case "break": return 0;
+          case "outro": return 0.5;
+        }
+        break;
+      case "melody":
+        switch (sec.kind) {
+          case "intro": return isFirst ? 0.55 : 0.8;
+          case "verse": return 1;
+          case "preChorus": return 1;
+          case "chorus": return 1;
+          case "bridge": return 0.85;
+          case "break": return 0;
+          case "outro": return 0.55;
+        }
+        break;
+      case "guitar":
+        switch (sec.kind) {
+          case "intro": return isFirst ? 0.35 : 0.65;
+          case "verse": return isFirst ? 0.5 : 0.85;
+          case "preChorus": return 0.9;
+          case "chorus": return 1;
+          case "bridge": return 0.8;
+          case "break": return 0;
+          case "outro": return 0.5;
+        }
+        break;
+      case "acoustic":
+        switch (sec.kind) {
+          case "intro": return 1;                       // アコギはイントロ主役
+          case "verse": return isFirst ? 1 : 0.85;
+          case "preChorus": return 0.65;
+          case "chorus": return 0.55;                   // サビは退く
+          case "bridge": return 0.75;
+          case "break": return 0;
+          case "outro": return 0.85;
+        }
+        break;
+      case "vocal":
+        switch (sec.kind) {
+          case "intro": return 0;                       // イントロはインスト
+          case "verse": return 1;
+          case "preChorus": return 1;
+          case "chorus": return 1;
+          case "bridge": return 0.6;
+          case "break": return 0;
+          case "outro": return 0.4;
+        }
+        break;
+      case "synth":
+        switch (sec.kind) {
+          case "intro": return 0.6;
+          case "verse": return isFirst ? 0.25 : 0.55;
+          case "preChorus": return 0.8;
+          case "chorus": return 1;
+          case "bridge": return 0.9;
+          case "break": return 0.3;
+          case "outro": return 0.55;
+        }
+        break;
+    }
+    return 1;
+  };
+
+  const out: NoteEvent[] = [];
+  for (const n of notes) {
+    // ノートの開始拍が属する小節 → そのセクションを引く
+    const barIdx = Math.floor(n.startSec / barSec + 1e-6);
+    const sec = sections.find(s => barIdx >= s.startBar && barIdx < s.endBar);
+    if (!sec) {
+      out.push(n);
+      continue;
+    }
+    const p = presence(sec);
+    if (p <= 0.01) continue; // 完全休符
+    if (p >= 0.99) {
+      out.push(n);
+    } else {
+      out.push({
+        ...n,
+        velocity: Math.max(0.05, Math.min(1, n.velocity * p)),
+      });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // 公開関数: 1 曲生成
 // ---------------------------------------------------------------------------
 /**
@@ -3167,10 +4644,20 @@ export async function composeSongAsync(opts: AutoComposeOptions): Promise<Compos
   } else {
     chords = buildProgression(scale, bars, style, sections, rng);
   }
+  // ロック: ♭VII 借用コードを進行に注入 (Sweet Child o' Mine 型)
+  if (style === "rock" && !(opts.chordsOverride && opts.chordsOverride.length > 0)) {
+    applyRockBorrowedChords(chords, scale, sections, rng);
+  }
   await yieldToUI();
 
+  // intro / bridge で「誰がリードを取るか」の優先順位:
+  //   ギター > アコギ > ピアノ (melody)
+  const hasGuitarLead = (opts.includeGuitar ?? false);
+  const hasAcousticLead = !hasGuitarLead && (opts.includeAcoustic ?? false);
+  const melodyHasOtherLead = hasGuitarLead || hasAcousticLead;
+
   const melodyNotes = (opts.includeMelody ?? true)
-    ? generateMelody(scale, chords, sections, bpm, style, rng)
+    ? generateMelody(scale, chords, sections, bpm, style, melodyHasOtherLead, rng)
     : [];
   await yieldToUI();
 
@@ -3195,12 +4682,12 @@ export async function composeSongAsync(opts: AutoComposeOptions): Promise<Compos
   await yieldToUI();
 
   const guitarNotes = (opts.includeGuitar ?? false)
-    ? generateGuitarLayer(chords, sections, bpm, style, rng)
+    ? generateGuitarLayer(chords, scale, sections, bpm, style, rng, opts.guitarVoicing ?? "auto")
     : [];
   await yieldToUI();
 
   const acousticNotes = (opts.includeAcoustic ?? false)
-    ? generateAcousticLayer(chords, sections, bpm, style, rng)
+    ? generateAcousticLayer(chords, scale, sections, bpm, style, hasGuitarLead, rng)
     : [];
   await yieldToUI();
 
@@ -3215,9 +4702,19 @@ export async function composeSongAsync(opts: AutoComposeOptions): Promise<Compos
 
   const totalSec = bars * 4 * (60 / bpm);
 
+  // セクション × 楽器のアレンジを適用 (イントロでドラム休符など)
+  const arrMelody = applyArrangement(melodyNotes, "melody", sections, bpm, style);
+  const arrChord = applyArrangement(chordNotes, "chord", sections, bpm, style);
+  const arrBass = applyArrangement(bassNotes, "bass", sections, bpm, style);
+  const arrDrums = applyArrangement(drumNotes, "drums", sections, bpm, style);
+  const arrGuitar = applyArrangement(guitarNotes, "guitar", sections, bpm, style);
+  const arrAcoustic = applyArrangement(acousticNotes, "acoustic", sections, bpm, style);
+  const arrVocal = applyArrangement(vocalNotes, "vocal", sections, bpm, style);
+  const arrSynth = applyArrangement(synthNotes, "synth", sections, bpm, style);
+
   for (const arr of [
-    melodyNotes, chordNotes, bassNotes, drumNotes, fxNotes,
-    guitarNotes, acousticNotes, vocalNotes, synthNotes,
+    arrMelody, arrChord, arrBass, arrDrums, fxNotes,
+    arrGuitar, arrAcoustic, arrVocal, arrSynth,
   ]) {
     arr.sort((a, b) => a.startSec - b.startSec);
   }
@@ -3225,15 +4722,15 @@ export async function composeSongAsync(opts: AutoComposeOptions): Promise<Compos
   return {
     chords,
     sections,
-    melodyNotes,
-    chordNotes,
-    bassNotes,
-    drumNotes,
+    melodyNotes: arrMelody,
+    chordNotes: arrChord,
+    bassNotes: arrBass,
+    drumNotes: arrDrums,
     fxNotes,
-    guitarNotes,
-    acousticNotes,
-    vocalNotes,
-    synthNotes,
+    guitarNotes: arrGuitar,
+    acousticNotes: arrAcoustic,
+    vocalNotes: arrVocal,
+    synthNotes: arrSynth,
     totalSec,
     bpm,
     style,
@@ -3260,8 +4757,18 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   } else {
     chords = buildProgression(scale, bars, style, sections, rng);
   }
+  // ロック: ♭VII 借用コードを進行に注入 (Sweet Child o' Mine 型)
+  if (style === "rock" && !(opts.chordsOverride && opts.chordsOverride.length > 0)) {
+    applyRockBorrowedChords(chords, scale, sections, rng);
+  }
+  // intro / bridge で「誰がリードを取るか」の優先順位:
+  //   ギター > アコギ > ピアノ (melody)
+  const hasGuitarLead = (opts.includeGuitar ?? false);
+  const hasAcousticLead = !hasGuitarLead && (opts.includeAcoustic ?? false);
+  const melodyHasOtherLead = hasGuitarLead || hasAcousticLead;
+
   const melodyNotes = (opts.includeMelody ?? true)
-    ? generateMelody(scale, chords, sections, bpm, style, rng)
+    ? generateMelody(scale, chords, sections, bpm, style, melodyHasOtherLead, rng)
     : [];
   const chordNotes = (opts.includeChord ?? true)
     ? generateChordLayer(chords, sections, bpm, style, rng)
@@ -3276,10 +4783,10 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
     ? generateFx(sections, bpm, rng)
     : [];
   const guitarNotes = (opts.includeGuitar ?? false)
-    ? generateGuitarLayer(chords, sections, bpm, style, rng)
+    ? generateGuitarLayer(chords, scale, sections, bpm, style, rng, opts.guitarVoicing ?? "auto")
     : [];
   const acousticNotes = (opts.includeAcoustic ?? false)
-    ? generateAcousticLayer(chords, sections, bpm, style, rng)
+    ? generateAcousticLayer(chords, scale, sections, bpm, style, hasGuitarLead, rng)
     : [];
   const vocalNotes = (opts.includeVocal ?? false)
     ? generateVocalLayer(melodyNotes, chords, sections, scale, bpm)
@@ -3290,9 +4797,19 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
 
   const totalSec = bars * 4 * (60 / bpm);
 
+  // セクション × 楽器のアレンジを適用 (イントロでドラム休符など)
+  const arrMelody = applyArrangement(melodyNotes, "melody", sections, bpm, style);
+  const arrChord = applyArrangement(chordNotes, "chord", sections, bpm, style);
+  const arrBass = applyArrangement(bassNotes, "bass", sections, bpm, style);
+  const arrDrums = applyArrangement(drumNotes, "drums", sections, bpm, style);
+  const arrGuitar = applyArrangement(guitarNotes, "guitar", sections, bpm, style);
+  const arrAcoustic = applyArrangement(acousticNotes, "acoustic", sections, bpm, style);
+  const arrVocal = applyArrangement(vocalNotes, "vocal", sections, bpm, style);
+  const arrSynth = applyArrangement(synthNotes, "synth", sections, bpm, style);
+
   for (const arr of [
-    melodyNotes, chordNotes, bassNotes, drumNotes, fxNotes,
-    guitarNotes, acousticNotes, vocalNotes, synthNotes,
+    arrMelody, arrChord, arrBass, arrDrums, fxNotes,
+    arrGuitar, arrAcoustic, arrVocal, arrSynth,
   ]) {
     arr.sort((a, b) => a.startSec - b.startSec);
   }
@@ -3300,15 +4817,15 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   return {
     chords,
     sections,
-    melodyNotes,
-    chordNotes,
-    bassNotes,
-    drumNotes,
+    melodyNotes: arrMelody,
+    chordNotes: arrChord,
+    bassNotes: arrBass,
+    drumNotes: arrDrums,
     fxNotes,
-    guitarNotes,
-    acousticNotes,
-    vocalNotes,
-    synthNotes,
+    guitarNotes: arrGuitar,
+    acousticNotes: arrAcoustic,
+    vocalNotes: arrVocal,
+    synthNotes: arrSynth,
     totalSec,
     bpm,
     style,

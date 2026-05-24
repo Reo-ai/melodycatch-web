@@ -53,13 +53,15 @@ let fxCompressor: Tone.Compressor | null = null;
 
 function ensureFxBus(): Tone.Channel {
   if (fxBus) return fxBus;
-  fxReverb = new Tone.Reverb({ decay: 1.6, wet: 0.18 }).toDestination();
+  // リバーブ: 中位の decay + preDelay でアタックを濁らせない / wet を 0.22 にして空間広め
+  fxReverb = new Tone.Reverb({ decay: 2.4, preDelay: 0.02, wet: 0.22 }).toDestination();
+  // コンプ: 比率を緩める (3 → 2.0) + knee 大きめでナチュラルに
   fxCompressor = new Tone.Compressor({
-    threshold: -16,
-    ratio: 3,
-    attack: 0.01,
-    release: 0.2,
-    knee: 6,
+    threshold: -14,
+    ratio: 2.0,
+    attack: 0.02,
+    release: 0.25,
+    knee: 10,
   }).connect(fxReverb);
   fxBus = new Tone.Channel({ volume: -6 }).connect(fxCompressor);
   return fxBus;
@@ -94,33 +96,40 @@ function triggerWhiteNoise(durationSec: number, velocity: number, time?: number)
   );
 }
 
-/** フィルタ・スウィープ (アップ/ダウン)。 */
+/** フィルタ・スウィープ (アップ/ダウン)。
+ *  Q を 6 → 2.5 に下げて「笛のような共振」を解消し、自然な空気の流れに。
+ *  +レゾナンス層を別途乗せず、シンプルな BP + 末尾フェードで仕上げる。 */
 function triggerSweep(durationSec: number, velocity: number, up: boolean, time?: number): void {
   const bus = ensureFxBus();
   const dur = Math.max(0.3, Math.min(6.0, durationSec));
+  // 末尾フェード用 Gain を直接 bus 手前に置く
+  const fadeNode = new Tone.Gain(1).connect(bus);
   const filter = new Tone.Filter({
     type: "bandpass",
     frequency: up ? 200 : 6000,
-    Q: 6,
-  }).connect(bus);
-  const noise = new Tone.Noise("pink");
-  noise.volume.value = -12 + (velocity - 0.5) * 6;
-  noise.connect(filter);
+    Q: 2.5,                 // 6 → 2.5: 自然な air sweep に
+  }).connect(fadeNode);
+  // ピンクノイズ + ホワイトノイズの 2 層 (ピンク = 低域厚み、ホワイト = 高域伸び)
+  const pink = new Tone.Noise("pink");
+  pink.volume.value = -10 + (velocity - 0.5) * 6;
+  pink.connect(filter);
+  const white = new Tone.Noise("white");
+  white.volume.value = -18 + (velocity - 0.5) * 4;
+  white.connect(filter);
   const t = time ?? Tone.now();
-  noise.start(t);
-  noise.stop(t + dur + 0.05);
+  pink.start(t);
+  pink.stop(t + dur + 0.05);
+  white.start(t);
+  white.stop(t + dur + 0.05);
   filter.frequency.setValueAtTime(up ? 200 : 6000, t);
   filter.frequency.exponentialRampToValueAtTime(up ? 7000 : 180, t + dur);
-  // 末尾フェードアウト用にゲイン制御
-  const fadeNode = new Tone.Gain(1).connect(bus);
-  filter.disconnect();
-  filter.connect(fadeNode);
   fadeNode.gain.setValueAtTime(1, t);
   fadeNode.gain.linearRampToValueAtTime(0, t + dur + 0.05);
   window.setTimeout(
     () => {
       try {
-        noise.dispose();
+        pink.dispose();
+        white.dispose();
         filter.dispose();
         fadeNode.dispose();
       } catch {
@@ -131,14 +140,18 @@ function triggerSweep(durationSec: number, velocity: number, up: boolean, time?:
   );
 }
 
-/** ライザー (盛り上げ): ノイズスウィープ + 上昇ピッチ。 */
+/** ライザー (盛り上げ): ノイズスウィープ + 上昇ピッチ。
+ *  「シンセくささ」を抜くため:
+ *    - ノイズ層は BP の Q を 4 → 2 にして自然な air に
+ *    - ピッチ層は sawtooth 単音 → triangle + 5度上 triangle の 2 層 (ハーモニーで太く)
+ *    - ピッチ層の終端を 800Hz までに抑え、超高音域への突き刺しを避ける */
 function triggerRiser(durationSec: number, velocity: number, time?: number): void {
   const bus = ensureFxBus();
   const dur = Math.max(0.6, Math.min(8.0, durationSec));
   const t = time ?? Tone.now();
 
-  // 1) フィルタ付きノイズの上昇スウィープ
-  const filter = new Tone.Filter({ type: "bandpass", frequency: 300, Q: 4 });
+  // 1) フィルタ付きノイズの上昇スウィープ (Q を緩めて自然に)
+  const filter = new Tone.Filter({ type: "bandpass", frequency: 300, Q: 2 });
   const noise = new Tone.Noise("white");
   noise.volume.value = -14 + (velocity - 0.5) * 6;
   const gain = new Tone.Gain(0.001);
@@ -146,22 +159,30 @@ function triggerRiser(durationSec: number, velocity: number, time?: number): voi
   noise.start(t);
   noise.stop(t + dur + 0.05);
   filter.frequency.setValueAtTime(300, t);
-  filter.frequency.exponentialRampToValueAtTime(8000, t + dur);
+  filter.frequency.exponentialRampToValueAtTime(9000, t + dur);
   // 音量も上昇 (build-up)
-  gain.gain.setValueAtTime(0.05, t);
-  gain.gain.exponentialRampToValueAtTime(1.0, t + dur);
+  gain.gain.setValueAtTime(0.04, t);
+  gain.gain.exponentialRampToValueAtTime(0.8, t + dur);
   gain.gain.linearRampToValueAtTime(0.001, t + dur + 0.05);
 
-  // 2) ピッチ上昇のサイン (低音)
-  const osc = new Tone.Oscillator(80, "sawtooth");
+  // 2) ピッチ上昇のオシレータ 2 層 (基音 + 5度上)
+  //    triangle は sawtooth より柔らかい倍音で「ヒューン」と素直に上がる
+  const osc1 = new Tone.Oscillator(80, "triangle");
+  const osc2 = new Tone.Oscillator(120, "triangle"); // 5度上 (約 1.5 倍)
   const oscGain = new Tone.Gain(0.001).connect(bus);
-  osc.connect(oscGain);
-  osc.start(t);
-  osc.stop(t + dur + 0.05);
-  osc.frequency.setValueAtTime(80, t);
-  osc.frequency.exponentialRampToValueAtTime(1200, t + dur);
-  oscGain.gain.setValueAtTime(0.05, t);
-  oscGain.gain.exponentialRampToValueAtTime(0.4, t + dur);
+  osc1.connect(oscGain);
+  osc2.connect(oscGain);
+  osc1.start(t);
+  osc2.start(t);
+  osc1.stop(t + dur + 0.05);
+  osc2.stop(t + dur + 0.05);
+  // 終端 800Hz に抑える (1200Hz は耳に痛い)
+  osc1.frequency.setValueAtTime(80, t);
+  osc1.frequency.exponentialRampToValueAtTime(800, t + dur);
+  osc2.frequency.setValueAtTime(120, t);
+  osc2.frequency.exponentialRampToValueAtTime(1200, t + dur);
+  oscGain.gain.setValueAtTime(0.03, t);
+  oscGain.gain.exponentialRampToValueAtTime(0.3, t + dur);
   oscGain.gain.linearRampToValueAtTime(0.001, t + dur + 0.05);
 
   window.setTimeout(
@@ -170,7 +191,8 @@ function triggerRiser(durationSec: number, velocity: number, time?: number): voi
         noise.dispose();
         filter.dispose();
         gain.dispose();
-        osc.dispose();
+        osc1.dispose();
+        osc2.dispose();
         oscGain.dispose();
       } catch {
         /* noop */

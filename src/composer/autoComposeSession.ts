@@ -22,7 +22,12 @@ import { triggerDrumHitAcoustic } from "../audio/drumsAcoustic";
 import { triggerFx } from "../audio/fxEngine";
 import { bassHoldOff, bassHoldOn } from "../audio/bassEngine";
 import { synthHoldOff, synthHoldOn } from "../audio/synthEngine";
-import { guitarHoldOff, guitarHoldOn } from "../audio/guitarEngine";
+import {
+  guitarHoldOff,
+  guitarHoldOn,
+  leadGuitarReleaseAll,
+  leadGuitarTriggerNote,
+} from "../audio/guitarEngine";
 import { acousticHoldOff, acousticHoldOn } from "../audio/acousticGuitarEngine";
 import { vocalHoldOff, vocalHoldOn } from "../audio/vocalEngine";
 import type { ComposedSong } from "./autoComposer";
@@ -36,9 +41,23 @@ export interface AutoComposeCallbacks {
   onComplete?: () => void;
 }
 
+/**
+ * 2本目のギター (リード) を別エンジンで鳴らすためのオーバーライド。
+ * PianoRoll 上は同じ guitar レイヤーに表示しつつ、発音だけ leadGuitar* を使う。
+ */
+export type EngineOverride = "leadGuitar";
+
 interface ScheduledItem {
   layerId: LayerId;
   note: NoteEvent;
+  engine?: EngineOverride;
+}
+
+export interface ExtraStream {
+  layerId: LayerId;
+  notes: NoteEvent[];
+  /** PianoRoll は layerId に表示するが、発音はこちらで上書きする */
+  engine?: EngineOverride;
 }
 
 function holdOnFor(
@@ -46,7 +65,12 @@ function holdOnFor(
   midi: number,
   velocity: number,
   durationSec = 0.25,
+  engine?: EngineOverride,
 ): void {
+  if (engine === "leadGuitar") {
+    leadGuitarTriggerNote(midi, durationSec, velocity);
+    return;
+  }
   switch (layerId) {
     case "bass":
       bassHoldOn(midi, velocity);
@@ -77,7 +101,12 @@ function holdOnFor(
   }
 }
 
-function holdOffFor(layerId: LayerId, midi: number): void {
+function holdOffFor(layerId: LayerId, midi: number, engine?: EngineOverride): void {
+  if (engine === "leadGuitar") {
+    // lead guitar は triggerAttackRelease で発音時に長さを渡しているので
+    // 個別の off は不要。stop() 時に leadGuitarReleaseAll で一括停止される。
+    return;
+  }
   switch (layerId) {
     case "bass":
       bassHoldOff(midi);
@@ -130,11 +159,15 @@ export class AutoComposeSession {
   private tickTimer: number | null = null;
   /** 進捗コールバックのスロットリング用。 */
   private lastProgressAt = 0;
+  /** 直前 tick の実時刻 (ms)。メインスレッドストール検出に使う。
+   *  この値と現在の performance.now() の差が大きすぎる場合 = ストール発生 とみなし、
+   *  startedAt を補正することで song-time の急激な進行 (= ノートのバースト発射) を防ぐ。 */
+  private lastTickRealMs = 0;
 
   constructor(
     song: ComposedSong,
     callbacks: AutoComposeCallbacks,
-    extraStreams: { layerId: LayerId; notes: NoteEvent[] }[] = [],
+    extraStreams: ExtraStream[] = [],
   ) {
     this.song = song;
     this.callbacks = callbacks;
@@ -147,7 +180,7 @@ export class AutoComposeSession {
       ...song.fxNotes.map((n) => ({ layerId: "fx" as LayerId, note: n })),
     ];
     const extraItems: ScheduledItem[] = extraStreams.flatMap((s) =>
-      s.notes.map((n) => ({ layerId: s.layerId, note: n })),
+      s.notes.map((n) => ({ layerId: s.layerId, note: n, engine: s.engine })),
     );
     this.items = [...baseItems, ...extraItems].sort(
       (a, b) => a.note.startSec - b.note.startSec,
@@ -173,6 +206,7 @@ export class AutoComposeSession {
     this.speed = Math.max(0.25, speed);
     this.startedAt = performance.now();
     this.lastProgressAt = 0;
+    this.lastTickRealMs = 0;
 
     // song-time 秒で記録される note-on / note-off 進行管理。
     let cursor = 0;
@@ -181,6 +215,11 @@ export class AutoComposeSession {
     /** look-ahead (song-time 秒)。次ティック分を先取りして
      *  ティック境界による発音の遅れを 1 ティック以内に抑える。 */
     const LOOKAHEAD_SONG_SEC = (TICK_MS / 1000) * this.speed;
+    /** ストール検出のしきい値。前回 tick からこれ以上経過していたら
+     *  メインスレッドが詰まっていたとみなし、その間ぶん song-time を進めずに
+     *  startedAt を後ろにずらして「一時停止」扱いにする。
+     *  TICK_MS=25 に対して 80ms = 3 tick 分以上の遅延を stall とみなす。 */
+    const STALL_THRESHOLD_MS = 80;
 
     const tick = () => {
       if (!this.running) return;
@@ -190,6 +229,22 @@ export class AutoComposeSession {
       let completed = false;
       try {
         const tickRealMs = performance.now();
+        // --- ストール吸収 -------------------------------------------------
+        // 前回 tick からの実時間ギャップが STALL_THRESHOLD_MS を超えたら
+        // メインスレッドが詰まっていたとみなし、その間に進むはずだった
+        // song-time を「無かったこと」にする (startedAt を前進させる)。
+        // これにより song-time は連続的に進み、ノートが単一 tick に
+        // 集中爆発するのを防ぐ (= 「途中で速くなる」現象の根本対策)。
+        if (this.lastTickRealMs > 0) {
+          const gap = tickRealMs - this.lastTickRealMs;
+          if (gap > STALL_THRESHOLD_MS) {
+            // 想定の TICK_MS だけは進めて、残りは startedAt を巻き戻して吸収。
+            const absorbMs = gap - TICK_MS;
+            this.startedAt += absorbMs;
+          }
+        }
+        this.lastTickRealMs = tickRealMs;
+
         const elapsedRealSec = (tickRealMs - this.startedAt) / 1000;
         const songSec = elapsedRealSec * this.speed;
         const horizon = songSec + LOOKAHEAD_SONG_SEC;
@@ -208,11 +263,13 @@ export class AutoComposeSession {
               item.note.midi,
               item.note.velocity,
               item.note.durationSec,
+              item.engine,
             );
             if (
               item.layerId !== "drum" &&
               item.layerId !== "drumAcoustic" &&
-              item.layerId !== "fx"
+              item.layerId !== "fx" &&
+              item.engine !== "leadGuitar"
             ) {
               const audioRealDurSec = Math.max(
                 0.08,
@@ -307,6 +364,13 @@ export class AutoComposeSession {
     if (this.tickTimer !== null) {
       window.clearTimeout(this.tickTimer);
       this.tickTimer = null;
+    }
+    // 2本目ギター (リード) は triggerAttackRelease 駆動なので
+    // 停止時に余韻を含め一括解放しておく。
+    try {
+      leadGuitarReleaseAll();
+    } catch (e) {
+      console.warn("[AutoComposeSession] leadGuitarReleaseAll failed", e);
     }
   }
 }

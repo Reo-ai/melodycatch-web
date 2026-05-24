@@ -72,6 +72,7 @@ import {
   guitarReleaseAll,
   guitarTriggerNote,
   setGuitarType,
+  setLeadGuitarType,
   type GuitarType,
 } from "../audio/guitarEngine";
 import {
@@ -121,9 +122,16 @@ import {
 import {
   composeSongAsync,
   COMPOSER_STYLE_LABEL_JA,
+  GUITAR_VOICING_STYLE_LABEL_JA,
   type ComposerStyle,
+  type GuitarVoicingStyle,
 } from "../composer/autoComposer";
 import { AutoComposeSession } from "../composer/autoComposeSession";
+import {
+  ACOUSTIC_DRUM_KIT_LABEL_JA,
+  setAcousticDrumKit,
+  type AcousticDrumKitId,
+} from "../audio/drumsAcoustic";
 
 interface StudioProps {
   scale: Scale;
@@ -403,6 +411,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [bassType, setBassTypeState] = useState<BassType>("wood");
   /** ギターのタイプ: クリーン / ディストーション。 */
   const [guitarType, setGuitarTypeState] = useState<GuitarType>("distortion");
+  /** 2 本目のギター (リード) のタイプ。デフォルトはクリーンにして
+   *  バッキングと音色を被らせない (バッキング=歪み / リード=クリーンのツインギター構成)。 */
+  const [guitar2Type, setGuitar2TypeState] = useState<GuitarType>("clean");
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
   const [playbackHighlight, setPlaybackHighlight] = useState<Set<number>>(new Set());
@@ -433,6 +444,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [future, setFuture] = useState<Snapshot[]>([]);
   // 自動作曲モード関連 state
   const [autoComposeStyle, setAutoComposeStyle] = useState<ComposerStyle>("pop");
+  /** 生ドラムキット選択 (kit1=Ludwig Rock, kit2=Basic, kit3=Jazz, kit4=Electro) */
+  const [acousticDrumKit, setAcousticDrumKitState] = useState<AcousticDrumKitId>("kit1");
+  /** ギター ボイシング指定 (Verse 等の弾き方を強制) */
+  const [autoComposeGuitarVoicing, setAutoComposeGuitarVoicing] = useState<GuitarVoicingStyle>("auto");
   const [autoComposeBars, setAutoComposeBars] = useState<number>(16);
   const [autoComposeSpeed, setAutoComposeSpeed] = useState<number>(1);
   const [autoComposing, setAutoComposing] = useState<boolean>(false);
@@ -448,6 +463,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [autoComposeWriteDrum, setAutoComposeWriteDrum] = useState<boolean>(true);
   const [autoComposeWriteSynth, setAutoComposeWriteSynth] = useState<boolean>(false);
   const [autoComposeWriteGuitar, setAutoComposeWriteGuitar] = useState<boolean>(false);
+  /** 2 本目のギター (リード) を自動作曲時に発音するか。
+   *  ON のとき、メロディラインを leadGuitar エンジンで重ねて鳴らす。
+   *  PianoRoll 上は guitar レイヤーに混ぜて書き込まれる。 */
+  const [autoComposeWriteGuitar2, setAutoComposeWriteGuitar2] = useState<boolean>(false);
   const [autoComposeWriteAcoustic, setAutoComposeWriteAcoustic] = useState<boolean>(false);
   const [autoComposeWriteVocal, setAutoComposeWriteVocal] = useState<boolean>(false);
   const [autoComposeWriteDrumAcoustic, setAutoComposeWriteDrumAcoustic] = useState<boolean>(false);
@@ -490,6 +509,77 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   useEffect(() => {
     armedRef.current = armed;
   }, [armed]);
+  // 生ドラムサンプル (CC0 / PD の WAV) を選択キットから読み込む。
+  // キット変更時にも再ロード。ファイル無しはエラー握りつぶし → シンセフォールバック。
+  useEffect(() => {
+    try { setAcousticDrumKit(acousticDrumKit); } catch { /* ignore */ }
+  }, [acousticDrumKit]);
+  // 自動作曲スタイル変更時に、そのスタイルに最適な楽器構成・ボイシングへワンタッチ切替。
+  // 自動作曲中は触らない (途中で構成が変わって不整合になるのを防ぐ)。
+  useEffect(() => {
+    if (autoComposing) return;
+    switch (autoComposeStyle) {
+      case "rock":
+        // 生バンド構成: ピアノ + シンセ + エレキ + アコギ + ベース + 生ドラム + FX
+        setAutoComposeWriteMelody(true);
+        setAutoComposeWriteChord(true);
+        setAutoComposeWriteSynth(true);
+        setAutoComposeWriteGuitar(true);
+        setAutoComposeWriteAcoustic(true);
+        setAutoComposeWriteBass(true);
+        setAutoComposeWriteDrumAcoustic(true);
+        setAutoComposeWriteFx(true);
+        setAutoComposeWriteDrum(false);
+        setAutoComposeWriteVocal(false);
+        setAutoComposeGuitarVoicing("auto");
+        break;
+      case "ballad":
+        // 静かなバンド: ピアノ + アコギ + ベース + 生ドラム + FX (歪みなし)
+        setAutoComposeWriteMelody(true);
+        setAutoComposeWriteChord(true);
+        setAutoComposeWriteAcoustic(true);
+        setAutoComposeWriteBass(true);
+        setAutoComposeWriteDrumAcoustic(true);
+        setAutoComposeWriteFx(true);
+        setAutoComposeWriteSynth(false);
+        setAutoComposeWriteGuitar(false);
+        setAutoComposeWriteDrum(false);
+        setAutoComposeWriteVocal(false);
+        setAutoComposeGuitarVoicing("lead");
+        break;
+      case "jazz":
+        // 標準 4 ピース: ピアノ + ベース + 電子ドラム + FX
+        setAutoComposeWriteMelody(true);
+        setAutoComposeWriteChord(true);
+        setAutoComposeWriteBass(true);
+        setAutoComposeWriteDrum(true);
+        setAutoComposeWriteFx(true);
+        setAutoComposeWriteSynth(false);
+        setAutoComposeWriteGuitar(false);
+        setAutoComposeWriteAcoustic(false);
+        setAutoComposeWriteDrumAcoustic(false);
+        setAutoComposeWriteVocal(false);
+        setAutoComposeGuitarVoicing("auto");
+        break;
+      case "pop":
+      default:
+        // ポップ標準: ピアノ + ベース + 電子ドラム + FX
+        setAutoComposeWriteMelody(true);
+        setAutoComposeWriteChord(true);
+        setAutoComposeWriteBass(true);
+        setAutoComposeWriteDrum(true);
+        setAutoComposeWriteFx(true);
+        setAutoComposeWriteSynth(false);
+        setAutoComposeWriteGuitar(false);
+        setAutoComposeWriteAcoustic(false);
+        setAutoComposeWriteDrumAcoustic(false);
+        setAutoComposeWriteVocal(false);
+        setAutoComposeGuitarVoicing("auto");
+        break;
+    }
+    // autoComposing は意図的に依存に含めない (構成変更中の再実行を防ぐ)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoComposeStyle]);
   // ボーカルがアームされた / 母音が切り替わった瞬間にサンプルロードを開始 (2.8MB/母音)。
   // ロード完了までは UI に「読み込み中」を表示するため、200ms 間隔で監視する。
   useEffect(() => {
@@ -527,6 +617,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   useEffect(() => {
     setGuitarType(guitarType);
   }, [guitarType]);
+  // 2 本目のギター (リード) のタイプ切替。leadGuitar エンジン側のチェーンを再構築。
+  useEffect(() => {
+    setLeadGuitarType(guitar2Type);
+  }, [guitar2Type]);
 
   // スケール変更時はコード選択をリセット
   useEffect(() => {
@@ -1724,6 +1818,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       bpm,
       bars: autoComposeBars,
       style: autoComposeStyle,
+      guitarVoicing: autoComposeGuitarVoicing,
       includeMelody: useMelodyRole,
       includeChord: useChordRole,
       includeBass: useBassRole,
@@ -1749,12 +1844,25 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     };
 
     // 追加ストリーム: 同ロールの他楽器が同じフレーズを共有して鳴る。
-    const extraStreams: { layerId: LayerId; notes: NoteEvent[] }[] = [];
+    const extraStreams: {
+      layerId: LayerId;
+      notes: NoteEvent[];
+      engine?: "leadGuitar";
+    }[] = [];
     if (w.synth) extraStreams.push({ layerId: "synth", notes: fullSong.synthNotes });
     if (w.vocal) extraStreams.push({ layerId: "vocal", notes: fullSong.vocalNotes });
     if (w.guitar) extraStreams.push({ layerId: "guitar", notes: fullSong.guitarNotes });
     if (w.acoustic) extraStreams.push({ layerId: "acoustic", notes: fullSong.acousticNotes });
     if (w.drumAcoustic) extraStreams.push({ layerId: "drumAcoustic", notes: fullSong.drumNotes });
+    // 2 本目ギター (リード) はメロディラインをそのまま leadGuitar エンジンで重ねる。
+    // PianoRoll 上は guitar レイヤーに混ぜて書き込まれる (発音だけ別エンジン)。
+    if (autoComposeWriteGuitar2 && fullSong.melodyNotes.length > 0) {
+      extraStreams.push({
+        layerId: "guitar",
+        notes: fullSong.melodyNotes,
+        engine: "leadGuitar",
+      });
+    }
 
     // 実際の曲の小節数で進捗を上書き (autoComposeBars と一致するはず)
     setAutoComposeProgress({ pct: 0, bar: 1, totalBars: song.chords.length });
@@ -2491,6 +2599,83 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
         </div>
 
+        {/* ギター ボイシング: Verse 等の弾き方を切替 (おまかせ / リード / パワー / ブリッジミュート) */}
+        {/* 目立つよう左の色帯と大きめのラベル付き — 4 列グリッド直下に配置済み */}
+        <div className="mt-3 rounded-lg border-l-4 border-rose-500 border-y border-r border-violet-300 bg-white p-3 shadow-sm">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="rounded bg-rose-500 px-2 py-0.5 text-[10px] font-bold text-white">
+              🎸 ギター
+            </span>
+            <span className="text-sm font-semibold text-violet-800">
+              ボイシング (弾き方を強制)
+            </span>
+            <span className="text-[10px] text-ink-500">
+              ※「おまかせ」以外を選ぶと、Verse / Chorus 等で必ずこの弾き方を使います
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(Object.keys(GUITAR_VOICING_STYLE_LABEL_JA) as GuitarVoicingStyle[]).map((v) => {
+              const active = autoComposeGuitarVoicing === v;
+              return (
+                <button
+                  key={v}
+                  type="button"
+                  disabled={autoComposing}
+                  onClick={() => setAutoComposeGuitarVoicing(v)}
+                  className={[
+                    "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                    active
+                      ? "border-rose-500 bg-rose-600 text-white shadow"
+                      : "border-ink-200 bg-white text-ink-600 hover:border-rose-300 hover:bg-rose-50",
+                    autoComposing ? "cursor-not-allowed opacity-60" : "",
+                  ].join(" ")}
+                >
+                  {GUITAR_VOICING_STYLE_LABEL_JA[v]}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 生ドラムキット選択: 4 キット (Sixties Rock / Basic / Jazz / Electro) */}
+        <div className="mt-3 rounded-lg border-l-4 border-amber-500 border-y border-r border-violet-300 bg-white p-3 shadow-sm">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="rounded bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-white">
+              🥁 生ドラム
+            </span>
+            <span className="text-sm font-semibold text-violet-800">
+              キット選択 (Public Domain サンプル)
+            </span>
+            <span className="text-[10px] text-ink-500">
+              ※「生ドラム」レイヤが ON のとき有効
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(Object.keys(ACOUSTIC_DRUM_KIT_LABEL_JA) as AcousticDrumKitId[])
+              .filter((k) => k !== "root")
+              .map((k) => {
+                const active = acousticDrumKit === k;
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    disabled={autoComposing}
+                    onClick={() => setAcousticDrumKitState(k)}
+                    className={[
+                      "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                      active
+                        ? "border-amber-500 bg-amber-600 text-white shadow"
+                        : "border-ink-200 bg-white text-ink-600 hover:border-amber-300 hover:bg-amber-50",
+                      autoComposing ? "cursor-not-allowed opacity-60" : "",
+                    ].join(" ")}
+                  >
+                    {ACOUSTIC_DRUM_KIT_LABEL_JA[k]}
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+
         {/* 書き込み対象レイヤの選択 — 10 楽器をロール別にグループ表示 */}
         <div className="mt-3 rounded-lg border border-violet-200 bg-white/70 p-2 space-y-2">
           <div className="text-[11px] font-medium text-violet-700">
@@ -2813,6 +2998,59 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             {guitarType === "clean"
               ? "クリーン: 歪みなし、コードやアルペジオに合う"
               : "ディストーション: 歪み+倍音強調、ハードロック系"}
+          </span>
+          <span className="ml-2 rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold text-ink-600">
+            G1 (バッキング)
+          </span>
+        </div>
+
+        {/* 2 本目のギター: 自動作曲時にメロディを重ねるリードチャンネル */}
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-ink-200 bg-ink-50/40 px-3 py-2">
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-ink-600">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-ink-300 text-accent-500 focus:ring-accent-500"
+              checked={autoComposeWriteGuitar2}
+              onChange={(e) => setAutoComposeWriteGuitar2(e.target.checked)}
+            />
+            🎸 ギター2 (リード) を重ねる
+          </label>
+          <div
+            className={[
+              "inline-flex overflow-hidden rounded-full border border-ink-200 bg-white",
+              autoComposeWriteGuitar2 ? "" : "opacity-50",
+            ].join(" ")}
+          >
+            {(["clean", "distortion"] as const).map((t) => {
+              const label = t === "clean" ? "クリーン" : "ディストーション";
+              const active = guitar2Type === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  disabled={!autoComposeWriteGuitar2}
+                  onClick={() => setGuitar2TypeState(t)}
+                  className={[
+                    "px-3 py-1 text-xs font-semibold transition",
+                    active
+                      ? "bg-accent-500 text-white"
+                      : "text-ink-600 hover:bg-ink-50",
+                  ].join(" ")}
+                  title={
+                    t === "clean"
+                      ? "クリーンリード (歌うコーラス/リバーブ、ツインギター用)"
+                      : "歪みリード (倍音強調、ハードロック系ソロ)"
+                  }
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-xs text-ink-500">
+            {autoComposeWriteGuitar2
+              ? `G1=バッキング(${guitarType === "clean" ? "クリーン" : "歪み"}) + G2=リード(${guitar2Type === "clean" ? "クリーン" : "歪み"}) のツインギター`
+              : "G2 OFF: ギターは G1 のみ (バッキング)"}
           </span>
         </div>
 
