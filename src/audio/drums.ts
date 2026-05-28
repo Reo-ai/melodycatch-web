@@ -23,6 +23,7 @@
  */
 
 import * as Tone from "tone";
+import { getMixerInput } from "./mixer";
 
 export type DrumPatternId =
   | "rock8"
@@ -242,7 +243,7 @@ function ensureDrumSynths() {
     ratio: 3,
     attack: 0.003,
     release: 0.12,
-  }).toDestination();
+  }).connect(getMixerInput("drum"));
   drumEq = new Tone.EQ3({ low: 2, mid: 0, high: 1 }).connect(drumComp);
   drumBus = new Tone.Channel({ volume: -2 }).connect(drumEq);
 

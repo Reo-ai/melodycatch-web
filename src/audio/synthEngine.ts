@@ -8,13 +8,14 @@
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
+import { getMixerInput } from "./mixer";
 
 let synthSynth: Tone.PolySynth | null = null;
 let synthReverb: Tone.Reverb | null = null;
 
 function ensureSynth() {
   if (synthSynth) return;
-  synthReverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).toDestination();
+  synthReverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).connect(getMixerInput("synth"));
   synthSynth = new Tone.PolySynth(Tone.Synth, {
     oscillator: { type: "fatsawtooth", count: 3, spread: 28 },
     envelope: {

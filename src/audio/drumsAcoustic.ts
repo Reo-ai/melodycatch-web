@@ -17,6 +17,7 @@
  */
 
 import * as Tone from "tone";
+import { getMixerInput } from "./mixer";
 import {
   DRUM_CLAP_MIDI,
   DRUM_CRASH_MIDI,
@@ -236,7 +237,7 @@ function ensureAcousticDrums() {
     attack: 0.008,
     release: 0.22,
     knee: 12,
-  }).toDestination();
+  }).connect(getMixerInput("drumAcoustic"));
   // 2. テープ風サチュレーション: ごく薄く (wet 0.18) かけて倍音を足し、デジタル感を消す
   aSat = new Tone.Distortion({ distortion: 0.05, wet: 0.18 }).connect(aComp);
   // 3. EQ: 低域は控えめに、中域 (胴鳴り) は触らず、高域だけ少し開ける
@@ -244,7 +245,7 @@ function ensureAcousticDrums() {
   aEq = new Tone.EQ3({ low: 1.5, mid: 0, high: 1.8, lowFrequency: 180, highFrequency: 4500 }).connect(aSat);
 
   // 4. 部屋鳴りリバーブ: 短め (0.9s) で初期反射感、preDelay でアタックを濁らせない
-  aRoomReverb = new Tone.Reverb({ decay: 0.9, preDelay: 0.018, wet: 1.0 }).toDestination();
+  aRoomReverb = new Tone.Reverb({ decay: 0.9, preDelay: 0.018, wet: 1.0 }).connect(getMixerInput("drumAcoustic"));
   aRoomSend = new Tone.Gain(0.22).connect(aRoomReverb);
 
   // 5. メインバス: ドライ (EQ→sat→comp) と Wet (room) の 2 系統に送る

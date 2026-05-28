@@ -7,6 +7,7 @@
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
+import { getMixerInput } from "./mixer";
 
 let sampler: Tone.Sampler | null = null;
 let fallback: Tone.PolySynth | null = null;
@@ -72,7 +73,7 @@ async function loadSampler(): Promise<void> {
       onerror: (err) => {
         console.warn("Piano sampler failed to load:", err);
       },
-    }).toDestination();
+    }).connect(getMixerInput("piano"));
     await Tone.loaded();
     sampler = s;
   } catch (err) {
@@ -80,7 +81,7 @@ async function loadSampler(): Promise<void> {
     fallback = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: "triangle" },
       envelope: { attack: 0.005, decay: 0.2, sustain: 0.4, release: 1.0 },
-    }).toDestination();
+    }).connect(getMixerInput("piano"));
   }
 }
 

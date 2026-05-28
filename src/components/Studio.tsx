@@ -28,6 +28,7 @@ import ProgressionList from "./ProgressionList";
 import PianoRoll from "./PianoRoll";
 import ScalePicker from "./ScalePicker";
 import DrumPad, { type DrumPadHandle } from "./DrumPad";
+import { MixerPanel } from "./MixerPanel";
 import LiveDrumKit from "./LiveDrumKit";
 import {
   downloadBlob,
@@ -467,6 +468,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
    *  ON のとき、メロディラインを leadGuitar エンジンで重ねて鳴らす。
    *  PianoRoll 上は guitar レイヤーに混ぜて書き込まれる。 */
   const [autoComposeWriteGuitar2, setAutoComposeWriteGuitar2] = useState<boolean>(false);
+  // ミキサーパネルの開閉
+  const [mixerOpen, setMixerOpen] = useState<boolean>(false);
   const [autoComposeWriteAcoustic, setAutoComposeWriteAcoustic] = useState<boolean>(false);
   const [autoComposeWriteVocal, setAutoComposeWriteVocal] = useState<boolean>(false);
   const [autoComposeWriteDrumAcoustic, setAutoComposeWriteDrumAcoustic] = useState<boolean>(false);
@@ -2917,6 +2920,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               ? "ドラムは拍にスナップ・全層を録音停止時にクオンタイズします"
               : "手弾きのタイミングを一切補正しません"}
           </span>
+        </div>
+
+        {/* ミックス: 楽器ごとの音量 / ミュート / ソロ */}
+        <div className="mt-3">
+          <MixerPanel open={mixerOpen} onToggle={() => setMixerOpen((v) => !v)} />
         </div>
 
         {/* ベースタイプ切替: ウッド / シンセ / スラップ */}

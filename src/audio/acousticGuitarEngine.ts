@@ -34,6 +34,7 @@
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
+import { getMixerInput } from "./mixer";
 
 const VOICE_COUNT = 8;
 
@@ -63,7 +64,7 @@ const REPLUCK_DECAY_DB = -2;
 function ensureAcoustic() {
   if (acVoices.length > 0) return;
   // 終段: Reverb → Destination
-  acReverb = new Tone.Reverb({ decay: 3.0, wet: 0.3 }).toDestination();
+  acReverb = new Tone.Reverb({ decay: 3.0, wet: 0.3 }).connect(getMixerInput("acoustic"));
   acGain = new Tone.Gain(0.58).connect(acReverb);
   // 弦のうねり — エレクトロっぽさを避けるため、コーラスはごく薄く。
   acChorus = new Tone.Chorus({

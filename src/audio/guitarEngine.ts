@@ -18,6 +18,7 @@
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
+import { getMixerInput } from "./mixer";
 
 export type GuitarType = "distortion" | "clean";
 
@@ -106,7 +107,7 @@ function ensureGuitar() {
 
   if (currentGuitarType === "distortion") {
     // ハードロック系エレキ (現行の挙動)。
-    guitarReverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).toDestination();
+    guitarReverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).connect(getMixerInput("guitar"));
     guitarGain = new Tone.Gain(0.55).connect(guitarReverb);
     guitarChorus = new Tone.Chorus({
       frequency: 0.8,
@@ -158,7 +159,7 @@ function ensureGuitar() {
     }
   } else {
     // クリーントーン: 歪みなし、開いた高域、軽いコーラスとリバーブ。
-    guitarReverb = new Tone.Reverb({ decay: 2.0, wet: 0.24 }).toDestination();
+    guitarReverb = new Tone.Reverb({ decay: 2.0, wet: 0.24 }).connect(getMixerInput("guitar"));
     guitarGain = new Tone.Gain(0.62).connect(guitarReverb);
     guitarChorus = new Tone.Chorus({
       frequency: 0.6,
@@ -389,7 +390,7 @@ function ensureLeadGuitar() {
 
   if (currentLeadGuitarType === "distortion") {
     // リード用ディストーション: バッキングより少し明るめ、リバーブやや深め
-    leadReverb = new Tone.Reverb({ decay: 1.8, wet: 0.22 }).toDestination();
+    leadReverb = new Tone.Reverb({ decay: 1.8, wet: 0.22 }).connect(getMixerInput("guitar2"));
     leadGain = new Tone.Gain(0.5).connect(leadReverb);
     leadChorus = new Tone.Chorus({
       frequency: 1.1,
@@ -418,7 +419,7 @@ function ensureLeadGuitar() {
     }
   } else {
     // リード用クリーン: コーラスを深めに、リバーブも深めにして "歌う" 雰囲気
-    leadReverb = new Tone.Reverb({ decay: 2.6, wet: 0.3 }).toDestination();
+    leadReverb = new Tone.Reverb({ decay: 2.6, wet: 0.3 }).connect(getMixerInput("guitar2"));
     leadGain = new Tone.Gain(0.6).connect(leadReverb);
     leadChorus = new Tone.Chorus({
       frequency: 0.55,

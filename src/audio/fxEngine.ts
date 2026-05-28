@@ -18,6 +18,7 @@
 
 import * as Tone from "tone";
 import { ensureAudio } from "./pianoEngine";
+import { getMixerInput } from "./mixer";
 
 export const FX_WHITE_NOISE = 0;
 export const FX_SWEEP_UP = 1;
@@ -54,7 +55,7 @@ let fxCompressor: Tone.Compressor | null = null;
 function ensureFxBus(): Tone.Channel {
   if (fxBus) return fxBus;
   // リバーブ: 中位の decay + preDelay でアタックを濁らせない / wet を 0.22 にして空間広め
-  fxReverb = new Tone.Reverb({ decay: 2.4, preDelay: 0.02, wet: 0.22 }).toDestination();
+  fxReverb = new Tone.Reverb({ decay: 2.4, preDelay: 0.02, wet: 0.22 }).connect(getMixerInput("fx"));
   // コンプ: 比率を緩める (3 → 2.0) + knee 大きめでナチュラルに
   fxCompressor = new Tone.Compressor({
     threshold: -14,

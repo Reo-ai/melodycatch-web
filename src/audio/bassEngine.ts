@@ -12,6 +12,7 @@
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
+import { getMixerInput } from "./mixer";
 
 export type BassType = "wood" | "synth" | "slap";
 
@@ -71,7 +72,7 @@ function ensureBass() {
   if (bassSynth) return;
 
   // 共通の終段。
-  bassReverb = new Tone.Reverb({ decay: 0.6, wet: 0.04 }).toDestination();
+  bassReverb = new Tone.Reverb({ decay: 0.6, wet: 0.04 }).connect(getMixerInput("bass"));
   bassCompressor = new Tone.Compressor({
     threshold: -18,
     ratio: 3.5,
