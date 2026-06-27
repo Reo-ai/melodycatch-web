@@ -16,6 +16,10 @@ import SavedPlayer from "./components/SavedPlayer";
 import LibraryPage from "./components/LibraryPage";
 import { C_MAJOR, scaleDisplayName, type Scale } from "./music/scale";
 
+type MainTool = "studio" | "chordQuiz";
+
+const CHORD_QUIZ_URL = "https://reo-ai.github.io/-/?v=b260d6b";
+
 /** URL ?player=1 が付いていれば別タブ再生モード。 */
 function isPlayerRoute(): boolean {
   if (typeof window === "undefined") return false;
@@ -32,6 +36,7 @@ function isLibraryRoute(): boolean {
 
 export default function App() {
   const [scale, setScale] = useState<Scale>(C_MAJOR);
+  const [activeTool, setActiveTool] = useState<MainTool>("studio");
   const playerRoute = useMemo(() => isPlayerRoute(), []);
   const libraryRoute = useMemo(() => isLibraryRoute(), []);
 
@@ -97,7 +102,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-ink-50 text-ink-900">
       <header className="sticky top-0 z-10 border-b border-ink-200 bg-gradient-to-r from-violet-950 via-fuchsia-900 to-violet-950 text-white shadow-md backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3">
           <div>
             <h1 className="flex flex-wrap items-center gap-x-3 gap-y-1 tracking-tight">
               <span
@@ -118,11 +123,66 @@ export default function App() {
               現在のキー: <span className="font-medium text-yellow-200">{scaleName}</span>
             </p>
           </div>
+          <nav
+            aria-label="アプリ切り替え"
+            className="grid grid-cols-2 gap-2 rounded-2xl border border-white/15 bg-white/10 p-1 shadow-inner sm:flex sm:w-fit"
+          >
+            <button
+              type="button"
+              onClick={() => setActiveTool("studio")}
+              className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${
+                activeTool === "studio"
+                  ? "bg-white text-violet-950 shadow"
+                  : "text-violet-100 hover:bg-white/10"
+              }`}
+            >
+              Melody Catch
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTool("chordQuiz")}
+              className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${
+                activeTool === "chordQuiz"
+                  ? "bg-white text-violet-950 shadow"
+                  : "text-violet-100 hover:bg-white/10"
+              }`}
+            >
+              コード進行クイズ
+            </button>
+          </nav>
         </div>
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6">
-        <Studio scale={scale} onScaleChange={setScale} />
+        {activeTool === "studio" ? (
+          <Studio scale={scale} onScaleChange={setScale} />
+        ) : (
+          <section className="overflow-hidden rounded-3xl border border-ink-200 bg-white shadow-xl">
+            <div className="flex flex-col gap-2 border-b border-ink-200 bg-ink-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-extrabold text-ink-900">
+                  コード進行マスタークイズ
+                </h2>
+                <p className="text-sm text-ink-500">
+                  単体版も残したまま、Melody Catch内のタブとして表示しています。
+                </p>
+              </div>
+              <a
+                href={CHORD_QUIZ_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex min-h-10 items-center justify-center rounded-full bg-violet-700 px-4 text-sm font-bold text-white shadow hover:bg-violet-800"
+              >
+                単体版を開く
+              </a>
+            </div>
+            <iframe
+              title="コード進行マスタークイズ"
+              src={CHORD_QUIZ_URL}
+              className="block h-[calc(100vh-210px)] min-h-[720px] w-full border-0 bg-white"
+            />
+          </section>
+        )}
       </main>
 
       <footer className="mx-auto max-w-6xl px-4 pb-10 pt-4 text-center text-xs text-ink-400">
