@@ -153,33 +153,19 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-6">
+      <main
+        className={`mx-auto px-4 py-6 ${
+          activeTool === "studio" ? "max-w-6xl" : "max-w-[1400px]"
+        }`}
+      >
         {activeTool === "studio" ? (
           <Studio scale={scale} onScaleChange={setScale} />
         ) : (
-          <section className="overflow-hidden rounded-3xl border border-ink-200 bg-white shadow-xl">
-            <div className="flex flex-col gap-2 border-b border-ink-200 bg-ink-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-extrabold text-ink-900">
-                  コード進行マスタークイズ
-                </h2>
-                <p className="text-sm text-ink-500">
-                  単体版も残したまま、Melody Catch内のタブとして表示しています。
-                </p>
-              </div>
-              <a
-                href={CHORD_QUIZ_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex min-h-10 items-center justify-center rounded-full bg-violet-700 px-4 text-sm font-bold text-white shadow hover:bg-violet-800"
-              >
-                単体版を開く
-              </a>
-            </div>
+          <section className="overflow-hidden rounded-2xl bg-white shadow-xl">
             <iframe
               title="コード進行マスタークイズ"
               src={CHORD_QUIZ_URL}
-              className="block h-[calc(100vh-210px)] min-h-[720px] w-full border-0 bg-white"
+              className="block h-[calc(100vh-150px)] min-h-[760px] w-full border-0 bg-white"
             />
           </section>
         )}
