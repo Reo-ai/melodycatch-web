@@ -155,7 +155,7 @@ export default function Piano({
   }
 
   return (
-    <div className="w-full overflow-hidden rounded-2xl border border-ink-200 bg-white shadow-sm">
+    <div className="w-full overflow-hidden rounded-2xl border border-white/10 bg-black p-1 pt-0 shadow-[inset_0_8px_16px_-8px_rgba(0,0,0,0.9)]">
       <div
         ref={scrollRef}
         className="overflow-x-auto overflow-y-hidden no-scrollbar touch-pan-x"
@@ -182,14 +182,14 @@ export default function Piano({
                 data-midi={midi}
                 aria-label={noteName(midi)}
                 className={[
-                  "absolute top-0 border border-ink-300 rounded-b-md transition-colors",
+                  "absolute top-0 border border-black/40 rounded-b-md transition-colors",
                   active
                     ? "bg-accent-500"
                     : spot
-                      ? "bg-accent-100"
+                      ? "bg-violet-200"
                       : inScale
-                        ? "bg-white"
-                        : "bg-ink-50",
+                        ? "bg-gradient-to-b from-zinc-100 to-white"
+                        : "bg-zinc-300",
                   root ? "ring-1 ring-accent-400 ring-inset" : "",
                 ].join(" ")}
                 style={{
@@ -203,7 +203,7 @@ export default function Piano({
                 <span
                   className={[
                     "absolute bottom-1 left-0 right-0 text-center text-[10px]",
-                    active ? "text-white" : "text-ink-400",
+                    active ? "text-white" : "text-zinc-500",
                   ].join(" ")}
                 >
                   {pitchClass(midi) === 0 ? noteName(midi) : ""}
@@ -226,10 +226,10 @@ export default function Piano({
                   active
                     ? "bg-accent-500"
                     : spot
-                      ? "bg-accent-700"
+                      ? "bg-violet-500"
                       : inScale
-                        ? "bg-ink-900"
-                        : "bg-ink-700",
+                        ? "bg-gradient-to-b from-zinc-800 to-zinc-950 shadow-[0_2px_4px_rgba(0,0,0,0.6)]"
+                        : "bg-zinc-700",
                 ].join(" ")}
                 style={{
                   left: x,

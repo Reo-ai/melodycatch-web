@@ -222,7 +222,7 @@ export default function LiveDrumKit({ onHit, armed = false }: LiveDrumKitProps) 
       className={[
         "rounded-2xl p-2 transition",
         armed
-          ? "bg-rose-50 ring-2 ring-rose-300"
+          ? "bg-rose-500/10 ring-2 ring-rose-400/50"
           : "bg-ink-50 ring-1 ring-ink-200",
       ].join(" ")}
     >

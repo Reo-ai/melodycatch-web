@@ -131,7 +131,7 @@ export default function ChordPalette({
                 "text-center shadow-sm hover:shadow-md active:scale-95",
                 active
                   ? "border-accent-500 bg-accent-500 text-white"
-                  : "border-ink-200 bg-white text-ink-900 hover:border-accent-300",
+                  : "border-ink-200 bg-surface-2 text-ink-900 hover:border-accent-300",
               ].join(" ")}
             >
               {keyHint && (
@@ -166,7 +166,7 @@ export default function ChordPalette({
                   type="button"
                   onClick={() => onPlayPattern(chord, voicing, "guitar8th")}
                   title="8 分音符でアルペジオを 1 小節分鳴らす"
-                  className="rounded-md border border-amber-400 bg-amber-50 px-0.5 py-1 text-[10px] font-semibold text-amber-700 shadow-sm hover:bg-amber-100 active:scale-95"
+                  className="rounded-md border border-amber-400 bg-amber-500/10 px-0.5 py-1 text-[10px] font-semibold text-amber-300 shadow-sm hover:bg-amber-500/10 active:scale-95"
                 >
                   ♪ アルペ
                 </button>
@@ -174,7 +174,7 @@ export default function ChordPalette({
                   type="button"
                   onClick={() => onPlayPattern(chord, voicing, "guitar8thChord")}
                   title="8 分音符長の短いコードストロークを 1 回鳴らす"
-                  className="rounded-md border border-amber-500 bg-amber-100 px-0.5 py-1 text-[10px] font-semibold text-amber-800 shadow-sm hover:bg-amber-200 active:scale-95"
+                  className="rounded-md border border-amber-500 bg-amber-500/10 px-0.5 py-1 text-[10px] font-semibold text-amber-200 shadow-sm hover:bg-amber-500/20 active:scale-95"
                 >
                   ♫ 8 分
                 </button>
@@ -188,7 +188,7 @@ export default function ChordPalette({
                   type="button"
                   onClick={() => onPlayPattern(chord, voicing, "acoustic8th")}
                   title="アコギ: 8 分音符でアルペジオを 1 小節分鳴らす"
-                  className="rounded-md border border-orange-400 bg-orange-50 px-0.5 py-1 text-[10px] font-semibold text-orange-700 shadow-sm hover:bg-orange-100 active:scale-95"
+                  className="rounded-md border border-orange-400 bg-orange-500/10 px-0.5 py-1 text-[10px] font-semibold text-orange-300 shadow-sm hover:bg-orange-500/10 active:scale-95"
                 >
                   ♪ アルペ
                 </button>
@@ -196,7 +196,7 @@ export default function ChordPalette({
                   type="button"
                   onClick={() => onPlayPattern(chord, voicing, "acoustic8thChord")}
                   title="アコギ: 8 分音符長の短いコードストロークを 1 回鳴らす"
-                  className="rounded-md border border-orange-500 bg-orange-100 px-0.5 py-1 text-[10px] font-semibold text-orange-800 shadow-sm hover:bg-orange-200 active:scale-95"
+                  className="rounded-md border border-orange-500 bg-orange-500/10 px-0.5 py-1 text-[10px] font-semibold text-orange-200 shadow-sm hover:bg-orange-500/20 active:scale-95"
                 >
                   ♫ 8 分
                 </button>
@@ -217,8 +217,8 @@ export default function ChordPalette({
                     || pid === "piano9"
                     || pid === "piano10";
                   const cls = isBlock && pid !== "piano1"
-                    ? "rounded-md border border-emerald-400 bg-emerald-50 px-0.5 py-1 text-[10px] font-bold text-emerald-700 shadow-sm hover:bg-emerald-100 active:scale-95"
-                    : "rounded-md border border-indigo-300 bg-indigo-50 px-0.5 py-1 text-[10px] font-bold text-indigo-700 shadow-sm hover:bg-indigo-100 active:scale-95";
+                    ? "rounded-md border border-emerald-400 bg-emerald-500/10 px-0.5 py-1 text-[10px] font-bold text-emerald-300 shadow-sm hover:bg-emerald-500/10 active:scale-95"
+                    : "rounded-md border border-indigo-400/40 bg-indigo-500/10 px-0.5 py-1 text-[10px] font-bold text-indigo-300 shadow-sm hover:bg-indigo-500/10 active:scale-95";
                   return (
                     <button
                       key={pid}

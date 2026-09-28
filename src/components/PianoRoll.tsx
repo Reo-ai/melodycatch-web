@@ -138,17 +138,17 @@ const DRUM_TOTAL_HEIGHT = DRUM_LANES.length * DRUM_LANE_HEIGHT;
 const DRUM_PITCH_GAP = 4;
 
 // ダーク DAW 配色
-const COLOR_BG = "#0b1020";
-const COLOR_LANE_A = "#161c2e";
-const COLOR_LANE_B = "#1b2238";
-const COLOR_DIVIDER = "#cbd5e1";
-const COLOR_GRID_BAR = "#cbd5e1"; // 小節線 (太・明るい)
-const COLOR_GRID_BEAT = "#cbd5e1"; // 拍線 (薄白・小節線より少し弱め)
-const COLOR_GRID_SUB = "#e2e8f0"; // 拍内 1/16 細分線 (より薄白)
+const COLOR_BG = "#0a0a12";
+const COLOR_LANE_A = "#12121c";
+const COLOR_LANE_B = "#171724";
+const COLOR_DIVIDER = "#3a3a4e";
+const COLOR_GRID_BAR = "#8e8ea3"; // 小節線 (太・明るい)
+const COLOR_GRID_BEAT = "#6e6e84"; // 拍線 (薄白・小節線より少し弱め)
+const COLOR_GRID_SUB = "#4a4a60"; // 拍内 1/16 細分線 (より薄白)
 const COLOR_C_LINE = "#64748b";
 const COLOR_LABEL = "#e2e8f0";
 const COLOR_LABEL_SUB = "#94a3b8";
-const COLOR_RULER_BG = "#0f172a";
+const COLOR_RULER_BG = "#0e0e17";
 
 const COLOR_MELODY = "#fb923c";
 const COLOR_CHORD = "#818cf8";
@@ -1236,7 +1236,7 @@ export default function PianoRoll({
           >
             <span className="text-ink-500">スナップ:</span>
             <select
-              className="rounded border border-ink-300 bg-white px-1 py-0.5 font-mono text-[11px]"
+              className="rounded border border-ink-300 bg-surface-2 px-1 py-0.5 font-mono text-[11px]"
               value={snapDiv}
               onChange={(e) => setSnapDiv(e.target.value as SnapDiv)}
             >
@@ -1256,7 +1256,7 @@ export default function PianoRoll({
           <span className="text-ink-500">横:</span>
           <button
             type="button"
-            className="rounded border border-ink-300 bg-white px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
+            className="rounded border border-ink-300 bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
             onClick={() => applyZoomX(1 / ZOOM_X_STEP)}
             disabled={zoomX <= ZOOM_X_MIN + 1e-6}
           >
@@ -1267,7 +1267,7 @@ export default function PianoRoll({
           </span>
           <button
             type="button"
-            className="rounded border border-ink-300 bg-white px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
+            className="rounded border border-ink-300 bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
             onClick={() => applyZoomX(ZOOM_X_STEP)}
             disabled={zoomX >= ZOOM_X_MAX - 1e-6}
           >
@@ -1276,7 +1276,7 @@ export default function PianoRoll({
           <span className="ml-2 text-ink-500">縦:</span>
           <button
             type="button"
-            className="rounded border border-ink-300 bg-white px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
+            className="rounded border border-ink-300 bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
             onClick={() => applyZoomY(1 / ZOOM_Y_STEP)}
             disabled={zoomY <= ZOOM_Y_MIN + 1e-6}
           >
@@ -1287,7 +1287,7 @@ export default function PianoRoll({
           </span>
           <button
             type="button"
-            className="rounded border border-ink-300 bg-white px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
+            className="rounded border border-ink-300 bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
             onClick={() => applyZoomY(ZOOM_Y_STEP)}
             disabled={zoomY >= ZOOM_Y_MAX - 1e-6}
           >
@@ -1295,7 +1295,7 @@ export default function PianoRoll({
           </button>
           <button
             type="button"
-            className="ml-1 rounded border border-ink-300 bg-white px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
+            className="ml-1 rounded border border-ink-300 bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] hover:bg-ink-100"
             onClick={resetZoom}
             title="ズームを 100% に戻す"
           >
@@ -1303,7 +1303,7 @@ export default function PianoRoll({
           </button>
         </div>
         {editMode && selection.size > 0 && (
-          <span className="rounded-full bg-sky-100 px-2 py-0.5 font-medium text-sky-700">
+          <span className="rounded-full bg-sky-500/10 px-2 py-0.5 font-medium text-sky-300">
             {selection.size} 個選択中 (Delete=削除 / Esc=解除)
           </span>
         )}
@@ -1511,7 +1511,7 @@ export default function PianoRoll({
                 y={noteY(p)}
                 width={width}
                 height={Math.max(1, rowHeight)}
-                fill="#0d1325"
+                fill="#0e0e17"
                 opacity={0.55}
               />
             ) : null,
@@ -1548,7 +1548,7 @@ export default function PianoRoll({
                       y={labelY - fs}
                       width={labelW}
                       height={fs + 3}
-                      fill="#0b1020"
+                      fill="#0a0a12"
                       opacity={0.7}
                       rx={2}
                     />
@@ -1704,7 +1704,7 @@ export default function PianoRoll({
             ref={playheadMarkerRef}
             points={`-6,${TOP_RULER_HEIGHT - 12} 6,${TOP_RULER_HEIGHT - 12} 0,${TOP_RULER_HEIGHT - 1}`}
             fill={playheadColor}
-            stroke="#0b1020"
+            stroke="#0a0a12"
             strokeWidth={0.5}
             pointerEvents="none"
           />

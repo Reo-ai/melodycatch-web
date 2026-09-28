@@ -151,7 +151,7 @@ export function MixerPanel({ open, onToggle }: Props) {
   const channelOrder = useMemo(() => MIXER_CHANNEL_IDS, []);
 
   return (
-    <div className="rounded-xl border border-ink-200 bg-white shadow-sm">
+    <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025]">
       <button
         type="button"
         onClick={onToggle}
@@ -242,8 +242,8 @@ function ChannelStrip({
   return (
     <div
       className={[
-        "flex w-20 flex-shrink-0 flex-col items-center gap-2 rounded-lg border bg-ink-50/30 px-2 py-3",
-        isMaster ? "border-accent-300 bg-accent-50/30" : "border-ink-200",
+        "flex w-20 flex-shrink-0 flex-col items-center gap-2 rounded-xl border bg-black/20 px-2 py-3",
+        isMaster ? "border-accent-400/50 bg-accent-500/10" : "border-white/[0.07]",
         dimmed ? "opacity-50" : "",
       ].join(" ")}
     >
@@ -265,8 +265,7 @@ function ChannelStrip({
           step={0.5}
           value={volumeDb}
           onChange={(e) => onVolume(parseFloat(e.target.value))}
-          className="h-32 w-32 -rotate-90 cursor-pointer accent-accent-500"
-          style={{ writingMode: "vertical-lr" as const }}
+          className="h-5 w-32 -rotate-90 cursor-pointer"
         />
       </div>
       <span className="text-[10px] tabular-nums text-ink-600">
@@ -293,7 +292,7 @@ function ChannelStrip({
             className={[
               "flex-1 rounded-md px-1 py-0.5 text-[10px] font-bold transition",
               soloed
-                ? "bg-yellow-400 text-ink-900"
+                ? "bg-yellow-400 text-black"
                 : "bg-ink-100 text-ink-600 hover:bg-ink-200",
             ].join(" ")}
             title="ソロ (このチャネルだけ鳴らす)"

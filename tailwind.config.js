@@ -1,4 +1,12 @@
 /** @type {import('tailwindcss').Config} */
+
+// 色は src/index.css の CSS 変数 (RGB 三つ組) で定義し、ここで参照する。
+// ダークテーマ化のため ink は「50 = 最も暗い / 900 = 最も明るい」に反転している。
+const v = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+const scale = (prefix, steps) =>
+  Object.fromEntries(steps.map((s) => [s, v(`${prefix}-${s}`)]));
+const STEPS = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900];
+
 export default {
   content: [
     "./index.html",
@@ -8,37 +16,32 @@ export default {
     extend: {
       fontFamily: {
         sans: [
+          "Inter",
+          "Noto Sans JP",
           "-apple-system",
           "BlinkMacSystemFont",
           "Hiragino Sans",
           "Hiragino Kaku Gothic ProN",
-          "Noto Sans JP",
           "Yu Gothic",
           "system-ui",
           "sans-serif",
         ],
+        display: ["Space Grotesk", "Inter", "Noto Sans JP", "sans-serif"],
+        mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       colors: {
-        ink: {
-          50: "#f8fafc",
-          100: "#f1f5f9",
-          200: "#e2e8f0",
-          300: "#cbd5e1",
-          400: "#94a3b8",
-          500: "#64748b",
-          600: "#475569",
-          700: "#334155",
-          800: "#1e293b",
-          900: "#0f172a",
+        ink: scale("ink", STEPS),
+        accent: scale("accent", STEPS),
+        surface: {
+          DEFAULT: v("surface"),
+          2: v("surface-2"),
+          3: v("surface-3"),
         },
-        accent: {
-          50: "#eff6ff",
-          100: "#dbeafe",
-          400: "#60a5fa",
-          500: "#3b82f6",
-          600: "#2563eb",
-          700: "#1d4ed8",
-        },
+        page: v("page"),
+      },
+      boxShadow: {
+        glow: "0 0 0 1px rgb(var(--accent-400) / 0.35), 0 8px 32px -8px rgb(var(--accent-500) / 0.55)",
+        card: "0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 20px 40px -24px rgb(0 0 0 / 0.8)",
       },
     },
   },

@@ -45,7 +45,7 @@ export default function ScalePicker({ scale, onChange }: ScalePickerProps) {
                   "min-w-[2.25rem] rounded-full border px-2 py-1 text-sm font-semibold transition",
                   active
                     ? "border-accent-500 bg-accent-500 text-white shadow-sm"
-                    : "border-ink-200 bg-white text-ink-700 hover:border-accent-300",
+                    : "border-ink-200 bg-surface-2 text-ink-700 hover:border-accent-300",
                 ].join(" ")}
               >
                 {name}
@@ -69,7 +69,7 @@ export default function ScalePicker({ scale, onChange }: ScalePickerProps) {
                   "rounded-full border px-3 py-1 text-sm transition",
                   active
                     ? "border-accent-500 bg-accent-500 text-white shadow-sm"
-                    : "border-ink-200 bg-white text-ink-700 hover:border-accent-300",
+                    : "border-ink-200 bg-surface-2 text-ink-700 hover:border-accent-300",
                 ].join(" ")}
                 title={SCALE_MOOD_JA[kind]}
               >

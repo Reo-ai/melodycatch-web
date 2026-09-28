@@ -184,7 +184,7 @@ export default function ChordTonePiano({
                     ? "border-accent-600 bg-accent-500 text-white"
                     : isChordTone
                       ? "border-accent-500 bg-accent-200 text-accent-900 hover:bg-accent-300"
-                      : "border-ink-200 bg-white text-ink-700 hover:border-accent-300",
+                      : "border-ink-200 bg-surface-2 text-ink-700 hover:border-accent-300",
                   isRoot && !active ? "ring-2 ring-accent-400 ring-inset" : "",
                 ].join(" ")}
                 style={{ touchAction: "none" }}

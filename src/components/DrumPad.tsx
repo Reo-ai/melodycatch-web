@@ -179,7 +179,7 @@ const DrumPad = forwardRef<DrumPadHandle, DrumPadProps>(function DrumPad(
                 "active:scale-[0.98]",
                 active
                   ? "border-accent-500 bg-accent-50 ring-2 ring-accent-300/60"
-                  : "border-ink-200 bg-white hover:border-accent-300",
+                  : "border-ink-200 bg-surface-2 hover:border-accent-300",
               ].join(" ")}
             >
               <span className="text-sm font-semibold text-ink-900">
@@ -192,7 +192,7 @@ const DrumPad = forwardRef<DrumPadHandle, DrumPadProps>(function DrumPad(
       </div>
 
       {/* BPM + コントロール */}
-      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-ink-200 bg-white p-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-ink-200 bg-surface-2 p-3">
         <label className="flex flex-1 min-w-[200px] items-center gap-3">
           <span className="text-xs font-semibold text-ink-700">
             BPM
@@ -223,7 +223,7 @@ const DrumPad = forwardRef<DrumPadHandle, DrumPadProps>(function DrumPad(
           <button
             type="button"
             onClick={stop}
-            className="rounded-full bg-ink-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm"
+            className="rounded-full bg-ink-300 px-4 py-1.5 text-sm font-semibold text-white shadow-sm"
           >
             ■ 停止
           </button>
@@ -240,7 +240,7 @@ const DrumPad = forwardRef<DrumPadHandle, DrumPadProps>(function DrumPad(
             <button
               type="button"
               onClick={resetPattern}
-              className="rounded-full border border-ink-300 bg-white px-2 py-0.5 text-[11px] font-medium text-ink-700 hover:bg-ink-100"
+              className="rounded-full border border-ink-300 bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-ink-700 hover:bg-ink-100"
             >
               ↺ プリセットに戻す
             </button>
@@ -328,8 +328,8 @@ function EditableStepRow({
                 on
                   ? `${onColor} border-transparent`
                   : isBeat
-                    ? "bg-white border-ink-300 hover:bg-ink-100"
-                    : "bg-white border-ink-200 hover:bg-ink-100",
+                    ? "bg-surface-2 border-ink-300 hover:bg-ink-100"
+                    : "bg-surface-2 border-ink-200 hover:bg-ink-100",
                 isCurrent ? "outline outline-2 outline-accent-400" : "",
               ].join(" ")}
             />

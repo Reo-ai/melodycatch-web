@@ -85,7 +85,7 @@ export default function ProgressionList({
               "shadow-sm hover:shadow-md active:scale-[0.99]",
               active
                 ? "border-accent-500 bg-accent-50"
-                : "border-ink-200 bg-white hover:border-accent-300",
+                : "border-ink-200 bg-surface-2 hover:border-accent-300",
             ].join(" ")}
           >
             <div className="flex w-full items-baseline justify-between">

@@ -158,7 +158,7 @@ export default function SavedPlayer() {
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 text-ink-900">
-      <header className="mb-6 rounded-2xl border border-ink-200 bg-white p-5 shadow-sm">
+      <header className="mb-6 rounded-2xl border border-ink-200 bg-surface-2 p-5 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-wider text-accent-600">
           MelodyCatch · 保存スロット {slotNum} を再生
         </p>
@@ -181,7 +181,7 @@ export default function SavedPlayer() {
             <button
               type="button"
               onClick={stop}
-              className="rounded-full bg-ink-700 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-ink-800"
+              className="rounded-full bg-ink-300 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-ink-400"
             >
               ■ 停止
             </button>
@@ -189,7 +189,7 @@ export default function SavedPlayer() {
           <button
             type="button"
             onClick={reload}
-            className="rounded-full border border-ink-300 bg-white px-3 py-1 text-xs font-medium text-ink-700 hover:border-accent-300"
+            className="rounded-full border border-ink-300 bg-surface-2 px-3 py-1 text-xs font-medium text-ink-700 hover:border-accent-300"
           >
             ↻ 再読込
           </button>
@@ -199,7 +199,7 @@ export default function SavedPlayer() {
         </div>
       </header>
 
-      <section className="mb-6 rounded-2xl border border-ink-200 bg-white p-3 shadow-sm">
+      <section className="mb-6 rounded-2xl border border-ink-200 bg-surface-2 p-3 shadow-sm">
         <div className="mb-2 flex items-baseline justify-between">
           <h3 className="text-sm font-semibold text-ink-700">🎹 ピアノロール</h3>
           <span className="text-[11px] text-ink-500">
@@ -226,7 +226,7 @@ export default function SavedPlayer() {
         />
       </section>
 
-      <section className="rounded-2xl border border-ink-200 bg-white p-5 shadow-sm">
+      <section className="rounded-2xl border border-ink-200 bg-surface-2 p-5 shadow-sm">
         <h3 className="mb-3 text-sm font-semibold text-ink-700">トラック構成</h3>
         <ul className="flex flex-col gap-2">
           {(["melody", "chord", "bass", "synth", "guitar", "acoustic", "vocal", "drum", "drumAcoustic"] as LayerId[]).map(

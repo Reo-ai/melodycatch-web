@@ -323,7 +323,7 @@ function SwipeCarousel({ panels }: SwipeCarouselProps) {
           type="button"
           onClick={() => goTo(page - 1)}
           disabled={page === 0}
-          className="rounded-full border border-ink-300 bg-white px-2.5 py-1 text-sm text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-30"
+          className="rounded-full border border-ink-300 bg-surface-2 px-2.5 py-1 text-sm text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-30"
           aria-label="前のパネル"
         >
           ◀
@@ -338,7 +338,7 @@ function SwipeCarousel({ panels }: SwipeCarouselProps) {
                 "rounded-full px-3 py-1 text-xs font-semibold transition",
                 i === page
                   ? "bg-accent-500 text-white shadow-sm"
-                  : "border border-ink-300 bg-white text-ink-700 hover:border-accent-300",
+                  : "border border-ink-300 bg-surface-2 text-ink-700 hover:border-accent-300",
               ].join(" ")}
             >
               {p.title}
@@ -349,7 +349,7 @@ function SwipeCarousel({ panels }: SwipeCarouselProps) {
           type="button"
           onClick={() => goTo(page + 1)}
           disabled={page >= panels.length - 1}
-          className="rounded-full border border-ink-300 bg-white px-2.5 py-1 text-sm text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-30"
+          className="rounded-full border border-ink-300 bg-surface-2 px-2.5 py-1 text-sm text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-30"
           aria-label="次のパネル"
         >
           ▶
@@ -379,6 +379,41 @@ function SwipeCarousel({ panels }: SwipeCarouselProps) {
       <div className="text-center text-[11px] text-ink-500">
         ← スワイプで「{panels.map((p) => p.title).join(" → ")}」を切替 →
       </div>
+    </div>
+  );
+}
+
+/** 各セクション共通の見出し (番号バッジ + タイトル + 説明 + 右側アクション)。 */
+function SectionHeader({
+  step,
+  title,
+  sub,
+  status,
+  right,
+}: {
+  step: string;
+  title: ReactNode;
+  sub?: ReactNode;
+  status?: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div className="flex min-w-0 items-start gap-3">
+        <span className="mc-step mt-0.5">{step}</span>
+        <div className="min-w-0">
+          <h2 className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[15px] font-bold tracking-tight text-white">
+            {title}
+            {status ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] font-semibold text-rose-300 ring-1 ring-rose-400/30">
+                {status}
+              </span>
+            ) : null}
+          </h2>
+          {sub ? <p className="mt-0.5 text-xs leading-relaxed text-ink-500">{sub}</p> : null}
+        </div>
+      </div>
+      {right}
     </div>
   );
 }
@@ -2446,58 +2481,60 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const progressionGapSec = (60 * 4) / Math.max(40, Math.min(220, bpm));
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       {/* ① キー / スケール */}
-      <section className="rounded-2xl border border-ink-200 bg-pink-100 p-4 shadow-sm">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink-700">
-            ① 曲のキーとスケールを選ぶ
-          </h2>
-          <button
-            type="button"
-            onClick={stopAll}
-            className="rounded-full border border-ink-200 bg-white px-3 py-1 text-xs font-medium text-ink-700 hover:border-accent-300"
-          >
-            音を止める
-          </button>
-        </div>
+      <section className="mc-card p-5">
+        <SectionHeader
+          step="01"
+          title="キー & スケール"
+          sub="曲の調と雰囲気を決めます。すべてのパートがこのスケールに沿って鳴ります。"
+          right={
+            <button
+              type="button"
+              onClick={stopAll}
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-ink-700 transition hover:border-white/20 hover:text-white"
+            >
+              <span className="h-2 w-2 rounded-[2px] bg-current" aria-hidden />
+              音を止める
+            </button>
+          }
+        />
         <ScalePicker scale={scale} onChange={onScaleChange} />
       </section>
 
       {/* ② 電子ドラム */}
-      <section
-        className={[
-          "rounded-2xl border bg-cyan-100 p-4 shadow-sm transition",
-          armed === "drum" ? "border-accent-300" : "border-ink-200",
-        ].join(" ")}
-      >
-        <h2 className="mb-3 text-sm font-semibold text-ink-700">
-          ② 電子ドラム (5 パターン + 自由編集){" "}
-          {armed === "drum" && state === "recording"
-            ? `🥁 録音中 (+${drumRecCount} ヒット)`
-            : armed === "drum"
-              ? "🥁 電子ドラム層に録音可"
-              : ""}
-        </h2>
+      <section className="mc-card p-5" data-armed={armed === "drum"}>
+        <SectionHeader
+          step="02"
+          title="ビート"
+          sub="5 つのパターンから選んで、各セルをタップで自由に編集できます。"
+          status={
+            armed === "drum" && state === "recording"
+              ? `● 録音中 +${drumRecCount} ヒット`
+              : armed === "drum"
+                ? "電子ドラム層に録音可"
+                : undefined
+          }
+        />
         <DrumPad
           ref={drumPadRef}
           bpm={bpm}
           onBpmChange={setBpm}
           onHit={handleDrumHit}
         />
-        <p className="mt-3 text-xs text-ink-500">
+        <p className="mt-3 text-[11px] text-ink-500">
           パターン選択 → 各セルでヒットを増減 → ▶ でループ。BPM はコード進行プリセットとも連動します
           (1 コード = 1 小節)。
         </p>
       </section>
 
       {/* 入力ステータス */}
-      <section className="rounded-2xl border border-ink-200 bg-white p-3 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2 text-xs text-ink-600">
-          <span className="rounded-full bg-ink-100 px-2 py-1">
-            ⌨️ <b>Q W E R T Y U I O P</b> 白鍵 / <b>2 3 5 6 7 9 0</b> 黒鍵 / <b>Z X</b> オクターブ↓↑
+      <section className="-my-2 px-1">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
+          <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-1">
+            ⌨️ <b className="font-mono text-ink-700">Q W E R T Y U I O P</b> 白鍵 / <b className="font-mono text-ink-700">2 3 5 6 7 9 0</b> 黒鍵 / <b className="font-mono text-ink-700">Z X</b> オクターブ↓↑
           </span>
-          <span className="rounded-full bg-ink-100 px-2 py-1">
+          <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-1">
             🎹 MIDI:{" "}
             {!midi.supported
               ? "ブラウザ非対応"
@@ -2511,28 +2548,46 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       </section>
 
       {/* 🤖 自動作曲モード */}
-      <section className="rounded-2xl border border-violet-300 bg-gradient-to-br from-violet-50 to-fuchsia-50 p-4 shadow-sm">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-violet-800">
-            🤖 自動作曲モード (AI がリアルタイムで打ち込み)
-          </h2>
+      <section className="mc-hero p-5 sm:p-7">
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-600">
+              <span className="h-1.5 w-1.5 rounded-full bg-fuchsia-400 shadow-[0_0_8px_rgba(232,121,249,0.9)]" />
+              AI Composer
+            </div>
+            <h2 className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
+              <span className="mc-gradient-text">自動作曲</span>で、1 曲まるごと。
+            </h2>
+            <p className="mt-1.5 max-w-xl text-sm text-ink-500">
+              スタイルと長さを選ぶだけ。メロディ・コード・ベース・ドラムまで、AI がリアルタイムでピアノロールに打ち込みます。
+            </p>
+          </div>
           {autoComposing && autoComposeProgress && (
-            <span className="text-xs font-mono tabular-nums text-violet-700">
-              {autoComposeProgress.bar} / {autoComposeProgress.totalBars} 小節
-            </span>
+            <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5">
+              <span className="mc-eq flex h-5 items-end gap-[3px] text-fuchsia-300" aria-hidden>
+                <span className="h-5" />
+                <span className="h-5" />
+                <span className="h-5" />
+                <span className="h-5" />
+              </span>
+              <span className="font-mono text-sm font-bold tabular-nums text-white">
+                {autoComposeProgress.bar}
+                <span className="text-ink-500"> / {autoComposeProgress.totalBars} 小節</span>
+              </span>
+            </div>
           )}
         </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1.25fr]">
           {/* スタイル */}
           <div>
-            <label className="mb-1 block text-[11px] font-medium text-violet-700">
+            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-ink-500">
               スタイル
             </label>
             <select
               value={autoComposeStyle}
               onChange={(e) => setAutoComposeStyle(e.target.value as ComposerStyle)}
               disabled={autoComposing}
-              className="w-full rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-sm text-ink-800 disabled:opacity-50"
+              className="mc-field h-11"
             >
               {(Object.keys(COMPOSER_STYLE_LABEL_JA) as ComposerStyle[]).map((s) => (
                 <option key={s} value={s}>
@@ -2543,14 +2598,14 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
           {/* 小節数 */}
           <div>
-            <label className="mb-1 block text-[11px] font-medium text-violet-700">
+            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-ink-500">
               小節数
             </label>
             <select
               value={autoComposeBars}
               onChange={(e) => setAutoComposeBars(Number(e.target.value))}
               disabled={autoComposing}
-              className="w-full rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-sm text-ink-800 disabled:opacity-50"
+              className="mc-field h-11"
             >
               <option value={8}>8 小節 (短め)</option>
               <option value={16}>16 小節 (標準)</option>
@@ -2563,14 +2618,14 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
           {/* 早送り */}
           <div>
-            <label className="mb-1 block text-[11px] font-medium text-violet-700">
+            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-ink-500">
               書き込み速度
             </label>
             <select
               value={autoComposeSpeed}
               onChange={(e) => setAutoComposeSpeed(Number(e.target.value))}
               disabled={autoComposing}
-              className="w-full rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-sm text-ink-800 disabled:opacity-50"
+              className="mc-field h-11"
             >
               <option value={1}>1x (実時間)</option>
               <option value={2}>2x (早回し)</option>
@@ -2584,9 +2639,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               <button
                 type="button"
                 onClick={stopAutoCompose}
-                className="w-full rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-rose-700"
+                className="h-11 w-full rounded-xl bg-rose-500 px-3 text-sm font-bold text-white shadow-[0_10px_30px_-10px_rgba(244,63,94,0.8)] transition hover:bg-rose-400"
               >
-                ■ 停止
+                ■ 作曲を停止
               </button>
             ) : (
               <button
@@ -2594,9 +2649,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                 onClick={() => {
                   void startAutoCompose();
                 }}
-                className="w-full rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-violet-700"
+                className="mc-btn-primary h-11 w-full rounded-xl px-4 text-[15px] font-bold tracking-wide"
               >
-                🤖 自動作曲 開始
+                ✦ 自動作曲を開始
               </button>
             )}
           </div>
@@ -2604,15 +2659,18 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
 
         {/* ギター ボイシング: Verse 等の弾き方を切替 (おまかせ / リード / パワー / ブリッジミュート) */}
         {/* 目立つよう左の色帯と大きめのラベル付き — 4 列グリッド直下に配置済み */}
-        <div className="mt-3 rounded-lg border-l-4 border-rose-500 border-y border-r border-violet-300 bg-white p-3 shadow-sm">
+        <div className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4">
           <div className="mb-2 flex items-center gap-2">
-            <span className="rounded bg-rose-500 px-2 py-0.5 text-[10px] font-bold text-white">
+            <span className="rounded-md bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300 ring-1 ring-rose-400/30">
               🎸 ギター
             </span>
-            <span className="text-sm font-semibold text-violet-800">
-              ボイシング (弾き方を強制)
+            <span className="text-sm font-semibold text-white">
+              ボイシング
             </span>
-            <span className="text-[10px] text-ink-500">
+          </div>
+          <div className="mb-3 -mt-1">
+            <span className="text-[11px] text-ink-500">
               ※「おまかせ」以外を選ぶと、Verse / Chorus 等で必ずこの弾き方を使います
             </span>
           </div>
@@ -2629,7 +2687,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                     "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
                     active
                       ? "border-rose-500 bg-rose-600 text-white shadow"
-                      : "border-ink-200 bg-white text-ink-600 hover:border-rose-300 hover:bg-rose-50",
+                      : "border-white/10 bg-white/[0.03] text-ink-600 hover:border-rose-400/40 hover:bg-rose-500/10 hover:text-white",
                     autoComposing ? "cursor-not-allowed opacity-60" : "",
                   ].join(" ")}
                 >
@@ -2641,16 +2699,18 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         </div>
 
         {/* 生ドラムキット選択: 4 キット (Sixties Rock / Basic / Jazz / Electro) */}
-        <div className="mt-3 rounded-lg border-l-4 border-amber-500 border-y border-r border-violet-300 bg-white p-3 shadow-sm">
+        <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4">
           <div className="mb-2 flex items-center gap-2">
-            <span className="rounded bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-white">
+            <span className="rounded-md bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300 ring-1 ring-amber-400/30">
               🥁 生ドラム
             </span>
-            <span className="text-sm font-semibold text-violet-800">
-              キット選択 (Public Domain サンプル)
+            <span className="text-sm font-semibold text-white">
+              キット選択
             </span>
-            <span className="text-[10px] text-ink-500">
-              ※「生ドラム」レイヤが ON のとき有効
+          </div>
+          <div className="mb-3 -mt-1">
+            <span className="text-[11px] text-ink-500">
+              Public Domain サンプル。「生ドラム」レイヤが ON のとき有効
             </span>
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -2668,7 +2728,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                       "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
                       active
                         ? "border-amber-500 bg-amber-600 text-white shadow"
-                        : "border-ink-200 bg-white text-ink-600 hover:border-amber-300 hover:bg-amber-50",
+                        : "border-white/10 bg-white/[0.03] text-ink-600 hover:border-amber-400/40 hover:bg-amber-500/10 hover:text-white",
                       autoComposing ? "cursor-not-allowed opacity-60" : "",
                     ].join(" ")}
                   >
@@ -2679,10 +2739,13 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
         </div>
 
+        </div>
+
         {/* 書き込み対象レイヤの選択 — 10 楽器をロール別にグループ表示 */}
-        <div className="mt-3 rounded-lg border border-violet-200 bg-white/70 p-2 space-y-2">
-          <div className="text-[11px] font-medium text-violet-700">
-            書き込む楽器を選択 (同じロールの楽器は同じフレーズを共有して鳴ります)
+        <div className="mt-3 space-y-3 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4">
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <span className="text-sm font-semibold text-white">書き込む楽器</span>
+            <span className="text-[11px] text-ink-500">同じロールの楽器は同じフレーズを共有して鳴ります</span>
           </div>
           {(
             [
@@ -2719,7 +2782,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             ] as const
           ).map((group) => (
             <div key={group.role}>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-violet-500/80">
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-500">
                 {group.role}
               </div>
               <div className="flex flex-wrap gap-1.5">
@@ -2727,10 +2790,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                   <label
                     key={opt.key}
                     className={[
-                      "inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium transition",
+                      "inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition",
                       opt.value
-                        ? "border-violet-400 bg-violet-100 text-violet-800"
-                        : "border-ink-200 bg-white text-ink-500 hover:border-violet-300",
+                        ? "border-violet-400/60 bg-violet-500/15 text-white shadow-[0_0_0_1px_rgba(167,139,250,0.15)]"
+                        : "border-white/10 bg-white/[0.02] text-ink-500 hover:border-white/20 hover:text-ink-700",
                       autoComposing ? "cursor-not-allowed opacity-60" : "",
                     ].join(" ")}
                   >
@@ -2750,7 +2813,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         </div>
 
         {/* コード進行ソース: 自動 or Chord 層手書き */}
-        <div className="mt-3 rounded-lg border border-violet-200 bg-white/70 p-2">
+        <div className="mt-3 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4">
           <label
             className={[
               "flex cursor-pointer items-start gap-2 text-xs text-ink-700",
@@ -2766,10 +2829,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               className="mt-0.5 h-3.5 w-3.5 accent-violet-600"
             />
             <span>
-              <span className="font-semibold text-violet-700">
+              <span className="font-semibold text-white">
                 🎼 コード層を進行のベースに使う
               </span>
-              <span className="block text-[10px] text-ink-500">
+              <span className="mt-0.5 block text-[11px] leading-relaxed text-ink-500">
                 ON にすると、自動でコード進行を作らず、コード層に書いた音 / コードパレットから録ったコードを 1 小節ごとに解析して、それに合わせて全パートを編曲します。
                 {chord.notes.length === 0 ? "（コード層が空なので使えません）" : `（現在 ${chord.notes.length} ノート）`}
               </span>
@@ -2778,14 +2841,14 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         </div>
 
         {autoComposing && autoComposeProgress && (
-          <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-violet-200">
+          <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]">
             <div
-              className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500 transition-[width] duration-200"
+              className="h-full rounded-full transition-[width] duration-200 [background:var(--brand-gradient)] shadow-[0_0_12px_rgba(198,75,255,0.8)]"
               style={{ width: `${Math.round(autoComposeProgress.pct * 100)}%` }}
             />
           </div>
         )}
-        <p className="mt-2 text-[11px] text-violet-700/80">
+        <p className="mt-3 text-[11px] leading-relaxed text-ink-500">
           ※ チェックを入れた書き込み対象レイヤだけが空にされてから書き込まれます (Undo で復元可)。
           チェックを外したレイヤは既存内容を保持します。
           スケール ({scaleDisplayName(scale)}) と BPM ({bpm}) は現在の設定が使われます。
@@ -2793,20 +2856,43 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       </section>
 
       {/* ③ 録音トラック (ピアノロールの上に配置: ピアノロールを見ながら録音できるように) */}
-      <section className="rounded-2xl border border-ink-200 bg-blue-100 p-4 shadow-sm">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink-700">
-            ③ 録音トラック (録音したい時だけ使う)
-          </h2>
-          <div className="text-xs font-mono tabular-nums text-ink-600">
-            {state === "recording" ? "● REC " : playing ? "▶ PLAY " : "■ "}
-            {elapsed.toFixed(1)}s
-            {totalDur > 0 && ` / ${totalDur.toFixed(1)}s`}
-            {overdubPlaying && (
-              <span className="ml-2 text-accent-700">+ オーバーダブ再生中</span>
-            )}
-          </div>
-        </div>
+      <section className="mc-card p-5">
+        <SectionHeader
+          step="03"
+          title="トラック & 音色"
+          sub="録音したい楽器を選んで、ピアノロール下の録音ボタンで重ね録り。音色もここで切り替えます。"
+          right={
+            <div
+              className={[
+                "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 font-mono text-xs tabular-nums",
+                state === "recording"
+                  ? "border-rose-400/40 bg-rose-500/10 text-rose-200"
+                  : playing
+                    ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
+                    : "border-white/10 bg-white/[0.04] text-ink-600",
+              ].join(" ")}
+            >
+              <span
+                className={[
+                  "h-2 w-2 rounded-full",
+                  state === "recording"
+                    ? "animate-pulse bg-rose-400"
+                    : playing
+                      ? "bg-emerald-400"
+                      : "bg-ink-400",
+                ].join(" ")}
+              />
+              {state === "recording" ? "REC" : playing ? "PLAY" : "STOP"}
+              <span className="text-white">
+                {elapsed.toFixed(1)}s
+                {totalDur > 0 && <span className="text-ink-500"> / {totalDur.toFixed(1)}s</span>}
+              </span>
+              {overdubPlaying && (
+                <span className="text-accent-700">+ オーバーダブ</span>
+              )}
+            </div>
+          }
+        />
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
           {trackInfo.map(({ id, layer, label }) => {
@@ -2825,11 +2911,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                   }}
                   disabled={isRec}
                   className={[
-                    "flex w-full items-center justify-between gap-3 rounded-xl border p-3 text-left transition",
+                    "flex w-full flex-col items-start gap-2 rounded-2xl border p-3 text-left transition",
                     "active:scale-[0.99] disabled:cursor-not-allowed",
                     isArmed
-                      ? "border-accent-500 bg-accent-50 ring-2 ring-accent-300/60"
-                      : "border-ink-200 bg-white hover:border-accent-300",
+                      ? "border-accent-400/70 bg-accent-500/[0.12] shadow-[0_0_0_1px_rgb(var(--accent-400)/0.25),0_12px_30px_-14px_rgb(var(--accent-500)/0.8)]"
+                      : "border-white/[0.07] bg-white/[0.025] hover:border-white/15 hover:bg-white/[0.04]",
                     isRec && !isArmed ? "opacity-40" : "",
                   ].join(" ")}
                 >
@@ -2838,23 +2924,23 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                       className={[
                         "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 transition",
                         isArmed
-                          ? "border-accent-500 bg-accent-500"
-                          : "border-ink-300 bg-white",
+                          ? "border-rose-400 bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.7)]"
+                          : "border-ink-300 bg-transparent",
                       ].join(" ")}
                       aria-hidden
                     >
                       {isArmed && (
-                        <span className="h-2.5 w-2.5 rounded-full bg-white" />
+                        <span className="h-2.5 w-2.5 rounded-full bg-surface-2" />
                       )}
                     </span>
-                    <span className="text-base font-semibold">{label}</span>
+                    <span className="text-sm font-semibold text-white">{label}</span>
                     {id === "vocal" && !vocalSampleReady && (
-                      <span className="ml-1 animate-pulse rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                      <span className="ml-1 animate-pulse rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
                         サンプル読み込み中…
                       </span>
                     )}
                   </span>
-                  <span className="text-xs text-ink-500">
+                  <span className="pl-9 font-mono text-[11px] tabular-nums text-ink-500">
                     {id === "drum" || id === "drumAcoustic"
                       ? `${layer.notes.length} ヒット`
                       : `${layer.notes.length} ノート`}{" "}
@@ -2865,7 +2951,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                   type="button"
                   onClick={() => clearLayer(id)}
                   disabled={isRec || layer.notes.length === 0}
-                  className="self-start rounded-full border border-ink-200 bg-white px-3 py-1 text-xs text-ink-700 disabled:cursor-not-allowed disabled:opacity-40 hover:border-accent-300"
+                  className="self-start rounded-full px-2 py-0.5 text-[11px] font-medium text-ink-500 transition hover:bg-white/[0.06] hover:text-rose-300 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink-500"
                 >
                   クリア
                 </button>
@@ -2875,9 +2961,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         </div>
 
         {/* 録音補正モード切替: 拍グリッドに揃える auto と、手弾きのままの raw */}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-ink-600">録音補正:</span>
-          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2">
             <button
               type="button"
               onClick={() => {
@@ -2927,10 +3013,13 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           <MixerPanel open={mixerOpen} onToggle={() => setMixerOpen((v) => !v)} />
         </div>
 
+        {/* 音色設定をひとまとめにしたカード */}
+        <div className="mt-4 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4">
+        <div className="mb-1 text-sm font-semibold text-white">音色</div>
         {/* ベースタイプ切替: ウッド / シンセ / スラップ */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-ink-600">🎸 ベース音色:</span>
-          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2">
             {(["wood", "synth", "slap"] as const).map((t) => {
               const label = t === "wood" ? "ウッド" : t === "synth" ? "シンセ" : "スラップ";
               const title =
@@ -2973,7 +3062,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         {/* ギタータイプ切替: クリーン / ディストーション */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-ink-600">🎸 ギター音色:</span>
-          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2">
             {(["clean", "distortion"] as const).map((t) => {
               const label = t === "clean" ? "クリーン" : "ディストーション";
               const title =
@@ -3013,7 +3102,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         </div>
 
         {/* 2 本目のギター: 自動作曲時にメロディを重ねるリードチャンネル */}
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-ink-200 bg-ink-50/40 px-3 py-2">
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2">
           <label className="inline-flex items-center gap-2 text-xs font-medium text-ink-600">
             <input
               type="checkbox"
@@ -3025,7 +3114,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </label>
           <div
             className={[
-              "inline-flex overflow-hidden rounded-full border border-ink-200 bg-white",
+              "inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2",
               autoComposeWriteGuitar2 ? "" : "opacity-50",
             ].join(" ")}
           >
@@ -3065,7 +3154,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         {/* ボーカル母音切替: アー / ウー / んー */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-ink-600">🎤 ボーカル母音:</span>
-          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2">
             {(["aah", "ooh", "hum"] as const).map((v) => {
               const label = v === "aah" ? "アー" : v === "ooh" ? "ウー" : "んー";
               const title =
@@ -3108,7 +3197,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         {/* ボーカル子音アタック切替: 各ノート頭に短い「ラ/タ/ナ/マ/パ」風バーストを挿入 */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-ink-600">🎤 子音アタック:</span>
-          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2">
             {(["none", "la", "ta", "na", "ma", "pa"] as const).map((c) => {
               const label =
                 c === "none" ? "なし" : c === "la" ? "ラ" : c === "ta" ? "タ" : c === "na" ? "ナ" : c === "ma" ? "マ" : "パ";
@@ -3151,7 +3240,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         {/* ボーカル表現切替: ビブラート/しゃくり/レガートをまとめてプリセット */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-ink-600">🎤 表現:</span>
-          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-white">
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2">
             {(["flat", "natural", "expressive"] as const).map((e) => {
               const label = e === "flat" ? "フラット" : e === "natural" ? "ナチュラル" : "エモい";
               const title =
@@ -3186,6 +3275,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </span>
         </div>
 
+        </div>
+
         {/* ドラム同時録音トグル: 主アーム楽器とは別にドラム層へ並行録音できる */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <label
@@ -3195,7 +3286,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                 ? "cursor-not-allowed border-ink-200 bg-ink-50 text-ink-400"
                 : drumAlsoArmed
                   ? "border-accent-500 bg-accent-50 text-accent-700"
-                  : "border-ink-200 bg-white text-ink-700 hover:border-accent-300",
+                  : "border-ink-200 bg-surface-2 text-ink-700 hover:border-accent-300",
               state === "recording" ? "cursor-not-allowed opacity-60" : "",
             ].join(" ")}
             title={
@@ -3228,19 +3319,20 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       </section>
 
       {/* ④ ピアノロール */}
-      <section className="rounded-2xl border border-ink-200 bg-white p-4 shadow-sm">
+      <section className="mc-card p-5">
+        <SectionHeader
+          step="04"
+          title="ピアノロール"
+          sub="横が時間、縦が音程。編集モードでノートの追加・移動・長さ調整ができます。"
+        />
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-ink-700">
-            ④ ピアノロール (DAW 風 / ドラムレーン付き)
-          </h2>
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-500">
-            <span>横:時間 / 縦:音程</span>
             <button
               type="button"
               onClick={undo}
               disabled={past.length === 0 || state === "recording"}
               title="元に戻る (Cmd/Ctrl+Z)"
-              className="rounded-full border border-ink-300 bg-white px-2 py-0.5 text-xs font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
+              className="rounded-full border border-ink-300 bg-surface-2 px-2 py-0.5 text-xs font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
             >
               ↶ 元に戻る
             </button>
@@ -3249,7 +3341,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               onClick={redo}
               disabled={future.length === 0 || state === "recording"}
               title="やり直し (Cmd/Ctrl+Shift+Z)"
-              className="rounded-full border border-ink-300 bg-white px-2 py-0.5 text-xs font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
+              className="rounded-full border border-ink-300 bg-surface-2 px-2 py-0.5 text-xs font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
             >
               ↷ やり直し
             </button>
@@ -3269,7 +3361,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                 "rounded-full px-3 py-0.5 text-xs font-semibold shadow-sm disabled:opacity-40",
                 editMode
                   ? "bg-rose-500 text-white hover:bg-rose-600"
-                  : "border border-ink-300 bg-white text-ink-700 hover:border-accent-300",
+                  : "border border-ink-300 bg-surface-2 text-ink-700 hover:border-accent-300",
               ].join(" ")}
             >
               ✎ 編集モード {editMode ? "ON" : "OFF"}
@@ -3277,7 +3369,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             {/* 編集モード ON のときだけサブモード切り替え (通常 / 消しゴム) を表示。 */}
             {editMode && (
               <div
-                className="inline-flex items-center gap-0.5 rounded-full border border-ink-300 bg-white p-0.5 shadow-sm"
+                className="inline-flex items-center gap-0.5 rounded-full border border-ink-300 bg-surface-2 p-0.5 shadow-sm"
                 role="group"
                 aria-label="編集サブモード"
               >
@@ -3318,7 +3410,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               onClick={clearAllLayers}
               disabled={state === "recording" || playing || !hasAnything}
               title="全てのレイヤー (メロディ / コード / ベース / シンセ / ギター / アコギ / ドラム) の譜面を一気に削除します。「元に戻る」で復元できます。"
-              className="rounded-full border border-rose-300 bg-white px-3 py-0.5 text-xs font-semibold text-rose-600 shadow-sm hover:bg-rose-50 disabled:opacity-40"
+              className="rounded-full border border-rose-400/40 bg-surface-2 px-3 py-0.5 text-xs font-semibold text-rose-300 shadow-sm hover:bg-rose-500/10 disabled:opacity-40"
             >
               🗑 譜面を削除
             </button>
@@ -3331,7 +3423,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                 }
                 disabled={state === "recording" || playing}
                 title="編集モードで追加するノートの長さ。BPM 連動で 1/4〜1/32、または自由 (0.5秒固定)。"
-                className="rounded-md border border-ink-300 bg-white px-2 py-0.5 text-xs disabled:opacity-50"
+                className="rounded-md border border-ink-300 bg-surface-2 px-2 py-0.5 text-xs disabled:opacity-50"
               >
                 <option value="1/4">1/4</option>
                 <option value="1/8">1/8</option>
@@ -3351,7 +3443,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                 "rounded-full px-3 py-0.5 text-xs font-semibold shadow-sm",
                 metronomeOn
                   ? "bg-emerald-500 text-white hover:bg-emerald-600"
-                  : "border border-ink-300 bg-white text-ink-700 hover:border-accent-300",
+                  : "border border-ink-300 bg-surface-2 text-ink-700 hover:border-accent-300",
               ].join(" ")}
             >
               🎵 メトロノーム {metronomeOn ? "ON" : "OFF"}
@@ -3364,7 +3456,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                   setQuantizeGrid(e.target.value as QuantizeGrid)
                 }
                 disabled={state === "recording" || playing}
-                className="rounded-md border border-ink-300 bg-white px-2 py-0.5 text-xs disabled:opacity-50"
+                className="rounded-md border border-ink-300 bg-surface-2 px-2 py-0.5 text-xs disabled:opacity-50"
               >
                 <option value="off">OFF</option>
                 <option value="1/4">1/4 (拍)</option>
@@ -3390,7 +3482,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
         </div>
         {editMode && !eraserMode && (
-          <div className="mb-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          <div className="mb-2 rounded-md bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
             ✎ 編集モード (通常): 空の場所をドラッグで範囲選択 / クリックで <b>{armedLabel}層</b> にノート追加 (長さ <b>{noteLength}</b>、ドラムは 1 ヒット)。
             ノートをドラッグで自由に移動 (時間 + 音程)。両端を掴むと長さ調整 (範囲選択中は全ノートが同じ量だけ伸縮)。
             選択中に <b>Delete</b>/<b>Backspace</b> で一括削除、<b>Esc</b> で選択解除。
@@ -3399,7 +3491,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </div>
         )}
         {editMode && eraserMode && (
-          <div className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <div className="mb-2 rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
             🧽 編集モード (消しゴム): ピアノロール上のノートをクリックすると即削除します。
             通常編集に戻すには上の <b>「✎ 通常」</b> を選択してください。
           </div>
@@ -3433,13 +3525,13 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           />
         </div>
         {/* 再生 / 録音 / 書き出し (ピアノロール直下) */}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl border border-white/[0.06] bg-black/20 p-2">
           {!playing ? (
             <button
               type="button"
               onClick={startPlayback}
               disabled={state === "recording" || !hasAnything}
-              className="rounded-full bg-accent-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-accent-600 disabled:opacity-40"
+              className="inline-flex h-11 items-center gap-2 rounded-full bg-white px-6 text-sm font-bold text-page shadow-[0_8px_24px_-8px_rgba(255,255,255,0.45)] transition hover:bg-ink-800 disabled:opacity-30 disabled:shadow-none"
             >
               ▶ 再生
             </button>
@@ -3447,7 +3539,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             <button
               type="button"
               onClick={stopPlayback}
-              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
+              className="inline-flex h-11 items-center rounded-full bg-ink-300 px-6 text-sm font-bold text-white shadow-sm transition hover:bg-ink-400"
             >
               ■ 停止
             </button>
@@ -3457,7 +3549,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               type="button"
               onClick={startRecord}
               disabled={playing}
-              className="rounded-full bg-rose-500 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-600 disabled:opacity-40"
+              className="inline-flex h-11 items-center rounded-full bg-rose-500 px-6 text-sm font-bold text-white shadow-[0_8px_24px_-8px_rgba(244,63,94,0.8)] transition hover:bg-rose-400 disabled:opacity-30 disabled:shadow-none"
             >
               ● {armedLabel} を録音
             </button>
@@ -3465,7 +3557,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             <button
               type="button"
               onClick={stopRecord}
-              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-sm"
+              className="inline-flex h-11 items-center rounded-full bg-ink-300 px-6 text-sm font-bold text-white shadow-sm transition hover:bg-ink-400"
             >
               ■ 停止
             </button>
@@ -3474,12 +3566,12 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             type="button"
             onClick={exportMidi}
             disabled={!hasAnything}
-            className="rounded-full border border-ink-300 bg-white px-5 py-2 text-sm font-semibold text-ink-700 shadow-sm hover:border-accent-300 disabled:opacity-40"
+            className="inline-flex h-11 items-center rounded-full border border-white/10 bg-white/[0.04] px-5 text-sm font-semibold text-ink-700 transition hover:border-white/20 hover:text-white disabled:opacity-30"
           >
-            ⤓ MIDIファイル書き出し
+            ⤓ MIDI 書き出し
           </button>
           {/* 再生速度セレクタ (1x / 1.5x / 2x / 3x / 4x) */}
-          <div className="ml-auto flex items-center gap-1 rounded-full border border-ink-200 bg-white p-0.5 text-xs">
+          <div className="ml-auto flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.03] p-1 text-xs">
             <span className="px-2 text-ink-500">速度</span>
             {([1, 1.5, 2, 3, 4] as const).map((rate) => {
               const active = playbackRate === rate;
@@ -3521,15 +3613,16 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       </section>
 
       {/* ⑤ 入力カルーセル: コードパレット → スケールミニピアノ → 88鍵ピアノ */}
-      <section
-        className={[
-          "rounded-2xl border bg-lime-100 p-4 shadow-sm transition",
-          armed === "chord" ? "border-accent-300" : "border-ink-200",
-        ].join(" ")}
-      >
-        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold text-ink-700">
-            ⑤ 入力 (コードパレット ↔ スケールミニピアノ ↔ 88鍵ピアノ)
+      <section className="mc-card p-5" data-armed={armed === "chord"}>
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
+          <h2 className="flex flex-wrap items-start gap-3 text-[15px] font-bold tracking-tight text-white">
+            <span className="mc-step mt-0.5">05</span>
+            <span className="min-w-0">
+              演奏パッド
+              <span className="mt-0.5 block text-xs font-normal text-ink-500">
+                コードパレット・スケールピアノ・88 鍵・ドラムキットをスワイプで切り替え
+              </span>
+            </span>
             {armed === "chord" && state === "recording" && (
               <span className="ml-2 text-rose-500">
                 🎼 コード層に録音中 (+{chordRecCount} コード)
@@ -3563,7 +3656,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             )}
           </h2>
           {(spotlightLabel || selectedChord) && (
-            <span className="text-xs font-medium text-accent-700">
+            <span className="rounded-full border border-accent-400/30 bg-accent-500/10 px-3 py-1 text-xs font-semibold text-accent-800">
               {spotlightLabel ??
                 (selectedChord
                   ? `${chordSymbol(selectedChord)} ${chordLabelJa(selectedChord)}`
@@ -3650,7 +3743,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                     11 種類のドラムをタップ/PCキー (A〜G・Q〜Y) で演奏できます。
                     armed が「生ドラム」なら録音にもそのまま入ります (生ドラム層へ記録)。
                     {armed === "drumAcoustic" && state === "recording" && (
-                      <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                      <span className="ml-2 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
                         🥁 録音中 (+{drumAcousticRecCount} ヒット)
                       </span>
                     )}
@@ -3663,17 +3756,13 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       </section>
 
       {/* ⑥ 進行プリセット */}
-      <section
-        className={[
-          "rounded-2xl border bg-orange-100 p-4 shadow-sm transition",
-          armed === "chord"
-            ? "border-accent-300"
-            : "border-ink-200",
-        ].join(" ")}
-      >
-        <h2 className="mb-3 text-sm font-semibold text-ink-700">
-          ⑥ コード進行プリセット {armed === "chord" && "🎼 コード層に録音可"}
-        </h2>
+      <section className="mc-card p-5" data-armed={armed === "chord"}>
+        <SectionHeader
+          step="06"
+          title="コード進行プリセット"
+          sub="定番の進行をワンタップで試せます。"
+          status={armed === "chord" ? "コード層に録音可" : undefined}
+        />
         <ProgressionList
           scale={scale}
           bpm={bpm}
@@ -3687,10 +3776,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       </section>
 
       {/* ⑦ 保存ゾーン (画面の一番下) */}
-      <section className="rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-50 via-fuchsia-50 to-violet-50 p-4 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <section className="mc-card overflow-hidden p-5">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(500px_160px_at_100%_50%,rgba(198,75,255,0.14),transparent_70%)]" />
+        <div className="relative flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-ink-700">
+            <h2 className="text-[15px] font-bold tracking-tight text-white">
               💾 保存・ライブラリ
             </h2>
             <p className="mt-1 text-xs text-ink-500">
@@ -3701,9 +3791,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           <button
             type="button"
             onClick={openLibraryTab}
-            className="rounded-full bg-violet-600 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-violet-700"
+            className="mc-btn-primary inline-flex h-11 items-center rounded-full px-6 text-sm font-bold"
           >
-            📂 保存ライブラリを別タブで開く
+            📂 保存ライブラリを開く
           </button>
         </div>
       </section>

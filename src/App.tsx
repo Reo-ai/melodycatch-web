@@ -14,6 +14,7 @@ import { useMemo, useState } from "react";
 import Studio from "./components/Studio";
 import SavedPlayer from "./components/SavedPlayer";
 import LibraryPage from "./components/LibraryPage";
+import BrandMark from "./components/BrandMark";
 import { C_MAJOR, scaleDisplayName, type Scale } from "./music/scale";
 
 type MainTool = "studio" | "chordQuiz";
@@ -44,124 +45,86 @@ export default function App() {
 
   if (playerRoute) {
     return (
-      <div className="min-h-screen bg-ink-50 text-ink-900">
-        <header className="border-b border-ink-200 bg-gradient-to-r from-violet-950 via-fuchsia-900 to-violet-950 text-white shadow-md">
-          <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
-            <h1 className="text-lg font-extrabold tracking-tight">
-              Melody Catch · 保存スロット再生
-            </h1>
-            <a
-              href={(() => {
-                if (typeof window === "undefined") return "/";
-                const u = new URL(window.location.href);
-                u.searchParams.delete("player");
-                u.searchParams.delete("slot");
-                return u.toString();
-              })()}
-              className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white hover:bg-white/20"
-            >
-              Studio を開く
-            </a>
-          </div>
-        </header>
-        <main>
-          <SavedPlayer />
-        </main>
-      </div>
+      <SubPageShell title="保存スロット再生" backHref={studioHref(["player", "slot"])} width="max-w-3xl">
+        <SavedPlayer />
+      </SubPageShell>
     );
   }
 
   if (libraryRoute) {
     return (
-      <div className="min-h-screen bg-ink-50 text-ink-900">
-        <header className="border-b border-ink-200 bg-gradient-to-r from-violet-950 via-fuchsia-900 to-violet-950 text-white shadow-md">
-          <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-3">
-            <h1 className="text-lg font-extrabold tracking-tight">
-              Melody Catch · 保存ライブラリ
-            </h1>
-            <a
-              href={(() => {
-                if (typeof window === "undefined") return "/";
-                const u = new URL(window.location.href);
-                u.searchParams.delete("library");
-                return u.toString();
-              })()}
-              className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white hover:bg-white/20"
-            >
-              Studio を開く
-            </a>
-          </div>
-        </header>
-        <main>
-          <LibraryPage />
-        </main>
-      </div>
+      <SubPageShell title="保存ライブラリ" backHref={studioHref(["library"])} width="max-w-4xl">
+        <LibraryPage />
+      </SubPageShell>
     );
   }
 
+  const tabs: { id: MainTool; label: string; short: string }[] = [
+    { id: "studio", label: "スタジオ", short: "スタジオ" },
+    { id: "chordQuiz", label: "コード進行クイズ", short: "クイズ" },
+  ];
+
   return (
-    <div className="min-h-screen bg-ink-50 text-ink-900">
-      <header className="sticky top-0 z-10 border-b border-ink-200 bg-gradient-to-r from-violet-950 via-fuchsia-900 to-violet-950 text-white shadow-md backdrop-blur">
-        <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3">
-          <div>
-            <h1 className="flex flex-wrap items-center gap-x-3 gap-y-1 tracking-tight">
-              <span
-                className="bg-gradient-to-b from-yellow-200 via-amber-300 to-yellow-500 bg-clip-text text-2xl font-extrabold text-transparent sm:text-3xl"
-                style={{
-                  WebkitTextStroke: "1px rgba(91, 33, 182, 0.85)",
-                  filter:
-                    "drop-shadow(0 1px 0 rgba(255, 215, 0, 0.35)) drop-shadow(0 2px 6px rgba(0,0,0,0.45))",
-                }}
-              >
+    <div className="min-h-screen text-ink-800">
+      <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-page/70 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:gap-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <BrandMark size={36} />
+            <div className="min-w-0 leading-tight">
+              <h1 className="whitespace-nowrap font-display text-lg font-bold tracking-tight text-white sm:text-xl">
                 Melody Catch
-              </span>
-              <span className="inline-block rounded-full bg-gradient-to-r from-fuchsia-600 via-pink-500 to-fuchsia-600 px-3 py-0.5 text-[10px] font-bold uppercase tracking-wider text-yellow-100 shadow-[0_2px_6px_rgba(0,0,0,0.45),inset_0_0_0_1px_rgba(253,224,71,0.5)] sm:text-xs">
-                ピアノ作曲・コード進行アシスタント
-              </span>
-            </h1>
-            <p className="mt-0.5 text-xs text-violet-200 sm:text-sm">
-              現在のキー: <span className="font-medium text-yellow-200">{scaleName}</span>
-            </p>
+              </h1>
+              <p className="hidden truncate text-[11px] text-ink-500 sm:block">
+                AI 作曲 &amp; コード進行スタジオ
+              </p>
+            </div>
           </div>
+
           <nav
             aria-label="アプリ切り替え"
-            className="grid grid-cols-2 gap-2 rounded-2xl border border-white/15 bg-white/10 p-1 shadow-inner sm:flex sm:w-fit"
+            className="ml-auto flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] p-1"
           >
-            <button
-              type="button"
-              onClick={() => setActiveTool("studio")}
-              className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${
-                activeTool === "studio"
-                  ? "bg-white text-violet-950 shadow"
-                  : "text-violet-100 hover:bg-white/10"
-              }`}
-            >
-              Melody Catch
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTool("chordQuiz")}
-              className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${
-                activeTool === "chordQuiz"
-                  ? "bg-white text-violet-950 shadow"
-                  : "text-violet-100 hover:bg-white/10"
-              }`}
-            >
-              コード進行クイズ
-            </button>
+            {tabs.map((t) => {
+              const active = activeTool === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setActiveTool(t.id)}
+                  aria-pressed={active}
+                  className={`min-h-9 whitespace-nowrap rounded-full px-3 text-xs font-semibold transition sm:px-4 sm:text-sm ${
+                    active
+                      ? "bg-white text-page shadow-[0_4px_16px_-4px_rgba(255,255,255,0.35)]"
+                      : "text-ink-600 hover:bg-white/[0.06] hover:text-white"
+                  }`}
+                >
+                  <span className="sm:hidden">{t.short}</span>
+                  <span className="hidden sm:inline">{t.label}</span>
+                </button>
+              );
+            })}
           </nav>
+
+          <div
+            className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 md:flex"
+            title="現在のキー"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]" />
+            <span className="text-[11px] font-medium uppercase tracking-wider text-ink-500">Key</span>
+            <span className="text-sm font-semibold text-white">{scaleName}</span>
+          </div>
         </div>
       </header>
 
       <main
-        className={`mx-auto px-4 py-6 ${
+        className={`mx-auto px-4 pb-6 pt-6 sm:pt-8 ${
           activeTool === "studio" ? "max-w-6xl" : "max-w-[1400px]"
         }`}
       >
         {activeTool === "studio" ? (
           <Studio scale={scale} onScaleChange={setScale} />
         ) : (
-          <section className="overflow-hidden rounded-2xl bg-white shadow-xl">
+          <section className="mc-card overflow-hidden p-0">
             <iframe
               title="コード進行マスタークイズ"
               src={CHORD_QUIZ_URL}
@@ -171,9 +134,56 @@ export default function App() {
         )}
       </main>
 
-      <footer className="mx-auto max-w-6xl px-4 pb-10 pt-4 text-center text-xs text-ink-400">
-        Melody Catch Web — Tone.js + React で作られています
+      <footer className="mx-auto flex max-w-6xl flex-col items-center gap-2 px-4 pb-12 pt-6 text-center">
+        <div className="flex items-center gap-2 text-ink-500">
+          <BrandMark size={18} />
+          <span className="font-display text-sm font-semibold text-ink-600">Melody Catch</span>
+        </div>
+        <p className="text-[11px] text-ink-400">Tone.js + React で動くブラウザ作曲スタジオ</p>
       </footer>
+    </div>
+  );
+}
+
+/** 現在の URL から指定パラメータを外した Studio への URL。 */
+function studioHref(dropParams: string[]): string {
+  if (typeof window === "undefined") return "/";
+  const u = new URL(window.location.href);
+  for (const p of dropParams) u.searchParams.delete(p);
+  return u.toString();
+}
+
+/** 保存ライブラリ / 再生モード用の簡易シェル。 */
+function SubPageShell({
+  title,
+  backHref,
+  width,
+  children,
+}: {
+  title: string;
+  backHref: string;
+  width: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="min-h-screen text-ink-800">
+      <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-page/70 backdrop-blur-xl">
+        <div className={`mx-auto flex ${width} items-center justify-between gap-3 px-4 py-3`}>
+          <div className="flex min-w-0 items-center gap-3">
+            <BrandMark size={30} />
+            <h1 className="truncate font-display text-base font-bold tracking-tight text-white">
+              Melody Catch <span className="font-sans font-medium text-ink-500">/ {title}</span>
+            </h1>
+          </div>
+          <a
+            href={backHref}
+            className="shrink-0 rounded-full border border-white/10 bg-white/[0.05] px-3.5 py-1.5 text-xs font-semibold text-ink-700 transition hover:bg-white/10 hover:text-white"
+          >
+            ← スタジオを開く
+          </a>
+        </div>
+      </header>
+      <main>{children}</main>
     </div>
   );
 }

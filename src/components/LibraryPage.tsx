@@ -137,7 +137,7 @@ export default function LibraryPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 text-ink-900">
-      <header className="mb-6 rounded-2xl border border-ink-200 bg-white p-5 shadow-sm">
+      <header className="mb-6 rounded-2xl border border-ink-200 bg-surface-2 p-5 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-wider text-accent-600">
           MelodyCatch · 保存ライブラリ
         </p>
@@ -147,20 +147,20 @@ export default function LibraryPage() {
           タブで作業中の譜面を任意のスロットへ保存できます。
         </p>
         {current ? (
-          <p className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+          <p className="mt-3 rounded-md bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
             ✓ Studio の現在状態を検知しました ({currentTotal} ノート · BPM{" "}
             {current.bpm} · 更新: {formatDate(current.updatedAt)})。
             下のスロットへ保存できます。
           </p>
         ) : (
-          <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          <p className="mt-3 rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
             ⚠ Studio タブの作業状態が見つかりません。Studio
             タブを開いた状態で何か変更すると、ここに表示されます。
           </p>
         )}
       </header>
 
-      <section className="rounded-2xl border border-ink-200 bg-white p-5 shadow-sm">
+      <section className="rounded-2xl border border-ink-200 bg-surface-2 p-5 shadow-sm">
         <div className="mb-3 flex items-baseline justify-between">
           <h3 className="text-sm font-semibold text-ink-700">
             保存スロット (
@@ -169,7 +169,7 @@ export default function LibraryPage() {
           <button
             type="button"
             onClick={refresh}
-            className="rounded-full border border-ink-300 bg-white px-3 py-0.5 text-xs font-medium text-ink-700 hover:border-accent-300"
+            className="rounded-full border border-ink-300 bg-surface-2 px-3 py-0.5 text-xs font-medium text-ink-700 hover:border-accent-300"
           >
             ↻ 再読込
           </button>
@@ -186,11 +186,11 @@ export default function LibraryPage() {
                 className={[
                   "flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2",
                   used
-                    ? "border-emerald-200 bg-emerald-50"
+                    ? "border-emerald-400/20 bg-emerald-500/10"
                     : "border-ink-200 bg-ink-50",
                 ].join(" ")}
               >
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white text-sm font-bold text-ink-700 shadow-sm">
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-surface-2 text-sm font-bold text-ink-700 shadow-sm">
                   {slot}
                 </span>
                 <div className="flex min-w-0 flex-1 flex-col">
@@ -225,7 +225,7 @@ export default function LibraryPage() {
                     onClick={() => handleLoadInStudio(slot)}
                     disabled={!used}
                     title="Studio タブにこのスロットのロードを依頼します"
-                    className="rounded-full border border-ink-300 bg-white px-2.5 py-0.5 text-[11px] font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
+                    className="rounded-full border border-ink-300 bg-surface-2 px-2.5 py-0.5 text-[11px] font-medium text-ink-700 hover:border-accent-300 disabled:opacity-40"
                   >
                     Studio で読み込む
                   </button>
@@ -234,7 +234,7 @@ export default function LibraryPage() {
                     onClick={() => handleOpenPlayer(slot)}
                     disabled={!used}
                     title="別タブを開いてこのスロットを再生します"
-                    className="rounded-full border border-violet-300 bg-white px-2.5 py-0.5 text-[11px] font-medium text-violet-700 hover:bg-violet-50 disabled:opacity-40"
+                    className="rounded-full border border-violet-400/40 bg-surface-2 px-2.5 py-0.5 text-[11px] font-medium text-violet-300 hover:bg-violet-500/10 disabled:opacity-40"
                   >
                     🎧 別タブで再生
                   </button>
@@ -243,7 +243,7 @@ export default function LibraryPage() {
                     onClick={() => handleDelete(slot)}
                     disabled={!used}
                     title="このスロットを削除します"
-                    className="rounded-full border border-rose-200 bg-white px-2 py-0.5 text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-40"
+                    className="rounded-full border border-rose-400/20 bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-40"
                   >
                     🗑
                   </button>
