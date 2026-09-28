@@ -132,6 +132,8 @@ export interface AutoComposeOptions {
    * Chord 層手書き / コードパレット選択を反映するための入口。
    */
   chordsOverride?: HarmonicChord[];
+  /** 人間らしいタイミング / 強さの揺れを加えるか (既定: true)。 */
+  humanize?: boolean;
 }
 
 export type SectionKind =
@@ -1828,6 +1830,66 @@ function generateMelody(
 }
 
 // ---------------------------------------------------------------------------
+// ボイスリーディング: 前のコードから一番動きの少ない「転回形 + オクターブ」を選ぶ
+//
+// 毎回ルートポジション (根音が一番下) で弾くと、コードが変わるたびに手全体が跳ねて
+// 素人っぽく聞こえる。ピアニストは転回形を使って最高音をなめらかにつなぐので、それを再現する。
+// ---------------------------------------------------------------------------
+function voiceLeadVoicing(
+  chord: HarmonicChord,
+  prev: number[] | null,
+  lo = 52, // E3: これより下で 3 度以内に密集すると濁る
+  hi = 79, // G5
+  target = 67, // 最初のコードは最高音を G4 付近に置く
+): number[] {
+  const root = chord.rootPitchClass;
+  let pcs = CHORD_INTERVALS[chord.quality].map((iv) => (root + iv) % 12);
+  pcs = pcs.filter((pc, i) => pcs.indexOf(pc) === i);
+  // ベースがルートを弾くので上物は 4 音まで。5 音以上なら 5 度を省く。
+  if (pcs.length > 4) {
+    const fifth = pcs.indexOf((root + 7) % 12);
+    if (fifth > 0) pcs.splice(fifth, 1);
+    pcs = pcs.slice(0, 4);
+  }
+  const n = pcs.length;
+  const cands: number[][] = [];
+  for (let inv = 0; inv < n; inv++) {
+    for (let base = lo; base < lo + 24; base++) {
+      if (base % 12 !== pcs[inv]) continue;
+      const v = [base];
+      for (let k = 1; k < n; k++) {
+        const pc = pcs[(inv + k) % n];
+        let m = v[v.length - 1] + 1;
+        while (m % 12 !== pc) m++;
+        v.push(m);
+      }
+      if (v[n - 1] <= hi) cands.push(v);
+    }
+  }
+  if (cands.length === 0) return chordVoicing(chord, 48);
+
+  let best = cands[0];
+  let bestCost = Infinity;
+  for (const v of cands) {
+    const top = v[v.length - 1];
+    let cost: number;
+    if (prev && prev.length > 0) {
+      const prevTop = prev[prev.length - 1];
+      // 最高音 (一番耳に残る声部) の動きを最重視し、他の声部の移動も加味
+      cost = Math.abs(top - prevTop) * 2;
+      for (const m of v) cost += Math.min(...prev.map((p) => Math.abs(p - m))) * 0.5;
+      // 同じ高さに張り付き続けないよう、音域の中心から離れすぎたら軽く戻す
+      cost += Math.abs(top - target) * 0.15;
+    } else {
+      cost = Math.abs(top - target);
+    }
+    if (v[0] < 55 && v[1] - v[0] <= 3) cost += 6; // 低音域の密集 (濁り)
+    if (cost < bestCost) { bestCost = cost; best = v; }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
 // コード層 (バッキング)
 // ---------------------------------------------------------------------------
 function generateChordLayer(
@@ -1840,11 +1902,13 @@ function generateChordLayer(
   const beatSec = 60 / bpm;
   const barSec = beatSec * 4;
   const out: NoteEvent[] = [];
-  const baseMidi = 48; // C3
+  let prevVoicing: number[] | null = null;
 
   for (let bar = 0; bar < chords.length; bar++) {
     const sec = sectionAtBar(sections, bar);
-    const voicing = chordVoicing(chords[bar], baseMidi);
+    // 前の小節から一番なめらかにつながる転回形を選ぶ
+    const voicing = voiceLeadVoicing(chords[bar], prevVoicing);
+    prevVoicing = voicing;
     const barStart = bar * barSec;
     const vel0 = sec.intensity;
 
@@ -4779,124 +4843,6 @@ function yieldToUI(): Promise<void> {
   });
 }
 
-/**
- * composeSong の非同期版。
- * 各レイヤー生成の合間に await yieldToUI() を挟んで、
- * 「自動作曲」ボタンを押した瞬間の数百 ms フリーズを解消する。
- *
- * 出力は composeSong と完全に同一 (内容も順序も)。
- * 計算結果が決定的なように同じ rng (= 同 seed) を共有する。
- */
-export async function composeSongAsync(opts: AutoComposeOptions): Promise<ComposedSong> {
-  const { scale, bpm, bars, style } = opts;
-  const seed = opts.seed ?? (Date.now() & 0xffffffff);
-  const rng = makeRng(seed);
-  void SCALE_INTERVALS;
-
-  const sections = planSections(bars, style, rng);
-  let chords: HarmonicChord[];
-  if (opts.chordsOverride && opts.chordsOverride.length > 0) {
-    const src = opts.chordsOverride;
-    chords = [];
-    for (let i = 0; i < bars; i++) {
-      chords.push(src[Math.min(i, src.length - 1)]);
-    }
-  } else {
-    chords = buildProgression(scale, bars, style, sections, rng);
-  }
-  // ロック: ♭VII 借用コードを進行に注入 (Sweet Child o' Mine 型)
-  if (style === "rock" && !(opts.chordsOverride && opts.chordsOverride.length > 0)) {
-    applyRockBorrowedChords(chords, scale, sections, rng);
-  }
-  await yieldToUI();
-
-  // intro / bridge で「誰がリードを取るか」の優先順位:
-  //   ギター > アコギ > ピアノ (melody)
-  const hasGuitarLead = (opts.includeGuitar ?? false);
-  const hasAcousticLead = !hasGuitarLead && (opts.includeAcoustic ?? false);
-  const melodyHasOtherLead = hasGuitarLead || hasAcousticLead;
-
-  const melodyNotes = (opts.includeMelody ?? true)
-    ? generateMelody(scale, chords, sections, bpm, style, melodyHasOtherLead, rng)
-    : [];
-  await yieldToUI();
-
-  const chordNotes = (opts.includeChord ?? true)
-    ? generateChordLayer(chords, sections, bpm, style, rng)
-    : [];
-  await yieldToUI();
-
-  const bassNotes = (opts.includeBass ?? true)
-    ? generateBass(chords, sections, bpm, style, rng)
-    : [];
-  await yieldToUI();
-
-  const drumNotes = (opts.includeDrums ?? true)
-    ? generateDrums(sections, bars, bpm, style, rng)
-    : [];
-  await yieldToUI();
-
-  const fxNotes = (opts.includeFx ?? true)
-    ? generateFx(sections, bpm, rng)
-    : [];
-  await yieldToUI();
-
-  const guitarNotes = (opts.includeGuitar ?? false)
-    ? generateGuitarLayer(chords, scale, sections, bpm, style, rng, opts.guitarVoicing ?? "auto")
-    : [];
-  await yieldToUI();
-
-  const acousticNotes = (opts.includeAcoustic ?? false)
-    ? generateAcousticLayer(chords, scale, sections, bpm, style, hasGuitarLead, rng)
-    : [];
-  await yieldToUI();
-
-  const vocalNotes = (opts.includeVocal ?? false)
-    ? generateVocalLayer(melodyNotes, chords, sections, scale, bpm)
-    : [];
-  await yieldToUI();
-
-  const synthNotes = (opts.includeSynth ?? false)
-    ? generateSynthLayer(melodyNotes, chords, sections, bpm, style, rng)
-    : [];
-
-  const totalSec = bars * 4 * (60 / bpm);
-
-  // セクション × 楽器のアレンジを適用 (イントロでドラム休符など)
-  const arrMelody = applyArrangement(melodyNotes, "melody", sections, bpm, style);
-  const arrChord = applyArrangement(chordNotes, "chord", sections, bpm, style);
-  const arrBass = applyArrangement(bassNotes, "bass", sections, bpm, style);
-  const arrDrums = applyArrangement(drumNotes, "drums", sections, bpm, style);
-  const arrGuitar = applyArrangement(guitarNotes, "guitar", sections, bpm, style);
-  const arrAcoustic = applyArrangement(acousticNotes, "acoustic", sections, bpm, style);
-  const arrVocal = applyArrangement(vocalNotes, "vocal", sections, bpm, style);
-  const arrSynth = applyArrangement(synthNotes, "synth", sections, bpm, style);
-
-  for (const arr of [
-    arrMelody, arrChord, arrBass, arrDrums, fxNotes,
-    arrGuitar, arrAcoustic, arrVocal, arrSynth,
-  ]) {
-    arr.sort((a, b) => a.startSec - b.startSec);
-  }
-
-  return {
-    chords,
-    sections,
-    melodyNotes: arrMelody,
-    chordNotes: arrChord,
-    bassNotes: arrBass,
-    drumNotes: arrDrums,
-    fxNotes,
-    guitarNotes: arrGuitar,
-    acousticNotes: arrAcoustic,
-    vocalNotes: arrVocal,
-    synthNotes: arrSynth,
-    totalSec,
-    bpm,
-    style,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // 仕上げ: メロディと伴奏の「半音ぶつかり」を取る (アレンジャーの定番処理)
 // ---------------------------------------------------------------------------
@@ -4971,7 +4917,85 @@ function resolveMelodyClashes(
   return accompaniment.map((layer, li) => layer.filter((_, i) => !removed[li].has(i)));
 }
 
-export function composeSong(opts: AutoComposeOptions): ComposedSong {
+// ---------------------------------------------------------------------------
+// 人間らしさ (ヒューマナイズ)
+//
+// 全ての音がきっちりグリッド上・同じ強さで鳴ると機械っぽく聞こえる。
+// 楽器ごとに「本物の奏者がやるズレ方」を小さく加える:
+//   - ドラム: キック/スネアはタイト、ハイハットは表拍を強く裏拍を弱く
+//   - ピアノ/ギターの和音: 低い音から少しずつずらして鳴らす (ロール / ストローク)
+//   - メロディ / ベース: ごくわずかなタイミングと強さの揺れ
+// 乱数は作曲本体と別系統にして、音の選び方には影響させない。
+// ---------------------------------------------------------------------------
+type HumanizeKind = "melody" | "chord" | "bass" | "drums" | "guitar" | "acoustic" | "vocal" | "synth";
+
+function humanizeNotes(
+  notes: NoteEvent[],
+  kind: HumanizeKind,
+  bpm: number,
+  rng: () => number,
+): NoteEvent[] {
+  const beatSec = 60 / bpm;
+  const jitter = (ms: number) => ((rng() + rng() - 1) * ms) / 1000; // 中央寄りの揺れ
+  const clampV = (v: number) => Math.max(0.05, Math.min(1, v));
+
+  if (kind === "drums") {
+    return notes.map((n) => {
+      const isHat = n.midi === DRUM_HIHAT_MIDI || n.midi === DRUM_HIHAT_OPEN_MIDI || n.midi === DRUM_RIDE_MIDI;
+      const isCore = n.midi === DRUM_KICK_MIDI || n.midi === DRUM_SNARE_MIDI;
+      let v = n.velocity * (1 + (rng() - 0.5) * (isCore ? 0.08 : 0.14));
+      if (isHat) {
+        // 拍の表 = 強, 8 分裏 = 中, 16 分 = 弱 (ハイハットの自然な抑揚)
+        const pos = n.startSec / beatSec;
+        const frac = pos - Math.floor(pos + 1e-6);
+        const accent = frac < 0.05 || frac > 0.95 ? 1.0 : Math.abs(frac - 0.5) < 0.05 ? 0.82 : 0.7;
+        v *= accent;
+      }
+      return {
+        ...n,
+        startSec: Math.max(0, n.startSec + jitter(isCore ? 4 : 7)),
+        velocity: clampV(v),
+      };
+    });
+  }
+
+  // 同時に鳴る和音をまとめて、低い音から順に少しずつ遅らせる
+  const rollMs: Partial<Record<HumanizeKind, number>> = { chord: 7, guitar: 9, acoustic: 13 };
+  const perNoteMs: Record<HumanizeKind, number> = {
+    melody: 9, chord: 6, bass: 6, drums: 0, guitar: 7, acoustic: 8, vocal: 12, synth: 6,
+  };
+  const out: NoteEvent[] = [];
+  const sorted = [...notes].sort((a, b) => a.startSec - b.startSec || a.midi - b.midi);
+  let i = 0;
+  while (i < sorted.length) {
+    let j = i + 1;
+    while (j < sorted.length && Math.abs(sorted[j].startSec - sorted[i].startSec) < 0.004) j++;
+    const group = sorted.slice(i, j);
+    const groupShift = jitter(perNoteMs[kind]);
+    const groupVel = 1 + (rng() - 0.5) * 0.12;
+    const roll = group.length >= 3 ? (rollMs[kind] ?? 0) / 1000 : 0;
+    group.forEach((n, k) => {
+      const start = Math.max(0, n.startSec + groupShift + k * roll);
+      out.push({
+        ...n,
+        startSec: start,
+        // 和音をずらした分だけ終わりは揃える
+        durationSec: Math.max(0.03, n.durationSec - k * roll),
+        velocity: clampV(n.velocity * groupVel * (1 + (rng() - 0.5) * 0.06)),
+      });
+    });
+    i = j;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// 作曲パイプライン本体
+// composeSong (同期) と composeSongAsync (UI を止めない版) は、ここの手順を共有する。
+// 以前は 2 つの関数に同じ手順を別々に書いていたため、片方だけ直す事故が起きていた。
+// ジェネレータの yield の位置で、非同期版は UI に処理を譲る。
+// ---------------------------------------------------------------------------
+function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, void> {
   const { scale, bpm, bars, style } = opts;
   const seed = opts.seed ?? (Date.now() & 0xffffffff);
   const rng = makeRng(seed);
@@ -4995,6 +5019,8 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   if (style === "rock" && !(opts.chordsOverride && opts.chordsOverride.length > 0)) {
     applyRockBorrowedChords(chords, scale, sections, rng);
   }
+  yield;
+
   // intro / bridge で「誰がリードを取るか」の優先順位:
   //   ギター > アコギ > ピアノ (melody)
   const hasGuitarLead = (opts.includeGuitar ?? false);
@@ -5004,24 +5030,32 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   const melodyNotes = (opts.includeMelody ?? true)
     ? generateMelody(scale, chords, sections, bpm, style, melodyHasOtherLead, rng)
     : [];
+  yield;
   let chordNotes = (opts.includeChord ?? true)
     ? generateChordLayer(chords, sections, bpm, style, rng)
     : [];
+  yield;
   const bassNotes = (opts.includeBass ?? true)
     ? generateBass(chords, sections, bpm, style, rng)
     : [];
+  yield;
   const drumNotes = (opts.includeDrums ?? true)
     ? generateDrums(sections, bars, bpm, style, rng)
     : [];
+  yield;
   const fxNotes = (opts.includeFx ?? true)
     ? generateFx(sections, bpm, rng)
     : [];
+  yield;
   let guitarNotes = (opts.includeGuitar ?? false)
     ? generateGuitarLayer(chords, scale, sections, bpm, style, rng, opts.guitarVoicing ?? "auto")
     : [];
+  yield;
   let acousticNotes = (opts.includeAcoustic ?? false)
     ? generateAcousticLayer(chords, scale, sections, bpm, style, hasGuitarLead, rng)
     : [];
+  yield;
+
   // メロディ ↔ 伴奏の半音ぶつかりを整える (ボーカル / シンセはメロディから作るのでこの後)
   if (melodyNotes.length > 0) {
     [, chordNotes, guitarNotes, acousticNotes] = resolveMelodyClashes(
@@ -5033,24 +5067,31 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
       bpm,
     );
   }
+
   const vocalNotes = (opts.includeVocal ?? false)
     ? generateVocalLayer(melodyNotes, chords, sections, scale, bpm)
     : [];
+  yield;
   const synthNotes = (opts.includeSynth ?? false)
     ? generateSynthLayer(melodyNotes, chords, sections, bpm, style, rng)
     : [];
 
   const totalSec = bars * 4 * (60 / bpm);
 
-  // セクション × 楽器のアレンジを適用 (イントロでドラム休符など)
-  const arrMelody = applyArrangement(melodyNotes, "melody", sections, bpm, style);
-  const arrChord = applyArrangement(chordNotes, "chord", sections, bpm, style);
-  const arrBass = applyArrangement(bassNotes, "bass", sections, bpm, style);
-  const arrDrums = applyArrangement(drumNotes, "drums", sections, bpm, style);
-  const arrGuitar = applyArrangement(guitarNotes, "guitar", sections, bpm, style);
-  const arrAcoustic = applyArrangement(acousticNotes, "acoustic", sections, bpm, style);
-  const arrVocal = applyArrangement(vocalNotes, "vocal", sections, bpm, style);
-  const arrSynth = applyArrangement(synthNotes, "synth", sections, bpm, style);
+  // セクション × 楽器のアレンジを適用 (イントロでドラム休符など) → 人間らしい揺れを加える
+  const hRng = makeRng((seed ^ 0x9e3779b9) >>> 0);
+  const finish = (notes: NoteEvent[], layer: ArrangeLayer, kind: HumanizeKind) =>
+    opts.humanize === false
+      ? applyArrangement(notes, layer, sections, bpm, style)
+      : humanizeNotes(applyArrangement(notes, layer, sections, bpm, style), kind, bpm, hRng);
+  const arrMelody = finish(melodyNotes, "melody", "melody");
+  const arrChord = finish(chordNotes, "chord", "chord");
+  const arrBass = finish(bassNotes, "bass", "bass");
+  const arrDrums = finish(drumNotes, "drums", "drums");
+  const arrGuitar = finish(guitarNotes, "guitar", "guitar");
+  const arrAcoustic = finish(acousticNotes, "acoustic", "acoustic");
+  const arrVocal = finish(vocalNotes, "vocal", "vocal");
+  const arrSynth = finish(synthNotes, "synth", "synth");
 
   for (const arr of [
     arrMelody, arrChord, arrBass, arrDrums, fxNotes,
@@ -5075,6 +5116,27 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
     bpm,
     style,
   };
+}
+
+export function composeSong(opts: AutoComposeOptions): ComposedSong {
+  const it = composeSteps(opts);
+  let r = it.next();
+  while (!r.done) r = it.next();
+  return r.value;
+}
+
+/**
+ * composeSong の非同期版。各パート生成の合間に UI へ処理を譲り、
+ * 「自動作曲」ボタンを押した瞬間のフリーズを防ぐ。出力は composeSong と完全に同一。
+ */
+export async function composeSongAsync(opts: AutoComposeOptions): Promise<ComposedSong> {
+  const it = composeSteps(opts);
+  let r = it.next();
+  while (!r.done) {
+    await yieldToUI();
+    r = it.next();
+  }
+  return r.value;
 }
 
 /** UI 表示用のセクションラベル。 */
