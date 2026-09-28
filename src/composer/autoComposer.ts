@@ -284,133 +284,93 @@ function planSections(bars: number, style: ComposerStyle, rng: () => number): So
     cur = end;
   };
 
-  // ジャズは Intro / A / A / B / A 形式 (32 小節 AABA に寄せる)。
-  // 64+ では AABA を 2 ラウンドしてキー転調を入れる。
-  if (style === "jazz") {
-    if (bars >= 96) {
-      // 1 ラウンド AABA → ピアノソロ(bridge) → 2 ラウンド AABA を +5 半音 (4 度上) で
-      push("intro", 8);
-      push("verse", 8);
-      push("verse", 8);
-      push("bridge", 8);
-      push("verse", 8);
-      push("bridge", 8); // ソロ的セクション
-      push("verse", 8, 5);
-      push("verse", 8, 5);
-      push("bridge", 8, 5);
-      push("verse", Math.max(4, bars - cur - 4), 5);
-      push("outro", bars - cur);
-    } else if (bars >= 64) {
-      // AABA + キー上げの A
-      push("intro", 8);
-      push("verse", 8);
-      push("verse", 8);
-      push("bridge", 8);
-      push("verse", 8);
-      push("verse", 8, 5);
-      push("bridge", 8, 5);
-      push("verse", Math.max(4, bars - cur - 4), 5);
-      push("outro", bars - cur);
-    } else if (bars >= 32) {
-      push("intro", 4);
-      push("verse", 8);     // A
-      push("verse", 8);     // A
-      push("bridge", 8);    // B
-      push("verse", bars - cur - 2); // A
-      push("outro", bars - cur);
-    } else if (bars >= 16) {
-      // 16 小節でも頭 4 小節をしっかりイントロに使うことで「序奏 → 本題」の起伏を出す。
-      push("intro", 4);
-      push("verse", 4);
-      push("bridge", 4);
-      push("verse", bars - cur - 2);
-      push("outro", bars - cur);
-    } else {
-      push("verse", Math.max(2, Math.floor(bars / 2)));
-      push("bridge", Math.max(1, Math.floor(bars / 4)));
-      push("verse", bars - cur);
-    }
-    return progressIntensity(sections.filter((s) => s.endBar > s.startBar));
-  }
+  // ------------------------------------------------------------------
+  // 構成テンプレート: 実際の曲と同じく「4 小節 / 8 小節」単位で組む。
+  //   (以前は Aメロ 6 小節・Bメロ 2 小節・ラスサビ 2 小節のような半端な長さがあり、
+  //    フレーズが途中で切れて「曲の構成になっていない」と感じる原因になっていた)
+  // [種類, 小節数, 転調(半音)] の並び。合計が bars を超えたら切り詰め、足りなければアウトロで埋める。
+  // ------------------------------------------------------------------
+  type Block = [SectionKind, number, number?];
+  let plan: Block[];
 
-  // pop / ballad / rock の一般的な構成
-  if (bars >= 96) {
-    // 大型構成: Intro / V1 / Pre / C1 / V2 / Pre / C2 / Solo(bridge) / Bridge / Break /
-    //          V3(+2) / Pre(+2) / Final Chorus x2(+2) / Outro
-    // 96+ 小節クラスは 8 小節イントロで聴き手を導入する (バンドサウンドの幅を見せる)。
-    push("intro", 8);
-    push("verse", 8);
-    push("preChorus", 4);
-    push("chorus", 8);
-    push("verse", 8);
-    push("preChorus", 4);
-    push("chorus", 8);
-    push("bridge", 4);   // 楽器ソロ的ブロック
-    push("bridge", 4);
-    push("break", 2);    // 完全ドロップ (ドラム停止)
-    push("verse", 6, 2); // キー +2 で展開復帰
-    push("preChorus", 4, 2);
-    push("chorus", 8, 2);
-    push("chorus", Math.max(4, bars - cur - 4), 2);
-    push("outro", bars - cur);
+  if (style === "jazz") {
+    // ジャズはスタンダードの AABA (各 8 小節) が基本形。
+    if (bars >= 128) {
+      // AABA を 1 周 → ソロ回し → 4 度上で AABA をもう 1 周 → もう一度 AABA → アウトロ (合計 128)
+      plan = [["intro", 8], ["verse", 8], ["verse", 8], ["bridge", 8], ["verse", 8],
+        ["bridge", 8], // ソロ回し
+        ["verse", 8, 5], ["verse", 8, 5], ["bridge", 8, 5], ["verse", 8, 5],
+        ["verse", 8, 5], ["verse", 8, 5], ["bridge", 8, 5], ["verse", 8, 5], ["outro", 8]];
+    } else if (bars >= 96) {
+      // 合計 96
+      plan = [["intro", 8], ["verse", 8], ["verse", 8], ["bridge", 8], ["verse", 8],
+        ["bridge", 8], // ソロ回し
+        ["verse", 8, 5], ["verse", 8, 5], ["bridge", 8, 5], ["verse", 8, 5], ["verse", 8, 5], ["outro", 8]];
+    } else if (bars >= 64) {
+      plan = [["intro", 8], ["verse", 8], ["verse", 8], ["bridge", 8], ["verse", 8],
+        ["verse", 8, 5], ["bridge", 8, 5], ["verse", 4, 5], ["outro", 4]];
+    } else if (bars >= 48) {
+      plan = [["intro", 8], ["verse", 8], ["verse", 8], ["bridge", 8], ["verse", 8], ["outro", 8]];
+    } else if (bars >= 32) {
+      plan = [["verse", 8], ["verse", 8], ["bridge", 8], ["verse", 8]]; // AABA 32 小節
+    } else if (bars >= 16) {
+      plan = [["verse", 4], ["verse", 4], ["bridge", 4], ["verse", 4]]; // 短い AABA
+    } else {
+      plan = [["verse", 4], ["bridge", 2], ["verse", 2]];
+    }
+  } else if (bars >= 128) {
+    // 大型: 1番 → 間奏 → 2番 → ギターソロ → ブレイク → 転調して Aメロ → ラスサビ ×2 → アウトロ
+    plan = [["intro", 8],
+      ["verse", 8], ["preChorus", 8], ["chorus", 8], ["bridge", 8],
+      ["verse", 8], ["preChorus", 8], ["chorus", 8],
+      ["bridge", 8], ["bridge", 6], ["break", 2], // 残りの小節はアウトロが自動で埋める
+      ["verse", 8, 2], ["preChorus", 4, 2], ["chorus", 8, 2], ["chorus", 8, 2], ["chorus", 8, 2],
+      ["outro", 8]];
+  } else if (bars >= 96) {
+    // 1番 → 2番 → 間奏 (ソロ) → ブレイク → Bメロ → ラスサビ ×2 → アウトロ
+    plan = [["intro", 8],
+      ["verse", 8], ["preChorus", 8], ["chorus", 8],
+      ["verse", 8], ["preChorus", 8], ["chorus", 8],
+      ["bridge", 6], ["break", 2], ["preChorus", 8, 2],
+      ["chorus", 8, 2], ["chorus", 8, 2], ["outro", 8]];
   } else if (bars >= 64) {
-    // Intro / V1 / Pre / C1 / V2 / Pre / C2 / Bridge / Break / Final C(+2) / Outro
-    // 64+ も 8 小節イントロで起伏を作る。
-    push("intro", 8);
-    push("verse", 8);
-    push("preChorus", 4);
-    push("chorus", 8);
-    push("verse", 8);
-    push("preChorus", 4);
-    push("chorus", 8);
-    push("bridge", 4);
-    push("break", 2);
-    push("chorus", 8, 2);
-    push("chorus", Math.max(2, bars - cur - 2), 2);
-    push("outro", bars - cur);
+    // フルサイズ: イントロ → 1番 → 2番 → 間奏 → ブレイク → ラスサビ (転調) → アウトロ
+    // 合計 64 = 4+8+4+8+8+4+8+4+4+8+4
+    plan = [["intro", 4],
+      ["verse", 8], ["preChorus", 4], ["chorus", 8],
+      ["verse", 8], ["preChorus", 4], ["chorus", 8],
+      ["bridge", 6], ["break", 2], // 間奏 6 + ブレイク 2 = 8 小節のまとまり (長い無音は曲が止まったように聞こえる)
+      ["chorus", 8, 2], ["outro", 4]];
   } else if (bars >= 48) {
-    // Intro / V1 / Pre / C1 / V2 / Pre / C2 / Bridge / Final C(+2) / Outro
-    push("intro", 4);
-    push("verse", 6);
-    push("preChorus", 2);
-    push("chorus", 4);
-    push("verse", 6);
-    push("preChorus", 2);
-    push("chorus", 4);
-    push("bridge", 4);
-    push("break", 1);
-    push("chorus", Math.max(4, bars - cur - 2), 2);
-    push("outro", bars - cur);
+    // 2番まで: イントロ → 1番 → 2番 → アウトロ
+    plan = [["intro", 4],
+      ["verse", 8], ["preChorus", 4], ["chorus", 8],
+      ["verse", 8], ["preChorus", 4], ["chorus", 8],
+      ["outro", 4]];
   } else if (bars >= 32) {
-    // Intro / Verse / Pre / Chorus / Verse / Pre / Chorus / Bridge / Final Chorus(+2) / Outro
-    push("intro", 4);
-    push("verse", 6);
-    push("preChorus", 2);
-    push("chorus", 4);
-    push("verse", 4);
-    push("preChorus", 2);
-    push("chorus", 4);
-    push("bridge", 2);
-    push("chorus", Math.max(2, bars - cur - 2), 2);
-    push("outro", bars - cur);
+    // 1番フル: イントロ → Aメロ → Bメロ → サビ → アウトロ
+    plan = [["intro", 4], ["verse", 8], ["preChorus", 8], ["chorus", 8], ["outro", 4]];
   } else if (bars >= 16) {
-    // 16 小節クラスでも 4 小節イントロを確保して「序奏 → 本題」の流れを残す。
-    // 全体の尺を圧迫しないように preChorus を省略し、verse → chorus → verse の最小構成。
-    push("intro", 4);
-    push("verse", 4);
-    push("chorus", 4);
-    push("verse", Math.max(2, bars - cur - 2));
-    push("outro", bars - cur);
+    // Aメロ → サビ (サビは 8 小節しっかり。最後のコードで着地して終わる)
+    plan = [["intro", 4], ["verse", 4], ["chorus", 8]];
   } else if (bars >= 8) {
-    // 8 小節クラスは尺が短いので 1 小節カウントオフ的なイントロに留める
-    // (4 小節入れると本編が消えてしまう)。
-    push("intro", 1);
-    push("verse", 3);
-    push("chorus", 3);
-    push("outro", bars - cur);
+    plan = [["verse", 4], ["chorus", 4]];
   } else {
-    push("verse", Math.max(1, Math.floor(bars / 2)));
-    push("chorus", bars - cur);
+    plan = [["verse", Math.max(1, Math.floor(bars / 2))], ["chorus", bars]];
+  }
+  for (const [kind, len, key] of plan) push(kind, len, key ?? 0);
+  // テンプレートより長い小節数を指定された場合はアウトロを伸ばして埋める
+  if (cur < bars) {
+    const last = sections[sections.length - 1];
+    if (last && last.kind === "outro") {
+      last.endBar = bars;
+      cur = bars;
+    } else {
+      push("outro", bars - cur);
+    }
+  }
+  if (style === "jazz") {
+    return progressIntensity(sections.filter((s) => s.endBar > s.startBar));
   }
 
   const finalized = progressIntensity(sections.filter((s) => s.endBar > s.startBar));
@@ -982,6 +942,21 @@ function buildProgression(
       out[sec.startBar + i] = enriched;
     }
     lastDegree = degrees[degrees.length - 1] ?? lastDegree;
+  }
+
+  // 曲の最後は必ず主和音 (I) で終わらせる (vi や V で終わると「終わった感」が出ない)。
+  // 直前が V / vii° / IV (= I に帰りたがる和音) でなければ V を置いて「V → I」で締める。
+  const lastSec = sections[sections.length - 1];
+  if (lastSec && bars > 0) {
+    const endDia = diatonicTriads(transposeScale(scale, lastSec.keyOffsetSemitones));
+    out[bars - 1] = style === "jazz" ? withQuality(endDia[0], "maj7") : endDia[0];
+    if (bars >= 2 && bars - 2 >= lastSec.startBar && out[bars - 2]) {
+      const prevRoot = out[bars - 2].rootPitchClass;
+      const leadsHome = [endDia[4], endDia[6], endDia[3]].some((c) => c.rootPitchClass === prevRoot);
+      if (!leadsHome) {
+        out[bars - 2] = style === "jazz" ? withQuality(endDia[4], "dom7") : endDia[4];
+      }
+    }
   }
 
   // 万一の埋め残し対策 (元キーのトニック)
@@ -4709,12 +4684,17 @@ function applyArrangement(
       return 1;
     }
 
-    // ===== pop / ballad / jazz の従来アレンジ (静かに立ち上げる型) =====
+    // ===== pop / ballad / jazz のアレンジ =====
+    // 以前はイントロが「メロディ 1 本だけ (小さい音)」、1番Aメロが「メロディ + ベースだけ」で、
+    // 曲が始まった感じがしなかった。イントロからバンドで鳴らし、Aメロは音量を下げて、
+    // サビで全員フルになる「強弱の差」で構成を感じさせる。
+    // バラードだけは「イントロ / 1番Aメロはドラム無し」が定番なのでそれを残す。
+    const isBallad = style === "ballad";
     switch (layer) {
       case "drums":
         switch (sec.kind) {
-          case "intro": return 0;                       // ドラムは完全休符
-          case "verse": return isFirst ? 0 : 0.85;      // 1番Aメロもドラムなし (魅せる)
+          case "intro": return isBallad ? 0 : 0.6;      // ポップはイントロから軽くリズム
+          case "verse": return isFirst ? (isBallad ? 0 : 0.6) : 0.85; // 1番Aメロは控えめ
           case "preChorus": return 1;
           case "chorus": return isFinal ? 1 : 0.95;
           case "bridge": return 0.55;
@@ -4724,8 +4704,8 @@ function applyArrangement(
         break;
       case "chord":
         switch (sec.kind) {
-          case "intro": return 0;                       // ピアノコンプ休符
-          case "verse": return isFirst ? 0 : 0.7;       // 1番はピアノ無し
+          case "intro": return 0.8;                     // イントロでコード進行を聴かせる
+          case "verse": return isFirst ? 0.6 : 0.7;     // Aメロは控えめに伴奏
           case "preChorus": return 0.85;
           case "chorus": return 1;
           case "bridge": return 0.9;
@@ -4735,7 +4715,7 @@ function applyArrangement(
         break;
       case "bass":
         switch (sec.kind) {
-          case "intro": return isFirst ? 0 : 0.55;      // 1回目イントロはベース無し
+          case "intro": return isFirst ? 0.65 : 0.75;   // イントロから土台を作る
           case "verse": return isFirst ? 0.7 : 0.9;
           case "preChorus": return 1;
           case "chorus": return 1;
@@ -4746,13 +4726,13 @@ function applyArrangement(
         break;
       case "melody":
         switch (sec.kind) {
-          case "intro": return isFirst ? 0.55 : 0.8;
+          case "intro": return 0.8;                     // イントロのフレーズもしっかり聴かせる
           case "verse": return 1;
           case "preChorus": return 1;
           case "chorus": return 1;
           case "bridge": return 0.85;
           case "break": return 0;
-          case "outro": return 0.55;
+          case "outro": return 0.7;
         }
         break;
       case "guitar":
@@ -4989,6 +4969,38 @@ function humanizeNotes(
   return out;
 }
 
+/**
+ * 曲の最後のメロディ音を主音 (そのキーの "ド") に寄せ、曲の終わりまで伸ばす。
+ * 最後の和音は buildProgression で I にしているので、メロディも主音で終わると
+ * 「曲が終わった」とはっきり感じられる。
+ */
+function endMelodyOnTonic(
+  melody: NoteEvent[],
+  sections: SongSection[],
+  scale: Scale,
+  bpm: number,
+  bars: number,
+): void {
+  if (melody.length === 0 || sections.length === 0) return;
+  const barSec = (60 / bpm) * 4;
+  const songEnd = bars * barSec;
+  let last = melody[0];
+  for (const n of melody) if (n.startSec >= last.startSec) last = n;
+  // 最後の 2 小節に音が無ければ何もしない (アウトロで休んでいる曲)
+  if (last.startSec < songEnd - 2 * barSec) return;
+  const tonicPc = transposeScale(scale, sections[sections.length - 1].keyOffsetSemitones).rootPitchClass;
+  let best = last.midi;
+  let bestD = Infinity;
+  for (let m = last.midi - 7; m <= last.midi + 7; m++) {
+    if (((m % 12) + 12) % 12 !== tonicPc) continue;
+    const d = Math.abs(m - last.midi);
+    if (d < bestD) { bestD = d; best = m; }
+  }
+  last.midi = best;
+  // 最後の音は曲の終わりまでしっかり伸ばす (最低 1 拍)
+  last.durationSec = Math.max(last.durationSec, songEnd - last.startSec, 60 / bpm);
+}
+
 // ---------------------------------------------------------------------------
 // 作曲パイプライン本体
 // composeSong (同期) と composeSongAsync (UI を止めない版) は、ここの手順を共有する。
@@ -5030,6 +5042,10 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
   const melodyNotes = (opts.includeMelody ?? true)
     ? generateMelody(scale, chords, sections, bpm, style, melodyHasOtherLead, rng)
     : [];
+  // ユーザー指定の進行でなければ、メロディの最後の音を主音 (キーの "ド") に着地させる
+  if (!(opts.chordsOverride && opts.chordsOverride.length > 0)) {
+    endMelodyOnTonic(melodyNotes, sections, scale, bpm, bars);
+  }
   yield;
   let chordNotes = (opts.includeChord ?? true)
     ? generateChordLayer(chords, sections, bpm, style, rng)

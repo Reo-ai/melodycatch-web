@@ -511,7 +511,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [acousticDrumKit, setAcousticDrumKitState] = useState<AcousticDrumKitId>("kit1");
   /** ギター ボイシング指定 (Verse 等の弾き方を強制) */
   const [autoComposeGuitarVoicing, setAutoComposeGuitarVoicing] = useState<GuitarVoicingStyle>("auto");
-  const [autoComposeBars, setAutoComposeBars] = useState<number>(16);
+  // 既定は「1 曲として成り立つ」フルサイズ (イントロ〜2番〜ラスサビ〜アウトロ)
+  const [autoComposeBars, setAutoComposeBars] = useState<number>(64);
   const [autoComposeSpeed, setAutoComposeSpeed] = useState<number>(1);
   const [autoComposing, setAutoComposing] = useState<boolean>(false);
   const [autoComposeProgress, setAutoComposeProgress] = useState<{
@@ -2638,13 +2639,14 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
               disabled={autoComposing}
               className="mc-field h-11"
             >
-              <option value={8}>8 小節 (短め)</option>
-              <option value={16}>16 小節 (標準)</option>
-              <option value={32}>32 小節 (長め)</option>
-              <option value={48}>48 小節 (3 分相当)</option>
-              <option value={64}>64 小節 (フルサイズ)</option>
-              <option value={96}>96 小節 (大型 / 転調入り)</option>
-              <option value={128}>128 小節 (最大 / プロ構成)</option>
+              {/* 小節数ごとに「どんな構成の曲になるか」を表示 (autoComposer の planSections と対応) */}
+              <option value={8}>8 小節 (Aメロ→サビ だけ)</option>
+              <option value={16}>16 小節 (Aメロ→サビ)</option>
+              <option value={32}>32 小節 (1番: イントロ〜サビ)</option>
+              <option value={48}>48 小節 (2番まで)</option>
+              <option value={64}>64 小節 (フルサイズ・ラスサビ転調) おすすめ</option>
+              <option value={96}>96 小節 (間奏ソロ・ラスサビ2回)</option>
+              <option value={128}>128 小節 (最大・フル構成)</option>
             </select>
           </div>
           {/* 早送り */}
