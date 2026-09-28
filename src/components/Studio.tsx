@@ -90,6 +90,7 @@ import {
   preloadAcoustic,
 } from "../audio/acousticGuitarEngine";
 import * as Tone from "tone";
+import { preloadFx } from "../audio/fxEngine";
 
 /** 本物の楽器音源 (ベース・ギター・アコギ) の読み込みを始める。 */
 function preloadRealInstruments(): void {
@@ -98,6 +99,7 @@ function preloadRealInstruments(): void {
     preloadGuitar();
     preloadAcoustic();
     preloadStrings();
+    preloadFx();
   } catch (e) {
     console.warn("楽器音源の先読みに失敗しました", e);
   }

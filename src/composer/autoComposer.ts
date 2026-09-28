@@ -66,6 +66,7 @@ import { SCALE_INTERVALS, scaleContains } from "../music/scale";
 import {
   FX_DOWNLIFTER,
   FX_FALL,
+  FX_IMPACT,
   FX_REVERSE_CYMBAL,
   FX_RISER,
   FX_SWEEP_DOWN,
@@ -4499,21 +4500,28 @@ function generateFx(
       addFx(FX_SWEEP_UP, secStart, Math.min(2 * barSec, 1.5), 0.6);
     }
 
-    // サビ前の build-up (前セクションの最終 1〜2 小節を build-up に使う)
-    if (next && next.kind === "chorus") {
+    // サビ前の build-up → サビ頭のインパクト
+    // リバースシンバルとライザーは「サビの 1 拍目ぴったり」で頂点になるように置く
+    // (ずれると盛り上がりが空振りする)。
+    if (next && next.kind === "chorus" && sec.kind !== "break") {
+      const downbeat = next.startBar * barSec;
       const buildBars = sec.endBar - sec.startBar >= 2 ? 2 : 1;
-      const buildStart = (next.startBar - buildBars) * barSec;
-      const buildDur = buildBars * barSec - 0.05;
-      // リバースシンバル (盛り上がってサビ頭に着地)
-      addFx(FX_REVERSE_CYMBAL, buildStart, buildDur, 0.9);
-      // ライザーを少し遅らせて重ねる
-      if (buildBars >= 2 && rng() < 0.7) {
-        addFx(FX_RISER, buildStart + barSec * 0.5, buildDur - barSec * 0.5, 0.75);
+      // リバースシンバルは 1 小節 (本物のシンバルの余韻の長さに合う)
+      addFx(FX_REVERSE_CYMBAL, downbeat - barSec, barSec, 0.9);
+      // ライザーは 2 小節かけてじわじわ上げる
+      if (buildBars >= 2 && rng() < 0.8) {
+        addFx(FX_RISER, downbeat - 2 * barSec, 2 * barSec, 0.75);
       }
+    }
+    // サビの頭: インパクト (最後のサビは一番強く)
+    if (sec.kind === "chorus" && (!sections[i - 1] || sections[i - 1].kind !== "chorus")) {
+      const isLastChorus = !sections.slice(i + 1).some((x) => x.kind === "chorus");
+      addFx(FX_IMPACT, secStart, 2 * beatSec + barSec * 0.5, isLastChorus ? 1.0 : 0.8);
     }
 
     // ブリッジ前: スウィープで色を変える
-    if (next && next.kind === "bridge") {
+    // (サビ終わりはダウンリフター / フォールが入るので、そこには重ねない)
+    if (next && next.kind === "bridge" && sec.kind !== "chorus") {
       const startSec = next.startBar * barSec - barSec * 0.5;
       addFx(rng() < 0.5 ? FX_SWEEP_UP : FX_SWEEP_DOWN, startSec, barSec * 0.5, 0.6);
     }
@@ -4538,14 +4546,20 @@ function generateFx(
     if (sec.kind === "break") {
       const breakLen = (sec.endBar - sec.startBar) * barSec;
       addFx(FX_WHITE_NOISE, secStart, breakLen * 0.9, 0.35);
-      addFx(FX_REVERSE_CYMBAL, sec.endBar * barSec - barSec * 0.9, barSec * 0.9, 0.85);
-      if (rng() < 0.7) {
-        addFx(FX_RISER, sec.endBar * barSec - barSec * 0.6, barSec * 0.55, 0.7);
+      // ブレイク明けのサビ頭でぴったり頂点
+      addFx(FX_REVERSE_CYMBAL, sec.endBar * barSec - barSec, barSec, 0.9);
+      if (rng() < 0.8) {
+        addFx(FX_RISER, sec.endBar * barSec - barSec, barSec, 0.75);
       }
     }
 
     // 転調セクション (前セクションと keyOffset が違う) の直前に上昇スウィープを追加
-    if (next && next.keyOffsetSemitones !== sec.keyOffsetSemitones) {
+    // (キーが上がるときだけ。サビ前はリバースシンバル + ライザーがあるので重ねない)
+    if (
+      next &&
+      next.keyOffsetSemitones > sec.keyOffsetSemitones &&
+      next.kind !== "chorus"
+    ) {
       addFx(FX_SWEEP_UP, next.startBar * barSec - barSec * 0.35, barSec * 0.35, 0.6);
     }
   }
