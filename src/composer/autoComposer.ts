@@ -210,6 +210,11 @@ export interface ComposedSong {
   vocalNotes: NoteEvent[];
   /** シンセ専用パターン (パッド or カウンターメロディ)。 */
   synthNotes: NoteEvent[];
+  /**
+   * 小節の後半 (3 拍目から) だけコードが変わる小節の、後半のコード。変わらない小節は null。
+   * 例: 「IV → V → I」の V。chords[bar] は前半のコード。
+   */
+  halfBarChords: (HarmonicChord | null)[];
   totalSec: number;
   bpm: number;
   style: ComposerStyle;
@@ -1238,9 +1243,10 @@ function scaleTonesInRange(scale: Scale, minMidi: number, maxMidi: number): numb
 function melodyRangeFor(section: SectionKind): { lo: number; hi: number; vel: number } {
   switch (section) {
     case "intro": return { lo: 60, hi: 72, vel: 0.55 };  // C4..C5
-    case "verse": return { lo: 60, hi: 74, vel: 0.65 };
-    case "preChorus": return { lo: 64, hi: 76, vel: 0.75 };
-    case "chorus": return { lo: 67, hi: 84, vel: 0.92 }; // G4..C6 (派手)
+    // 歌いやすさのため音域を絞る: Aメロは低く狭く、Bメロで少し上げ、サビで一番高く (それでも 1 オクターブ強まで)
+    case "verse": return { lo: 60, hi: 71, vel: 0.65 };      // C4..B4
+    case "preChorus": return { lo: 62, hi: 74, vel: 0.75 };  // D4..D5
+    case "chorus": return { lo: 67, hi: 81, vel: 0.92 };     // G4..A5
     case "bridge": return { lo: 62, hi: 78, vel: 0.7 };
     case "break": return { lo: 60, hi: 72, vel: 0.4 };   // ほぼ無音 + 終わりにヒント
     case "outro": return { lo: 60, hi: 72, vel: 0.5 };
@@ -1268,6 +1274,14 @@ function generateMelody(
       return onBeat13 && !slot.rest ? { ...slot, strong: true } : slot;
     });
   });
+
+  // 歌いやすさ優先: 16 分音符が多いリズムほど選ばれにくくする (早口のフレーズは歌いにくい)
+  const pickSingable = (pats: typeof patterns, r: () => number) =>
+    pickWeighted(
+      pats,
+      pats.map((pat) => 1 / (1 + 1.5 * pat.filter((sl) => !sl.rest && sl.beats <= 0.25).length)),
+      r,
+    );
 
   let prevMidi: number | null = null;
 
@@ -1465,14 +1479,14 @@ function generateMelody(
     let motifBarForRecord: MotifBar | null = null;
     let motifBarForReplay: MotifBar | null = null;
     if (isMotifSec && barInSec < 2) {
-      slots = pick(patterns, rng);
+      slots = pickSingable(patterns, rng);
       motifBarForRecord = { slots, notes: [] };
       motifList!.push(motifBarForRecord);
     } else if (isMotifSec && motifList && motifList.length >= 2) {
       motifBarForReplay = motifList[barInSec % 2];
       slots = motifBarForReplay.slots;
     } else {
-      slots = pick(patterns, rng);
+      slots = pickSingable(patterns, rng);
     }
 
     const barStart = bar * 4 * beatSec;
@@ -3594,12 +3608,18 @@ function generateSynthLayer(
   const out: NoteEvent[] = [];
 
   if (style === "pop" || style === "ballad") {
-    // PAD: 高音域 (C5〜) で 1 小節フルサスティン。Intro / Outro / Break は休む。
+    // PAD (ストリングス想定): 1 小節フルサスティン。Intro / Outro / Break は休む。
+    // 弦の各パートがなめらかに動くよう、前の小節から一番動きの少ない押さえ方を選ぶ
+    // (G3〜E5 付近 = メロディの少し下で支える位置)。
+    let prevPad: number[] | null = null;
     for (let bar = 0; bar < chords.length; bar++) {
       const sec = sectionAtBar(sections, bar);
-      if (sec.kind === "break" || sec.kind === "intro" || sec.kind === "outro") continue;
-      const voicing = chordVoicing(chords[bar], 72); // C5
-      const padTones = voicing.slice(0, 3);
+      if (sec.kind === "break" || sec.kind === "intro" || sec.kind === "outro") {
+        prevPad = null;
+        continue;
+      }
+      const padTones = voiceLeadVoicing(chords[bar], prevPad, 55, 76, 69);
+      prevPad = padTones;
       const barStart = bar * barSec;
       const v = sec.intensity * (style === "ballad" ? 0.35 : 0.42);
       for (const m of padTones) {
@@ -4846,6 +4866,7 @@ function resolveMelodyClashes(
   sections: SongSection[],
   scale: Scale,
   bpm: number,
+  halfBarChords: (HarmonicChord | null)[] = [],
 ): NoteEvent[][] {
   const beatSec = 60 / bpm;
   const barSec = 4 * beatSec;
@@ -4858,7 +4879,9 @@ function resolveMelodyClashes(
   for (const m of melody) {
     if (m.durationSec < minHold) continue;
     const bar = Math.min(chords.length - 1, Math.floor(m.startSec / barSec + 1e-6));
-    const chord = chords[bar];
+    // 3 拍目以降で後半コードがある小節は、そちらを基準にする
+    const inSecondHalf = m.startSec >= bar * barSec + beatSec * 2 - 1e-6;
+    const chord = (inSecondHalf && halfBarChords[bar]) || chords[bar];
     if (!chord) continue;
     const chordPCs = new Set(CHORD_INTERVALS[chord.quality].map((iv) => (chord.rootPitchClass + iv) % 12));
     const triadPCs = chordPitchClasses(chord);
@@ -4970,6 +4993,48 @@ function humanizeNotes(
 }
 
 /**
+ * 歌の「息継ぎ」を作る。
+ * Aメロ / Bメロ / サビの 2 小節フレーズの終わりで、最後の音を短くして半拍以上の休みを空ける。
+ * (人が歌うメロディは 2 小節ごとに必ず息を吸う。ずっと音が続くと楽器のフレーズに聞こえる)
+ * 次のフレーズへの弱起 (小節最後の半拍から始まる音) は、その直前に休みがあるのでそのまま残す。
+ */
+function addBreaths(melody: NoteEvent[], sections: SongSection[], bpm: number): void {
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+  const drop = new Set<NoteEvent>();
+  for (const sec of sections) {
+    if (sec.kind !== "verse" && sec.kind !== "preChorus" && sec.kind !== "chorus") continue;
+    for (let bar = sec.startBar + 1; bar < sec.endBar; bar += 2) {
+      const barStart = bar * barSec;
+      const barEnd = barStart + barSec;
+      const inBar = melody
+        .filter((n) => n.startSec >= barStart - 1e-6 && n.startSec < barEnd - 1e-6)
+        .sort((a, b) => a.startSec - b.startSec);
+      // 最後の 16 分 (4 拍目の裏の裏) から始まる音だけは「次のフレーズへの弱起」として残す
+      const pickupAt = barEnd - beatSec * 0.25 - 1e-6;
+      const hasPickup = inBar.some((n) => n.startSec >= pickupAt);
+      // 休む区間: 通常は最後の半拍。弱起があるときはその手前の半拍を空ける
+      const restStart = hasPickup ? barEnd - beatSec * 0.75 : barEnd - beatSec * 0.5;
+      for (const n of inBar) {
+        if (n.startSec >= pickupAt) continue; // 弱起は残す
+        if (n.startSec >= restStart - 1e-6) {
+          drop.add(n); // 休む区間で始まる音は削って息継ぎにする
+          continue;
+        }
+        if (n.startSec + n.durationSec > restStart) {
+          n.durationSec = Math.max(beatSec * 0.3, restStart - n.startSec);
+        }
+      }
+    }
+  }
+  if (drop.size > 0) {
+    const kept = melody.filter((n) => !drop.has(n));
+    melody.length = 0;
+    melody.push(...kept);
+  }
+}
+
+/**
  * 曲の最後のメロディ音を主音 (そのキーの "ド") に寄せ、曲の終わりまで伸ばす。
  * 最後の和音は buildProgression で I にしているので、メロディも主音で終わると
  * 「曲が終わった」とはっきり感じられる。
@@ -5002,6 +5067,142 @@ function endMelodyOnTonic(
 }
 
 // ---------------------------------------------------------------------------
+// 小節の途中でのコードチェンジ (ハーフバー・チェンジ)
+//
+// 1 小節 1 コードだけだと、進行がのっぺりして「打ち込みっぽく」聞こえる。
+// プロの曲はフレーズの終わり (4 小節目) で、3 拍目から V (ドミナント) に変えて
+// 次のフレーズの I (または vi) へ強く引き込む:  … IV → V → I …
+// ---------------------------------------------------------------------------
+
+/** chords を必要に応じて書き換え (前半を IV にする等)、各小節の「後半コード」を返す。 */
+function planHalfBarChords(
+  chords: HarmonicChord[],
+  sections: SongSection[],
+  scale: Scale,
+  style: ComposerStyle,
+): (HarmonicChord | null)[] {
+  const half: (HarmonicChord | null)[] = new Array(chords.length).fill(null);
+  for (const sec of sections) {
+    if (sec.kind !== "verse" && sec.kind !== "preChorus" && sec.kind !== "chorus") continue;
+    const len = sec.endBar - sec.startBar;
+    if (len < 4) continue;
+    const dia = diatonicTriads(transposeScale(scale, sec.keyOffsetSemitones));
+    const tonic = dia[0].rootPitchClass;
+    const subMediant = dia[5].rootPitchClass;
+    const dominant = style === "jazz" ? withQuality(dia[4], "dom7") : dia[4];
+    for (let i = 3; i < len; i += 4) {
+      const bar = sec.startBar + i;
+      if (bar + 1 >= chords.length) continue; // 曲の最後の小節は触らない
+      const cur = chords[bar];
+      const next = chords[bar + 1];
+      // 次の小節が「帰る場所」(I か vi) のときだけ、V で引き込む
+      if (next.rootPitchClass !== tonic && next.rootPitchClass !== subMediant) continue;
+      if (cur.rootPitchClass === dominant.rootPitchClass) {
+        // もともと V が 1 小節続く → 前半を IV にして「IV → V → I」にする
+        chords[bar] = dia[3];
+        half[bar] = cur;
+      } else {
+        half[bar] = dominant;
+      }
+    }
+  }
+  return half;
+}
+
+function pcsOf(chord: HarmonicChord): Set<number> {
+  return new Set(CHORD_INTERVALS[chord.quality].map((iv) => (chord.rootPitchClass + iv) % 12));
+}
+
+/** from の音を、pcs に含まれる最も近い音へ動かす (同じ距離なら下)。 */
+function nearestInPcs(from: number, pcs: Set<number>): number {
+  for (let d = 0; d <= 6; d++) {
+    if (pcs.has((((from - d) % 12) + 12) % 12)) return from - d;
+    if (pcs.has((((from + d) % 12) + 12) % 12)) return from + d;
+  }
+  return from;
+}
+
+/**
+ * 小節の後半でコードが変わるとき、各パートの後半の音を新しいコードに合わせて直す。
+ *   - "shift"   : ベース / ギター / アコギ。コードのルートからの形 (リフ) を保ったまま、ルートの差だけ平行移動。
+ *                 経過音 (前のコードに無い音) はそのまま。
+ *   - "revoice" : ピアノ伴奏 / パッド。各音を新しいコードの一番近い音へ動かす (なめらかに移る)。
+ *   - "melody"  : メロディ / ボーカル。後半の強拍で伸ばす音だけ、新しいコードの音に寄せる。
+ * 3 拍目をまたいで伸びている伴奏の音は 3 拍目で切って、後半を新しいコードで鳴らし直す。
+ */
+function applyHalfBarChords(
+  notes: NoteEvent[],
+  mode: "shift" | "revoice" | "melody",
+  chords: HarmonicChord[],
+  half: (HarmonicChord | null)[],
+  sections: SongSection[],
+  scale: Scale,
+  bpm: number,
+): NoteEvent[] {
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+  const out: NoteEvent[] = [];
+  for (const n of notes) {
+    const bar = Math.floor(n.startSec / barSec + 1e-6);
+    const second = half[bar];
+    if (!second) {
+      out.push(n);
+      continue;
+    }
+    const first = chords[bar];
+    const mid = bar * barSec + beatSec * 2;
+    const pcs1 = pcsOf(first);
+    const pcs2 = pcsOf(second);
+    let delta = (((second.rootPitchClass - first.rootPitchClass) % 12) + 12) % 12;
+    if (delta > 6) delta -= 12;
+    const moved = (midi: number): number | null => {
+      const pc = ((midi % 12) + 12) % 12;
+      if (mode === "shift") return pcs1.has(pc) ? midi + delta : null;
+      if (mode === "revoice") return nearestInPcs(midi, pcs2);
+      return null;
+    };
+
+    if (n.startSec >= mid - 1e-6) {
+      if (mode === "melody") {
+        // 3 拍目 / 4 拍目の頭で伸ばす音だけ新しいコードに合わせる (経過音はそのまま)
+        const pos = (n.startSec - bar * barSec) / beatSec;
+        const onBeat = Math.abs(pos - Math.round(pos)) < 0.05;
+        const pc = ((n.midi % 12) + 12) % 12;
+        if (onBeat && n.durationSec >= beatSec * 0.45 && !pcs2.has(pc)) {
+          const localScale = transposeScale(scale, sectionAtBar(sections, bar).keyOffsetSemitones);
+          for (const d of [1, -1, 2, -2]) {
+            const c = n.midi + d;
+            if (pcs2.has(((c % 12) + 12) % 12) && scaleContains(localScale, c)) {
+              out.push({ ...n, midi: c });
+              break;
+            }
+            if (d === -2) out.push(n);
+          }
+          continue;
+        }
+        out.push(n);
+        continue;
+      }
+      const m = moved(n.midi);
+      out.push(m === null ? n : { ...n, midi: m });
+      continue;
+    }
+    // 3 拍目をまたいで伸びる伴奏の音: 3 拍目で切って、後半を新しいコードで鳴らし直す
+    const end = n.startSec + n.durationSec;
+    if (mode !== "melody" && end > mid + beatSec * 0.1) {
+      const m = moved(n.midi);
+      out.push({ ...n, durationSec: Math.max(0.03, mid - n.startSec) });
+      if (m !== null) {
+        out.push({ ...n, midi: m, startSec: mid, durationSec: end - mid, velocity: n.velocity * 0.9 });
+      }
+      continue;
+    }
+    out.push(n);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // 作曲パイプライン本体
 // composeSong (同期) と composeSongAsync (UI を止めない版) は、ここの手順を共有する。
 // 以前は 2 つの関数に同じ手順を別々に書いていたため、片方だけ直す事故が起きていた。
@@ -5031,6 +5232,13 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
   if (style === "rock" && !(opts.chordsOverride && opts.chordsOverride.length > 0)) {
     applyRockBorrowedChords(chords, scale, sections, rng);
   }
+  // フレーズの終わりで小節の途中からコードを変える (ユーザー指定の進行では行わない)
+  const halfBarChords: (HarmonicChord | null)[] =
+    opts.chordsOverride && opts.chordsOverride.length > 0
+      ? new Array(chords.length).fill(null)
+      : planHalfBarChords(chords, sections, scale, style);
+  const fitHalf = (notes: NoteEvent[], mode: "shift" | "revoice" | "melody") =>
+    applyHalfBarChords(notes, mode, chords, halfBarChords, sections, scale, bpm);
   yield;
 
   // intro / bridge で「誰がリードを取るか」の優先順位:
@@ -5039,21 +5247,22 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
   const hasAcousticLead = !hasGuitarLead && (opts.includeAcoustic ?? false);
   const melodyHasOtherLead = hasGuitarLead || hasAcousticLead;
 
-  const melodyNotes = (opts.includeMelody ?? true)
+  const melodyNotes = fitHalf((opts.includeMelody ?? true)
     ? generateMelody(scale, chords, sections, bpm, style, melodyHasOtherLead, rng)
-    : [];
+    : [], "melody");
   // ユーザー指定の進行でなければ、メロディの最後の音を主音 (キーの "ド") に着地させる
+  addBreaths(melodyNotes, sections, bpm);
   if (!(opts.chordsOverride && opts.chordsOverride.length > 0)) {
     endMelodyOnTonic(melodyNotes, sections, scale, bpm, bars);
   }
   yield;
-  let chordNotes = (opts.includeChord ?? true)
+  let chordNotes = fitHalf((opts.includeChord ?? true)
     ? generateChordLayer(chords, sections, bpm, style, rng)
-    : [];
+    : [], "revoice");
   yield;
-  const bassNotes = (opts.includeBass ?? true)
+  const bassNotes = fitHalf((opts.includeBass ?? true)
     ? generateBass(chords, sections, bpm, style, rng)
-    : [];
+    : [], "shift");
   yield;
   const drumNotes = (opts.includeDrums ?? true)
     ? generateDrums(sections, bars, bpm, style, rng)
@@ -5063,13 +5272,13 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
     ? generateFx(sections, bpm, rng)
     : [];
   yield;
-  let guitarNotes = (opts.includeGuitar ?? false)
+  let guitarNotes = fitHalf((opts.includeGuitar ?? false)
     ? generateGuitarLayer(chords, scale, sections, bpm, style, rng, opts.guitarVoicing ?? "auto")
-    : [];
+    : [], "shift");
   yield;
-  let acousticNotes = (opts.includeAcoustic ?? false)
+  let acousticNotes = fitHalf((opts.includeAcoustic ?? false)
     ? generateAcousticLayer(chords, scale, sections, bpm, style, hasGuitarLead, rng)
-    : [];
+    : [], "shift");
   yield;
 
   // メロディ ↔ 伴奏の半音ぶつかりを整える (ボーカル / シンセはメロディから作るのでこの後)
@@ -5081,16 +5290,17 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
       sections,
       scale,
       bpm,
+      halfBarChords,
     );
   }
 
-  const vocalNotes = (opts.includeVocal ?? false)
+  const vocalNotes = fitHalf((opts.includeVocal ?? false)
     ? generateVocalLayer(melodyNotes, chords, sections, scale, bpm)
-    : [];
+    : [], "melody");
   yield;
-  const synthNotes = (opts.includeSynth ?? false)
+  const synthNotes = fitHalf((opts.includeSynth ?? false)
     ? generateSynthLayer(melodyNotes, chords, sections, bpm, style, rng)
-    : [];
+    : [], "revoice");
 
   const totalSec = bars * 4 * (60 / bpm);
 
@@ -5113,6 +5323,15 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
     arrMelody, arrChord, arrBass, arrDrums, fxNotes,
     arrGuitar, arrAcoustic, arrVocal, arrSynth,
   ]) {
+    // 曲の頭より前に出た音 (ギターの「前からすべり込む」音など、イントロ無しの曲で起きる) は
+    // 曲の頭から鳴らす。短すぎて意味が無くなった音は捨てる。
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const e = arr[i];
+      if (e.startSec >= 0) continue;
+      const dur = e.durationSec + e.startSec;
+      if (dur < 0.03) arr.splice(i, 1);
+      else arr[i] = { ...e, startSec: 0, durationSec: dur };
+    }
     arr.sort((a, b) => a.startSec - b.startSec);
   }
 
@@ -5128,6 +5347,7 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
     acousticNotes: arrAcoustic,
     vocalNotes: arrVocal,
     synthNotes: arrSynth,
+    halfBarChords,
     totalSec,
     bpm,
     style,

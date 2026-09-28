@@ -4,3 +4,8 @@ Studio キット (生ドラム・強弱対応)
 加工: キックマイク + スネアマイク + オーバーヘッドの 3 本を等倍で混ぜてステレオ mp3 化。
       強弱の差を保つため、音量は楽器ごとに 1 つの固定値で調整 (1 音ずつの正規化はしていない)。
 並び: <楽器>/<番号>.mp3  番号 = 強さの段 (弱→強) × テイク数 + テイク番号
+
+clap/ (ハンドクラップ)
+音源: Karoryfer "body_percussion" (handclap)  License: CC0-1.0
+      https://github.com/sfzinstruments/body_percussion
+並び: 0,1 = 弱く叩いた録音 (2 テイク) / 2,3 = 強く叩いた録音 (2 テイク)

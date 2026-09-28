@@ -66,6 +66,9 @@ import {
   synthHoldOff,
   synthHoldOn,
   synthReleaseAll,
+  preloadStrings,
+  setSynthTone,
+  type SynthTone,
 } from "../audio/synthEngine";
 import {
   guitarChordOn,
@@ -94,6 +97,7 @@ function preloadRealInstruments(): void {
     preloadBass();
     preloadGuitar();
     preloadAcoustic();
+    preloadStrings();
   } catch (e) {
     console.warn("楽器音源の先読みに失敗しました", e);
   }
@@ -477,6 +481,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   /** 2 本目のギター (リード) のタイプ。デフォルトはクリーンにして
    *  バッキングと音色を被らせない (バッキング=歪み / リード=クリーンのツインギター構成)。 */
   const [guitar2Type, setGuitar2TypeState] = useState<GuitarType>("clean");
+  // シンセ層の音色: 本物のストリングス (既定) / シンセ
+  const [synthTone, setSynthToneState] = useState<SynthTone>("strings");
+  useEffect(() => {
+    setSynthTone(synthTone);
+  }, [synthTone]);
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
   const [playbackHighlight, setPlaybackHighlight] = useState<Set<number>>(new Set());
@@ -601,6 +610,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeWriteVocal(false);
         setAutoComposeGuitarVoicing("auto");
         setAcousticDrumKitState("studio");
+        setSynthToneState("synth"); // ロックのシンセは速い合いの手なのでシンセ音色
         break;
       case "ballad":
         // 静かなバンド: ピアノ + アコギ + ベース + 生ドラム + FX (歪みなし)
@@ -610,7 +620,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeWriteBass(true);
         setAutoComposeWriteDrumAcoustic(true);
         setAutoComposeWriteFx(true);
-        setAutoComposeWriteSynth(false);
+        setAutoComposeWriteSynth(true); // バラードは本物のストリングスで後ろを支える
+        setSynthToneState("strings");
         setAutoComposeWriteGuitar(false);
         setAutoComposeWriteDrum(false);
         setAutoComposeWriteVocal(false);
@@ -629,6 +640,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeWriteAcoustic(false);
         setAutoComposeWriteDrumAcoustic(true);
         setAcousticDrumKitState("kit3");
+        setSynthToneState("synth");
         setAutoComposeWriteVocal(false);
         setAutoComposeGuitarVoicing("auto");
         break;
@@ -645,6 +657,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeWriteAcoustic(false);
         setAutoComposeWriteDrumAcoustic(true);
         setAcousticDrumKitState("studio");
+        setSynthToneState("strings");
         setAutoComposeWriteVocal(false);
         setAutoComposeGuitarVoicing("auto");
         break;
@@ -3192,6 +3205,32 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             {autoComposeWriteGuitar2
               ? `G1=バッキング(${guitarType === "clean" ? "クリーン" : "歪み"}) + G2=リード(${guitar2Type === "clean" ? "クリーン" : "歪み"}) のツインギター`
               : "G2 OFF: ギターは G1 のみ (バッキング)"}
+          </span>
+        </div>
+
+        {/* シンセ層の音色切替: ストリングス (本物の弦楽合奏) / シンセ */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-ink-600">🎻 シンセ層の音色:</span>
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2">
+            {(["strings", "synth"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setSynthToneState(t)}
+                className={[
+                  "px-3 py-1 text-xs font-semibold transition",
+                  synthTone === t ? "bg-accent-500 text-white" : "text-ink-600 hover:bg-ink-50",
+                ].join(" ")}
+                title={t === "strings" ? "本物の弦楽合奏 (チェロ・ビオラ・バイオリン) の録音" : "明るいシンセリード"}
+              >
+                {t === "strings" ? "ストリングス" : "シンセ"}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-ink-500">
+            {synthTone === "strings"
+              ? "ストリングス: 本物の弦楽合奏。バラードやサビの後ろで和音を伸ばすのに合う"
+              : "シンセ: 明るいシンセ音。速いフレーズやロックの合いの手に合う"}
           </span>
         </div>
 

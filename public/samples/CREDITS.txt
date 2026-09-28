@@ -9,3 +9,7 @@ eguitar/  Karoryfer "Emilyguitar" (notes / mf / rr1)
           https://github.com/sfzinstruments/karoryfer.emilyguitar  License: CC0-1.0
 acoustic/ Jeff Learman "Martin HD28" (Discord SFZ GM Bank, 026 Acoustic Guitar (steel))
           https://github.com/sfzinstruments/Discord-SFZ-GM-Bank  License: Creative Commons CC0 (SFZ ファイル内に明記)
+strings/  Versilian Studios "VSCO 2 Community Edition" 弦楽合奏 (sustain vibrato / v1)
+          低音 (〜F#3) = Cello Section, 中音 (G3〜F4) = Viola Section, 高音 (A4〜) = Violin Section
+          https://github.com/sgossner/VSCO-2-CE  License: CC0-1.0
+          ※元ファイル名の音名は実音より 1 オクターブ低い表記のため、実測した音程で命名し直しています。

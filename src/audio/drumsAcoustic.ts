@@ -243,6 +243,8 @@ const STUDIO_KIT: Partial<Record<number, StudioInstrument>> = {
   [DRUM_TOM_HI_MIDI]: { dir: "tom_hi", layers: 4, takes: 1, gainDb: -11 },
   [DRUM_TOM_MID_MIDI]: { dir: "tom_lo", layers: 4, takes: 1, rate: 1.19, gainDb: -11 },
   [DRUM_TOM_LO_MIDI]: { dir: "tom_lo", layers: 4, takes: 1, gainDb: -11 },
+  // ハンドクラップ (Karoryfer body_percussion, CC0): 弱 / 強 の 2 段 × 2 テイク
+  [DRUM_CLAP_MIDI]: { dir: "clap", layers: 2, takes: 2, gainDb: -8 },
 };
 let aStudioMode = false;
 let aStudioBuffers: Tone.ToneAudioBuffers | null = null;
@@ -300,7 +302,7 @@ function studioLayerFor(velocity: number, layers: number): number {
 function triggerStudio(midi: number, time: number, velocity: number): boolean {
   if (!aStudioMode || !aStudioBuffers || !aBus) return false;
   const inst = STUDIO_KIT[midi];
-  if (!inst) return false; // クラップ等は Studio キットに無いのでシンセで鳴らす
+  if (!inst) return false; // Studio キットに無い楽器はシンセで鳴らす
   const layer = studioLayerFor(velocity, inst.layers);
   const take = (aStudioTakeCursor[midi] ?? 0) % inst.takes;
   aStudioTakeCursor[midi] = take + 1;
