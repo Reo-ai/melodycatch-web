@@ -508,7 +508,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // 自動作曲モード関連 state
   const [autoComposeStyle, setAutoComposeStyle] = useState<ComposerStyle>("pop");
   /** 生ドラムキット選択 (kit1=Ludwig Rock, kit2=Basic, kit3=Jazz, kit4=Electro) */
-  const [acousticDrumKit, setAcousticDrumKitState] = useState<AcousticDrumKitId>("kit1");
+  // 既定は強弱対応のリアルな Studio キット
+  const [acousticDrumKit, setAcousticDrumKitState] = useState<AcousticDrumKitId>("studio");
   /** ギター ボイシング指定 (Verse 等の弾き方を強制) */
   const [autoComposeGuitarVoicing, setAutoComposeGuitarVoicing] = useState<GuitarVoicingStyle>("auto");
   // 既定は「1 曲として成り立つ」フルサイズ (イントロ〜2番〜ラスサビ〜アウトロ)
@@ -524,7 +525,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [autoComposeWriteMelody, setAutoComposeWriteMelody] = useState<boolean>(true);
   const [autoComposeWriteChord, setAutoComposeWriteChord] = useState<boolean>(true);
   const [autoComposeWriteBass, setAutoComposeWriteBass] = useState<boolean>(true);
-  const [autoComposeWriteDrum, setAutoComposeWriteDrum] = useState<boolean>(true);
+  // 自動作曲のドラムは既定で「生ドラム (リアル)」。電子ドラムは必要な人だけ ON にする。
+  const [autoComposeWriteDrum, setAutoComposeWriteDrum] = useState<boolean>(false);
   const [autoComposeWriteSynth, setAutoComposeWriteSynth] = useState<boolean>(false);
   const [autoComposeWriteGuitar, setAutoComposeWriteGuitar] = useState<boolean>(false);
   /** 2 本目のギター (リード) を自動作曲時に発音するか。
@@ -535,7 +537,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [mixerOpen, setMixerOpen] = useState<boolean>(false);
   const [autoComposeWriteAcoustic, setAutoComposeWriteAcoustic] = useState<boolean>(false);
   const [autoComposeWriteVocal, setAutoComposeWriteVocal] = useState<boolean>(false);
-  const [autoComposeWriteDrumAcoustic, setAutoComposeWriteDrumAcoustic] = useState<boolean>(false);
+  const [autoComposeWriteDrumAcoustic, setAutoComposeWriteDrumAcoustic] = useState<boolean>(true);
   const [autoComposeWriteFx, setAutoComposeWriteFx] = useState<boolean>(true);
   // 自動作曲時に Chord 層 (手書き or コードパレット書き込み) を進行のベースに使うか。
   // ON にすると、自動生成のコード進行を破棄し、Chord 層から検出したコードを使う。
@@ -598,6 +600,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeWriteDrum(false);
         setAutoComposeWriteVocal(false);
         setAutoComposeGuitarVoicing("auto");
+        setAcousticDrumKitState("studio");
         break;
       case "ballad":
         // 静かなバンド: ピアノ + アコギ + ベース + 生ドラム + FX (歪みなし)
@@ -612,33 +615,36 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeWriteDrum(false);
         setAutoComposeWriteVocal(false);
         setAutoComposeGuitarVoicing("lead");
+        setAcousticDrumKitState("studio");
         break;
       case "jazz":
-        // 標準 4 ピース: ピアノ + ベース + 電子ドラム + FX
+        // 標準 4 ピース: ピアノ + ベース + 生ドラム (ジャズキット) + FX
         setAutoComposeWriteMelody(true);
         setAutoComposeWriteChord(true);
         setAutoComposeWriteBass(true);
-        setAutoComposeWriteDrum(true);
+        setAutoComposeWriteDrum(false);
         setAutoComposeWriteFx(true);
         setAutoComposeWriteSynth(false);
         setAutoComposeWriteGuitar(false);
         setAutoComposeWriteAcoustic(false);
-        setAutoComposeWriteDrumAcoustic(false);
+        setAutoComposeWriteDrumAcoustic(true);
+        setAcousticDrumKitState("kit3");
         setAutoComposeWriteVocal(false);
         setAutoComposeGuitarVoicing("auto");
         break;
       case "pop":
       default:
-        // ポップ標準: ピアノ + ベース + 電子ドラム + FX
+        // ポップ標準: ピアノ + ベース + 生ドラム (Studio キット) + FX
         setAutoComposeWriteMelody(true);
         setAutoComposeWriteChord(true);
         setAutoComposeWriteBass(true);
-        setAutoComposeWriteDrum(true);
+        setAutoComposeWriteDrum(false);
         setAutoComposeWriteFx(true);
         setAutoComposeWriteSynth(false);
         setAutoComposeWriteGuitar(false);
         setAutoComposeWriteAcoustic(false);
-        setAutoComposeWriteDrumAcoustic(false);
+        setAutoComposeWriteDrumAcoustic(true);
+        setAcousticDrumKitState("studio");
         setAutoComposeWriteVocal(false);
         setAutoComposeGuitarVoicing("auto");
         break;

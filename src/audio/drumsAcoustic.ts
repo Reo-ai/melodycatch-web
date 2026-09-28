@@ -125,9 +125,10 @@ let aCurrentKitBase: string | null = null;
  *   - "root"  : /drums/*.wav (後方互換 / 既定キット)
  *   - "kit1..4": /drums/kit1..4/*.wav
  */
-export type AcousticDrumKitId = "root" | "kit1" | "kit2" | "kit3" | "kit4";
+export type AcousticDrumKitId = "studio" | "root" | "kit1" | "kit2" | "kit3" | "kit4";
 
 export const ACOUSTIC_DRUM_KIT_LABEL_JA: Record<AcousticDrumKitId, string> = {
+  studio: "Studio: リアル (強弱対応・おすすめ)",
   root: "標準 (既定)",
   kit1: "Kit1: Sixties Rock (Ludwig)",
   kit2: "Kit2: Sixties Basic (汎用ロック)",
@@ -144,6 +145,8 @@ export const ACOUSTIC_DRUM_KIT_LABEL_JA: Record<AcousticDrumKitId, string> = {
 export function loadAcousticDrumSamples(baseUrl = "/drums/") {
   ensureAcousticDrums();
   if (aCurrentKitBase === baseUrl) return; // 同じキットなら何もしない
+  // Studio キットから別のキットへ切り替えるときは強弱対応モードを止める
+  aStudioMode = false;
   // 既存のプレイヤーを破棄してリセット
   for (const k of Object.keys(aSamplers)) {
     const m = Number(k);
@@ -192,8 +195,143 @@ export function loadAcousticDrumSamples(baseUrl = "/drums/") {
  * "root" の場合は /drums/ (後方互換 = 既存ファイルを直接使用)。
  */
 export function setAcousticDrumKit(kitId: AcousticDrumKitId) {
+  if (kitId === "studio") {
+    loadStudioKit();
+    return;
+  }
   const base = kitId === "root" ? "/drums/" : `/drums/${kitId}/`;
   loadAcousticDrumSamples(base);
+}
+
+// ---------------------------------------------------------------------------
+// Studio キット (強弱対応のリアルな生ドラム)
+//
+// 音源: Versilian Studios & Karoryfer "Virtuosity Drums" (CC0)。
+// キックマイク + スネアマイク + オーバーヘッドの 3 本を 1 本に混ぜて mp3 化してある
+// (public/drums/studio/<楽器>/<番号>.mp3)。
+//
+// 本物のドラマーの音に近づけるために:
+//   1) 強さで録音を切り替える (弱く叩いた録音 / 強く叩いた録音)。
+//      音量を下げるだけの電子ドラムと違い、弱い音は音色そのものが柔らかい。
+//   2) 同じ強さでも別テイクを交互に使う (毎回まったく同じ音 = マシンガン感を防ぐ)。
+//   3) クローズドハイハットを叩いたら、鳴っているオープンハイハットを止める (実機と同じ)。
+//   4) 同じ楽器を連打しても前の音の余韻を切らない (シンバルが自然に重なる)。
+// 番号の並びは「強さ (弱→強) × テイク」。file = 強さ段 × テイク数 + テイク番号。
+// ---------------------------------------------------------------------------
+interface StudioInstrument {
+  dir: string;
+  /** 強さの段数 (弱 → 強)。 */
+  layers: number;
+  /** 同じ強さのテイク数。 */
+  takes: number;
+  /** 再生速度 (音程)。ミッドタムはロータムを少し高くして作る。 */
+  rate?: number;
+  /**
+   * 音量補正 (dB)。他の楽器とのバランスを実測で合わせた値
+   * (キック・スネアのピークが電子ドラムのキックと同程度の約 -10dB、ハットはそれより控えめ)。
+   */
+  gainDb: number;
+}
+const STUDIO_KIT: Partial<Record<number, StudioInstrument>> = {
+  [DRUM_KICK_MIDI]: { dir: "kick", layers: 4, takes: 2, gainDb: -11 },
+  [DRUM_SNARE_MIDI]: { dir: "snare", layers: 8, takes: 1, gainDb: -11 },
+  [DRUM_RIM_MIDI]: { dir: "rim", layers: 4, takes: 1, gainDb: -12 },
+  [DRUM_HIHAT_MIDI]: { dir: "hh_closed", layers: 4, takes: 2, gainDb: -10 },
+  [DRUM_HIHAT_OPEN_MIDI]: { dir: "hh_open", layers: 3, takes: 1, gainDb: -11 },
+  [DRUM_CRASH_MIDI]: { dir: "crash", layers: 2, takes: 1, gainDb: -10 },
+  [DRUM_RIDE_MIDI]: { dir: "ride", layers: 3, takes: 1, gainDb: -11 },
+  [DRUM_TOM_HI_MIDI]: { dir: "tom_hi", layers: 4, takes: 1, gainDb: -11 },
+  [DRUM_TOM_MID_MIDI]: { dir: "tom_lo", layers: 4, takes: 1, rate: 1.19, gainDb: -11 },
+  [DRUM_TOM_LO_MIDI]: { dir: "tom_lo", layers: 4, takes: 1, gainDb: -11 },
+};
+let aStudioMode = false;
+let aStudioBuffers: Tone.ToneAudioBuffers | null = null;
+const aStudioTakeCursor: Partial<Record<number, number>> = {};
+/** 鳴っているオープンハイハット (クローズドで止めるため)。 */
+let aOpenHatSources: Tone.ToneBufferSource[] = [];
+
+function studioKey(midi: number, file: number): string {
+  return `${midi}_${file}`;
+}
+
+function loadStudioKit(): void {
+  ensureAcousticDrums();
+  if (aStudioMode || aCurrentKitBase === "studio") return;
+  // 旧キットのプレイヤーは止めて、シンセ代役に戻しておく (読み込み完了までの間)
+  for (const k of Object.keys(aSamplers)) {
+    const m = Number(k);
+    try { aSamplers[m]?.stop(); } catch { /* ignore */ }
+    try { aSamplers[m]?.dispose(); } catch { /* ignore */ }
+    delete aSamplers[m];
+    aSamplesReady[m] = false;
+  }
+  aSampleMode = false;
+  aCurrentKitBase = "studio";
+  const urls: Record<string, string> = {};
+  for (const [midiStr, inst] of Object.entries(STUDIO_KIT)) {
+    if (!inst) continue;
+    for (let f = 0; f < inst.layers * inst.takes; f++) {
+      urls[studioKey(Number(midiStr), f)] = `${inst.dir}/${f}.mp3`;
+    }
+  }
+  aStudioBuffers = new Tone.ToneAudioBuffers({
+    urls,
+    baseUrl: `${import.meta.env.BASE_URL}drums/studio/`,
+    onload: () => {
+      // 別キットに切り替えられていたら有効にしない
+      if (aCurrentKitBase === "studio") aStudioMode = true;
+    },
+    onerror: (e) => {
+      console.warn("[drumsAcoustic] Studio キットの読み込みに失敗しました (シンセで鳴らします)", e);
+    },
+  });
+}
+
+/**
+ * 強さ (0..1) → 使う録音の段。
+ * 普通の強さ (0.9 以上) は一番強い録音、0.3 以下はゴーストノート用の一番弱い録音。
+ * 電子ドラム用のベロシティ (0.6〜1.0 が中心) でも自然な強さになるよう、この範囲を広げて割り当てる。
+ */
+function studioLayerFor(velocity: number, layers: number): number {
+  const t = (velocity - 0.3) / 0.6;
+  return Math.max(0, Math.min(layers - 1, Math.round(t * (layers - 1))));
+}
+
+function triggerStudio(midi: number, time: number, velocity: number): boolean {
+  if (!aStudioMode || !aStudioBuffers || !aBus) return false;
+  const inst = STUDIO_KIT[midi];
+  if (!inst) return false; // クラップ等は Studio キットに無いのでシンセで鳴らす
+  const layer = studioLayerFor(velocity, inst.layers);
+  const take = (aStudioTakeCursor[midi] ?? 0) % inst.takes;
+  aStudioTakeCursor[midi] = take + 1;
+  const key = studioKey(midi, layer * inst.takes + take);
+  if (!aStudioBuffers.has(key)) return false;
+  const buffer = aStudioBuffers.get(key);
+  if (!buffer.loaded) return false;
+
+  // クローズドハイハットはオープンハイハットの余韻を止める (実機のハイハットと同じ)
+  if (midi === DRUM_HIHAT_MIDI && aOpenHatSources.length > 0) {
+    for (const src of aOpenHatSources) {
+      try { src.stop(time); } catch { /* 既に止まっている */ }
+    }
+    aOpenHatSources = [];
+  }
+
+  const src = new Tone.ToneBufferSource({
+    url: buffer,
+    playbackRate: inst.rate ?? 1,
+    fadeOut: 0.04,
+  }).connect(aBus);
+  // 段の中での細かい強弱 (段と段の間を埋める程度に軽く)
+  const layerCenter = 0.3 + (0.6 * layer) / Math.max(1, inst.layers - 1);
+  const fineGain = Math.max(0.6, Math.min(1.15, 1 + (velocity - layerCenter) * 0.8));
+  src.onended = () => {
+    aOpenHatSources = aOpenHatSources.filter((x) => x !== src);
+    src.dispose();
+  };
+  src.start(time, 0, undefined, fineGain * Tone.dbToGain(inst.gainDb));
+  if (midi === DRUM_HIHAT_OPEN_MIDI) aOpenHatSources.push(src);
+  return true;
 }
 
 /** サンプル差し替え動作中か */
@@ -493,6 +631,10 @@ export function triggerDrumHitAcoustic(
   ensureAcousticDrums();
   const vRaw = Math.max(0.05, Math.min(1, velocity));
   const t0 = time ?? Tone.now();
+  // Studio キット (強弱対応) が読み込めていれば、それだけで鳴らす
+  if (aStudioMode && triggerStudio(midi, jitterTime(t0, 2), jitterVel(vRaw, 0.06))) {
+    return;
+  }
   // サンプル差し替え動作中で、この楽器のサンプルが読み込めていれば
   // サンプルだけ鳴らしてシンセ側はスキップ (= 完全に生ドラムの音)
   if (aSampleMode && triggerSample(midi, jitterTime(t0, 2), jitterVel(vRaw, 0.08))) {
