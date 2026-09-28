@@ -840,6 +840,74 @@ function enrichChord(
   return withQuality(base, picked);
 }
 
+// ---------------------------------------------------------------------------
+// ヒット曲定番のループ進行 (度数は 1 始まり)
+//
+// 実際のポップスのサビは「決まった 4 (or 8) 小節の進行をループ」するのが基本。
+// Markov で 1 小節ずつ引くだけだと進行が毎回さまよって "歌モノ" に聞こえないため、
+// サビ (と長い Verse) は 4 小節ループを組み、サビはこの定番集から優先的に選ぶ。
+// ---------------------------------------------------------------------------
+const HIT_LOOPS_MAJOR: Array<{ deg: number[]; w: number }> = [
+  { deg: [1, 5, 6, 4], w: 5 },             // 王道 (I-V-vi-IV)
+  { deg: [4, 5, 3, 6], w: 5 },             // J-POP 王道 4536
+  { deg: [6, 4, 5, 1], w: 3 },             // 小室進行
+  { deg: [6, 4, 1, 5], w: 3 },             // 感動系 (vi-IV-I-V)
+  { deg: [1, 6, 4, 5], w: 2 },             // 50s 進行
+  { deg: [4, 5, 6, 6], w: 2 },             // IV-V-vi (Just the Two of Us 手前の定番)
+  { deg: [1, 5, 6, 3, 4, 1, 4, 5], w: 4 }, // カノン進行 (8 小節)
+];
+const HIT_LOOPS_MINOR: Array<{ deg: number[]; w: number }> = [
+  { deg: [1, 6, 3, 7], w: 5 }, // i-VI-III-VII (エピック)
+  { deg: [6, 7, 1, 1], w: 3 }, // VI-VII-i (王道マイナー)
+  { deg: [1, 4, 7, 3], w: 3 }, // i-iv-VII-III
+  { deg: [6, 4, 1, 5], w: 2 }, // VI-iv-i-v
+];
+
+/** スタイル別: サビでヒット定番ループを使う確率。 */
+const HIT_LOOP_PROB: Record<ComposerStyle, number> = {
+  pop: 0.8,
+  ballad: 0.8,
+  rock: 0.65,
+  jazz: 0,
+};
+
+/**
+ * サビ / 長い Verse 用に「4 (or 8) 小節ループ」を len 小節ぶん敷き詰めた度数列を返す。
+ * 対象外 (ジャズ・短いセクション等) なら null。
+ */
+function buildLoopedDegrees(
+  kind: SectionKind,
+  len: number,
+  style: ComposerStyle,
+  scale: Scale,
+  dia: HarmonicChord[],
+  prevDegree: number | null,
+  rng: () => number,
+): number[] | null {
+  if (style === "jazz") return null;
+  const isChorus = kind === "chorus";
+  const isVerse = kind === "verse";
+  if (!isChorus && !isVerse) return null;
+  if (isChorus && len < 4) return null;
+  if (isVerse && len < 6) return null;
+
+  let loop: number[];
+  if (isChorus && rng() < HIT_LOOP_PROB[style]) {
+    const minorish = scale.kind === "minor" || scale.kind === "dorian" || scale.kind === "pentatonicMinor";
+    const lib = minorish ? HIT_LOOPS_MINOR : HIT_LOOPS_MAJOR;
+    // 8 小節ループはセクションが 8 小節以上あるときだけ候補にする
+    const usable = lib.filter((l) => l.deg.length <= Math.max(4, len));
+    loop = pickWeighted(usable, usable.map((l) => l.w), rng).deg;
+  } else {
+    loop = buildSectionDegrees(kind, 4, style, dia, prevDegree, rng);
+  }
+  const out: number[] = [];
+  for (let i = 0; i < len; i++) out.push(loop[i % loop.length]);
+  // Verse はサビ / Bメロへ向かう属機能 (V) で終える
+  if (isVerse && FUNCTION_OF_DEGREE[out[len - 1]] !== "D") out[len - 1] = 5;
+  return out;
+}
+
 /**
  * 構造に沿ったコード進行を組み立てる (機能和声エンジン版)。
  *
@@ -859,9 +927,14 @@ function buildProgression(
 ): HarmonicChord[] {
   const out: HarmonicChord[] = new Array(bars);
   const degMemo = new Map<SectionKind, number[]>();
+  // 同じセクション種別・同じ位置のコード拡張 (maj7 / add9 等) を固定して、
+  // 2 回目のサビでも同じ響きになるようにする。
+  const qualityMemo = new Map<string, ChordQuality>();
   let lastDegree: number | null = null;
 
-  for (const sec of sections) {
+  for (let si = 0; si < sections.length; si++) {
+    const sec = sections[si];
+    const nextKind = sections[si + 1]?.kind;
     const localScale = transposeScale(scale, sec.keyOffsetSemitones);
     const dia = diatonicTriads(localScale);
     const len = sec.endBar - sec.startBar;
@@ -884,15 +957,26 @@ function buildProgression(
       // 長さが足りない場合は同じ列を繰り返して埋める
       while (degrees.length < len) degrees.push(cached[degrees.length % cached.length]);
     } else {
-      degrees = buildSectionDegrees(sec.kind, len, style, dia, lastDegree, rng);
+      degrees =
+        buildLoopedDegrees(sec.kind, len, style, scale, dia, lastDegree, rng) ??
+        buildSectionDegrees(sec.kind, len, style, dia, lastDegree, rng);
       if (memoizable) degMemo.set(sec.kind, degrees);
+    }
+    // 曲の最後のサビ (次がアウトロ / 曲終わり) は必ずトニックで着地させる
+    if (sec.kind === "chorus" && (nextKind === undefined || nextKind === "outro") && style !== "jazz") {
+      degrees = degrees.slice();
+      const lastFn = FUNCTION_OF_DEGREE[degrees[len - 1]];
+      if (lastFn !== "T") degrees[len - 1] = 1;
     }
 
     for (let i = 0; i < len; i++) {
       const deg = degrees[i % degrees.length];
       const idx = Math.max(0, Math.min(6, deg - 1));
       const base = dia[idx];
-      const enriched = enrichChord(base, deg, sec.kind, style, rng);
+      const qKey = memoizable ? `${sec.kind}:${i % 4}:${deg}` : "";
+      const cachedQ = qKey ? qualityMemo.get(qKey) : undefined;
+      const enriched = cachedQ ? withQuality(base, cachedQ) : enrichChord(base, deg, sec.kind, style, rng);
+      if (qKey && !cachedQ) qualityMemo.set(qKey, enriched.quality);
       out[sec.startBar + i] = enriched;
     }
     lastDegree = degrees[degrees.length - 1] ?? lastDegree;
@@ -1007,7 +1091,7 @@ const RHYTHM_PATTERNS: Record<ComposerStyle, RhythmSlot[][]> = {
       { beats: 0.5,  rest: false, strong: true },
       { beats: 0.25, rest: false, strong: false },
       { beats: 0.25, rest: false, strong: false },
-      { beats: 1,    rest: false, strong: false },
+      { beats: 1.5,  rest: false, strong: false },
     ],
     // 付点と切り (ラテン pop っぽい)
     [
@@ -1197,7 +1281,16 @@ function generateMelody(
 ): NoteEvent[] {
   const beatSec = 60 / bpm;
   const events: NoteEvent[] = [];
-  const patterns = RHYTHM_PATTERNS[style];
+  // 1 拍目 / 3 拍目に来る音は、パターン定義に関わらず強拍扱いにする
+  // (強拍に非和声音が来て濁るのを防ぐ)。シンコペの先取り強拍 (strong: true) はそのまま。
+  const patterns = RHYTHM_PATTERNS[style].map((pat) => {
+    let onset = 0;
+    return pat.map((slot) => {
+      const onBeat13 = Math.abs(onset - Math.round(onset)) < 0.02 && Math.round(onset) % 2 === 0;
+      onset += slot.beats;
+      return onBeat13 && !slot.rest ? { ...slot, strong: true } : slot;
+    });
+  });
 
   let prevMidi: number | null = null;
 
@@ -1216,6 +1309,21 @@ function generateMelody(
     keyOffsetSemitones: number;   // memo を作ったときの転調量
   }
   const memos = new Map<SectionKind, SectionMemo>();
+  // memo を作ったセクション。初出セクションの 2 小節目以降を「再現」と誤判定しないために使う。
+  const memoOwner = new Map<SectionKind, SongSection>();
+
+  // モチーフを「スケール上の段数」で移すための全音域スケール音列。
+  // 半音で平行移動するとキー外の音が出るため、度数 (スケール段) 単位で移動する。
+  const stepsPerOctave = new Set(scaleTonesInRange(scale, 60, 71).map((m) => m % 12)).size || 7;
+  const scaleStepIndex = (tones: number[], midi: number): number => {
+    // midi 以下で最も近いスケール音のインデックス (スケール外の音は下側に丸める)
+    let idx = 0;
+    for (let i = 0; i < tones.length; i++) {
+      if (tones[i] <= midi) idx = i;
+      else break;
+    }
+    return idx;
+  };
 
   // セクションが切り替わったときに「セクション内何小節目か」を 0 に戻すための追跡
   let curSec: SongSection | null = null;
@@ -1230,7 +1338,7 @@ function generateMelody(
   // モチーフ展開済みのメロディが Verse2 でも一字一句再現される。
   interface MotifNote {
     slotIndex: number;
-    semitonesFromRoot: number; // 記録時のコードルートからの差分 (絶対 MIDI - chordRoot)
+    stepsFromRoot: number; // 記録時のコードルートからのスケール段数差
   }
   interface MotifBar {
     slots: typeof patterns[number]; // この小節のリズム (motif 全体で固定)
@@ -1246,7 +1354,9 @@ function generateMelody(
     }
     const isRepeatableKind =
       sec.kind === "verse" || sec.kind === "preChorus" || sec.kind === "chorus";
-    const memo = isRepeatableKind ? memos.get(sec.kind) : undefined;
+    const existingMemo = isRepeatableKind ? memos.get(sec.kind) : undefined;
+    // 自分が作った memo なら「初出セクションの続き」なので再現しない
+    const memo = existingMemo && memoOwner.get(sec.kind) !== sec ? existingMemo : undefined;
     const isReplay = !!memo;
 
     const { lo, hi, vel } = melodyRangeFor(sec.kind);
@@ -1263,10 +1373,10 @@ function generateMelody(
     const chordPCs = new Set(chordTones.map((m) => m % 12));
 
     // ----- 再現モード: 保存済みメロディを転調差分だけずらして再生 ---------
-    if (isReplay && barInSec < memo!.bars.length) {
+    if (isReplay && memo!.bars.length > 0) {
       const transpose = sec.keyOffsetSemitones - memo!.keyOffsetSemitones;
       const barStart = bar * 4 * beatSec;
-      const notesOfBar = memo!.bars[barInSec];
+      const notesOfBar = memo!.bars[barInSec % memo!.bars.length];
       for (const n of notesOfBar) {
         const m = n.midi + transpose;
         events.push({
@@ -1394,6 +1504,9 @@ function generateMelody(
     const totalBeats = slots.reduce((a, s) => a + s.beats, 0);
     const beatScale = 4 / totalBeats;
     const chordRoot = chordTones[0];
+    // スケール段数でモチーフを移すための基準
+    const allTones = scaleTonesInRange(localScale, 24, 108);
+    const rootStep = scaleStepIndex(allTones, chordRoot);
 
     // ----- memo 書き込み準備: このセクション kind を初めて生成するなら memo を作る ---
     let recordBar: MemoNote[] | null = null;
@@ -1402,6 +1515,7 @@ function generateMelody(
       if (!m) {
         m = { bars: [], keyOffsetSemitones: sec.keyOffsetSemitones };
         memos.set(sec.kind, m);
+        memoOwner.set(sec.kind, sec);
       }
       // 小節を末尾追加 (Verse1 を 0,1,2,... と順に記録していく)
       while (m.bars.length <= barInSec) m.bars.push([]);
@@ -1414,12 +1528,14 @@ function generateMelody(
     // カデンツ的下降 (or 上昇) 進行」に置き換える。
     // これにより A B A B' の "B'" 部分が解決感を持ち、繰り返しの単調さを抑える。
     // Verse1 の bar 3 で生成した B' は memo されるので、Verse2 でも同じ B' が鳴る。
-    const isBPrime = !!motifBarForReplay && barInSec === 3 && isLastInSec;
+    const isBPrime = !!motifBarForReplay && (barInSec % 4 === 3 || isLastInSec);
     const bPrimeStartSlot = isBPrime ? Math.floor(slots.length * 0.6) : -1;
-    // 現在のキー (localScale) のトニックを range 内で見つける
+    // 着地音: セクション最後はトニック、フレーズ途中はトニック以外のコードトーン (半終止感)
     let tonicTarget: number | null = null;
     if (isBPrime) {
-      const ts = range.filter((m) => m % 12 === localScale.rootPitchClass);
+      const ts = isLastInSec
+        ? range.filter((m) => m % 12 === localScale.rootPitchClass)
+        : range.filter((m) => chordPCs.has(m % 12) && m % 12 !== localScale.rootPitchClass);
       if (ts.length > 0) {
         // メロディ範囲の中央寄りのオクターブを選ぶ
         tonicTarget = ts[Math.floor(ts.length / 2)];
@@ -1441,6 +1557,10 @@ function generateMelody(
       const ni = Math.max(0, Math.min(range.length - 1, idx + dir));
       return range[ni];
     }
+
+    // モチーフを移すときのオクターブ (小節内で共通)。直前の音に最も近いオクターブを選び、
+    // コードが変わるたびにメロディが大きく跳ばないようにする。
+    let motifOctShift: number | null = null;
 
     // ===== 直近 2 音追跡 (anti-stagnation 用) =====
     let recentSame = 0; // 直近で prevMidi と同じ音を何回続けて鳴らしたか
@@ -1469,9 +1589,26 @@ function generateMelody(
       if (motifBarForReplay) {
         const rec = motifBarForReplay.notes.find((n) => n.slotIndex === i);
         if (rec) {
-          let m = chordRoot + rec.semitonesFromRoot;
-          while (m < lo) m += 12;
-          while (m > hi) m -= 12;
+          let si = rootStep + rec.stepsFromRoot;
+          if (motifOctShift === null) {
+            motifOctShift = 0;
+            if (prevMidi != null) {
+              let bestD = Infinity;
+              for (let k = -2; k <= 2; k++) {
+                const cand = allTones[si + k * stepsPerOctave];
+                if (cand === undefined || cand < lo || cand > hi) continue;
+                const d = Math.abs(cand - prevMidi);
+                if (d < bestD) { bestD = d; motifOctShift = k; }
+              }
+            }
+          }
+          si += motifOctShift * stepsPerOctave;
+          si = Math.max(0, Math.min(allTones.length - 1, si));
+          // 音域外は 1 オクターブ折り返すと跳躍になるので、音域の端に留める
+          while (allTones[si] < lo && si + 1 < allTones.length) si++;
+          while (allTones[si] > hi && si - 1 >= 0) si--;
+          const m0 = allTones[si];
+          let m = m0;
           if (m >= lo && m <= hi) {
             // セクション最後の小節の最終 slot は「解決音」(コードトーン) に寄せる
             if (isLastInSec && i === slots.length - 1) {
@@ -1497,6 +1634,29 @@ function generateMelody(
             const dir = tonicTarget > prevMidi ? 1 : tonicTarget < prevMidi ? -1 : 0;
             motifReplayPitch = dir === 0 ? prevMidi : stepInScaleRange(prevMidi, dir);
           }
+        }
+      }
+      // モチーフを別のコード上に移した結果、強拍がコードトーンから外れたら
+      // 最寄りのコードトーンに寄せる (形はそのまま、濁りだけ取る)。
+      // フレーズ末尾の最後の音 (着地音) は上で決めているので触らない。
+      if (
+        motifReplayPitch !== null &&
+        slot.strong &&
+        !chordPCs.has(motifReplayPitch % 12) &&
+        !(isBPrime && i === slots.length - 1)
+      ) {
+        const ct = range.filter((rm) => chordPCs.has(rm % 12));
+        if (ct.length > 0) {
+          const from = motifReplayPitch;
+          const dirPref = prevMidi != null ? Math.sign(from - prevMidi) : 0;
+          let best = ct[0];
+          let bestScore = Infinity;
+          for (const c of ct) {
+            // 距離が同じなら元の進行方向側を優先
+            const score = Math.abs(c - from) + (dirPref !== 0 && Math.sign(c - from) !== dirPref ? 0.1 : 0);
+            if (score < bestScore) { best = c; bestScore = score; }
+          }
+          motifReplayPitch = best;
         }
       }
       // Chorus 1 小節目の頭は「フック」として、高めのコードトーンから始める。
@@ -1589,7 +1749,7 @@ function generateMelody(
       if (motifBarForRecord) {
         motifBarForRecord.notes.push({
           slotIndex: i,
-          semitonesFromRoot: pickMidi - chordRoot,
+          stepsFromRoot: scaleStepIndex(allTones, pickMidi) - rootStep,
         });
       }
       // leap recovery / anti-stagnation 用の追跡更新
@@ -4737,6 +4897,80 @@ export async function composeSongAsync(opts: AutoComposeOptions): Promise<Compos
   };
 }
 
+// ---------------------------------------------------------------------------
+// 仕上げ: メロディと伴奏の「半音ぶつかり」を取る (アレンジャーの定番処理)
+// ---------------------------------------------------------------------------
+
+/** 2 音が短 2 度 / 長 7 度 (= 短 9 度など) でぶつかるか。 */
+function isSemitoneClash(a: number, b: number): boolean {
+  const iv = Math.abs(a - b) % 12;
+  return iv === 1 || iv === 11;
+}
+
+/**
+ * 1 拍以上伸ばすメロディ音が伴奏と半音でぶつかる場合に整える。
+ *   1) メロディが非和声音なら、ぶつからない近くのコードトーンへ移す
+ *   2) メロディが和声音で、伴奏側の「拡張音 (7th / 9th 等)」とぶつかるなら、その伴奏音を省く
+ * 短い経過音・刺繍音 (1 拍未満) は音楽的に自然なので触らない。
+ */
+function resolveMelodyClashes(
+  melody: NoteEvent[],
+  accompaniment: NoteEvent[][],
+  chords: HarmonicChord[],
+  sections: SongSection[],
+  scale: Scale,
+  bpm: number,
+): NoteEvent[][] {
+  const beatSec = 60 / bpm;
+  const barSec = 4 * beatSec;
+  const minHold = beatSec * 0.9;
+  const minOverlap = beatSec * 0.4;
+  const removed = accompaniment.map(() => new Set<number>());
+  const overlap = (a: NoteEvent, b: NoteEvent) =>
+    Math.min(a.startSec + a.durationSec, b.startSec + b.durationSec) - Math.max(a.startSec, b.startSec);
+
+  for (const m of melody) {
+    if (m.durationSec < minHold) continue;
+    const bar = Math.min(chords.length - 1, Math.floor(m.startSec / barSec + 1e-6));
+    const chord = chords[bar];
+    if (!chord) continue;
+    const chordPCs = new Set(CHORD_INTERVALS[chord.quality].map((iv) => (chord.rootPitchClass + iv) % 12));
+    const triadPCs = chordPitchClasses(chord);
+    const localScale = transposeScale(scale, sectionAtBar(sections, bar).keyOffsetSemitones);
+
+    const hits: Array<{ layer: number; idx: number; n: NoteEvent }> = [];
+    accompaniment.forEach((layer, li) => {
+      layer.forEach((n, ni) => {
+        if (overlap(m, n) >= minOverlap) hits.push({ layer: li, idx: ni, n });
+      });
+    });
+    if (!hits.some((h) => isSemitoneClash(m.midi, h.n.midi))) continue;
+
+    if (!chordPCs.has(m.midi % 12)) {
+      // 1) 非和声音 → 近くのコードトーン (キー内・伴奏とぶつからない) へ
+      let best: number | null = null;
+      for (let d = 1; d <= 4 && best === null; d++) {
+        for (const cand of [m.midi - d, m.midi + d]) {
+          if (!chordPCs.has(cand % 12) || !scaleContains(localScale, cand)) continue;
+          if (hits.some((h) => isSemitoneClash(cand, h.n.midi))) continue;
+          best = cand;
+          break;
+        }
+      }
+      if (best !== null) m.midi = best;
+      continue;
+    }
+    // 2) 和声音同士のぶつかり → 伴奏の拡張音 (トライアド外) を省く。ベース (layer 0) は触らない。
+    for (const h of hits) {
+      if (h.layer === 0) continue;
+      if (!isSemitoneClash(m.midi, h.n.midi)) continue;
+      if (triadPCs.has(h.n.midi % 12)) continue;
+      removed[h.layer].add(h.idx);
+    }
+  }
+  return accompaniment.map((layer, li) => layer.filter((_, i) => !removed[li].has(i)));
+}
+
 export function composeSong(opts: AutoComposeOptions): ComposedSong {
   const { scale, bpm, bars, style } = opts;
   const seed = opts.seed ?? (Date.now() & 0xffffffff);
@@ -4770,7 +5004,7 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   const melodyNotes = (opts.includeMelody ?? true)
     ? generateMelody(scale, chords, sections, bpm, style, melodyHasOtherLead, rng)
     : [];
-  const chordNotes = (opts.includeChord ?? true)
+  let chordNotes = (opts.includeChord ?? true)
     ? generateChordLayer(chords, sections, bpm, style, rng)
     : [];
   const bassNotes = (opts.includeBass ?? true)
@@ -4782,12 +5016,23 @@ export function composeSong(opts: AutoComposeOptions): ComposedSong {
   const fxNotes = (opts.includeFx ?? true)
     ? generateFx(sections, bpm, rng)
     : [];
-  const guitarNotes = (opts.includeGuitar ?? false)
+  let guitarNotes = (opts.includeGuitar ?? false)
     ? generateGuitarLayer(chords, scale, sections, bpm, style, rng, opts.guitarVoicing ?? "auto")
     : [];
-  const acousticNotes = (opts.includeAcoustic ?? false)
+  let acousticNotes = (opts.includeAcoustic ?? false)
     ? generateAcousticLayer(chords, scale, sections, bpm, style, hasGuitarLead, rng)
     : [];
+  // メロディ ↔ 伴奏の半音ぶつかりを整える (ボーカル / シンセはメロディから作るのでこの後)
+  if (melodyNotes.length > 0) {
+    [, chordNotes, guitarNotes, acousticNotes] = resolveMelodyClashes(
+      melodyNotes,
+      [bassNotes, chordNotes, guitarNotes, acousticNotes],
+      chords,
+      sections,
+      scale,
+      bpm,
+    );
+  }
   const vocalNotes = (opts.includeVocal ?? false)
     ? generateVocalLayer(melodyNotes, chords, sections, scale, bpm)
     : [];
