@@ -6,6 +6,7 @@
 import * as Tone from "tone";
 
 export type MixerChannelId =
+  | "lead"
   | "piano"
   | "bass"
   | "drum"
@@ -18,6 +19,7 @@ export type MixerChannelId =
   | "fx";
 
 export const MIXER_CHANNEL_IDS: MixerChannelId[] = [
+  "lead",
   "piano",
   "bass",
   "drum",
@@ -31,6 +33,7 @@ export const MIXER_CHANNEL_IDS: MixerChannelId[] = [
 ];
 
 export const MIXER_CHANNEL_LABEL_JA: Record<MixerChannelId, string> = {
+  lead: "メロディ",
   piano: "ピアノ",
   bass: "ベース",
   drum: "ドラム (電子)",
@@ -49,6 +52,7 @@ export const MIXER_CHANNEL_LABEL_JA: Record<MixerChannelId, string> = {
  * 低音 (ベース・キック) とメロディ・ボーカルは中央に置くのが定石。
  */
 const CHANNEL_PAN: Record<MixerChannelId, number> = {
+  lead: 0, // 主役のメロディは真ん中
   piano: -0.12,
   bass: 0,
   drum: 0,

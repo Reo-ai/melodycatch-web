@@ -91,6 +91,23 @@ import {
 } from "../audio/acousticGuitarEngine";
 import * as Tone from "tone";
 import { preloadFx } from "../audio/fxEngine";
+import {
+  LEAD_TONE_LABEL_JA,
+  leadHoldOff,
+  leadHoldOn,
+  leadReleaseAll,
+  preloadLead,
+  setLeadTone,
+  type LeadTone,
+} from "../audio/leadEngine";
+
+/** スタイルごとの定番テンポ (BPM)。 */
+const STYLE_TEMPO: Record<ComposerStyle, number> = {
+  pop: 112,
+  ballad: 72,
+  rock: 140,
+  jazz: 120,
+};
 
 /** 本物の楽器音源 (ベース・ギター・アコギ) の読み込みを始める。 */
 function preloadRealInstruments(): void {
@@ -100,6 +117,7 @@ function preloadRealInstruments(): void {
     preloadAcoustic();
     preloadStrings();
     preloadFx();
+    preloadLead();
   } catch (e) {
     console.warn("楽器音源の先読みに失敗しました", e);
   }
@@ -483,6 +501,11 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   /** 2 本目のギター (リード) のタイプ。デフォルトはクリーンにして
    *  バッキングと音色を被らせない (バッキング=歪み / リード=クリーンのツインギター構成)。 */
   const [guitar2Type, setGuitar2TypeState] = useState<GuitarType>("clean");
+  // メロディ (主役) の音色: バイオリン (既定) / ギター / ピアノ
+  const [leadTone, setLeadToneState] = useState<LeadTone>("violin");
+  useEffect(() => {
+    setLeadTone(leadTone);
+  }, [leadTone]);
   // シンセ層の音色: 本物のストリングス (既定) / シンセ
   const [synthTone, setSynthToneState] = useState<SynthTone>("strings");
   useEffect(() => {
@@ -597,6 +620,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // 自動作曲中は触らない (途中で構成が変わって不整合になるのを防ぐ)。
   useEffect(() => {
     if (autoComposing) return;
+    // スタイルに合ったテンポを入れる (その後 BPM 欄で自由に変えられる)。
+    // 以前は全スタイル 100 固定で、バラードは速すぎ・ロックは遅すぎて「曲らしさ」が出なかった。
+    setBpm(STYLE_TEMPO[autoComposeStyle]);
     switch (autoComposeStyle) {
       case "rock":
         // 生バンド構成: ピアノ + シンセ + エレキ + アコギ + ベース + 生ドラム + FX
@@ -613,6 +639,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeGuitarVoicing("auto");
         setAcousticDrumKitState("studio");
         setSynthToneState("synth"); // ロックのシンセは速い合いの手なのでシンセ音色
+        setLeadToneState("guitar"); // ロックの主役はギター
         break;
       case "ballad":
         // 静かなバンド: ピアノ + アコギ + ベース + 生ドラム + FX (歪みなし)
@@ -624,6 +651,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeWriteFx(true);
         setAutoComposeWriteSynth(true); // バラードは本物のストリングスで後ろを支える
         setSynthToneState("strings");
+        setLeadToneState("violin");
         setAutoComposeWriteGuitar(false);
         setAutoComposeWriteDrum(false);
         setAutoComposeWriteVocal(false);
@@ -643,6 +671,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeWriteDrumAcoustic(true);
         setAcousticDrumKitState("kit3");
         setSynthToneState("synth");
+        setLeadToneState("piano"); // ジャズはピアノトリオの形
         setAutoComposeWriteVocal(false);
         setAutoComposeGuitarVoicing("auto");
         break;
@@ -660,6 +689,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAutoComposeWriteDrumAcoustic(true);
         setAcousticDrumKitState("studio");
         setSynthToneState("strings");
+        setLeadToneState("violin");
         setAutoComposeWriteVocal(false);
         setAutoComposeGuitarVoicing("auto");
         break;
@@ -965,6 +995,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         acousticHoldOn(midi, velocity);
       } else if (armedRef.current === "vocal") {
         vocalHoldOn(midi, velocity);
+      } else if (armedRef.current === "melody") {
+        leadHoldOn(midi, velocity);
       } else {
         holdOn(midi, velocity);
       }
@@ -985,6 +1017,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     (midi: number) => {
       // 入力中に armed が切り替わっている可能性に備えて全エンジンを off する
       holdOff(midi);
+      leadHoldOff(midi);
       bassHoldOff(midi);
       synthHoldOff(midi);
       guitarHoldOff(midi);
@@ -1779,6 +1812,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         guitarReleaseAll();
         acousticReleaseAll();
         vocalReleaseAll();
+    leadReleaseAll();
         pb.start(target, playbackRate);
       }
     },
@@ -1796,6 +1830,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     guitarReleaseAll();
     acousticReleaseAll();
     vocalReleaseAll();
+    leadReleaseAll();
   }
 
   function cancelProgressionTimers() {
@@ -2025,6 +2060,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           guitarReleaseAll();
           acousticReleaseAll();
           vocalReleaseAll();
+    leadReleaseAll();
         },
       },
       extraStreams,
@@ -2075,6 +2111,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     guitarReleaseAll();
     acousticReleaseAll();
     vocalReleaseAll();
+    leadReleaseAll();
   }
 
   /**
@@ -2127,6 +2164,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     guitarReleaseAll();
     acousticReleaseAll();
     vocalReleaseAll();
+    leadReleaseAll();
     setActiveNotes(new Set());
     setPlaybackHighlight(new Set());
     setActiveChordIndex(null);
@@ -2453,6 +2491,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       guitarReleaseAll();
       acousticReleaseAll();
       vocalReleaseAll();
+    leadReleaseAll();
       stopMetronome();
     };
   }, []);
@@ -3210,6 +3249,33 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
           </span>
         </div>
 
+        {/* メロディ (主役) の音色切替 */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-ink-600">🎻 メロディの音色:</span>
+          <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2">
+            {(["violin", "guitar", "piano"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setLeadToneState(t)}
+                className={[
+                  "px-3 py-1 text-xs font-semibold transition",
+                  leadTone === t ? "bg-accent-500 text-white" : "text-ink-600 hover:bg-ink-50",
+                ].join(" ")}
+              >
+                {LEAD_TONE_LABEL_JA[t]}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-ink-500">
+            {leadTone === "violin"
+              ? "バイオリン: 歌の代わりになる本物のソロ・バイオリン。曲の主役として前に出る"
+              : leadTone === "guitar"
+                ? "ギター: 歪ませた本物のエレキギター。ロックのリード向き"
+                : "ピアノ: 伴奏と同じピアノで鳴らす (従来の音)"}
+          </span>
+        </div>
+
         {/* シンセ層の音色切替: ストリングス (本物の弦楽合奏) / シンセ */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-ink-600">🎻 シンセ層の音色:</span>
@@ -3255,6 +3321,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                   type="button"
                   onClick={() => {
                     vocalReleaseAll();
+    leadReleaseAll();
                     setVocalVowelState(v);
                   }}
                   className={[
@@ -3677,6 +3744,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                       guitarReleaseAll();
                       acousticReleaseAll();
                       vocalReleaseAll();
+    leadReleaseAll();
                       pb.start(cur, rate);
                     }
                   }}

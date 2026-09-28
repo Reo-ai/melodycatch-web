@@ -1888,6 +1888,9 @@ function voiceLeadVoicing(
     if (fifth > 0) pcs.splice(fifth, 1);
     pcs = pcs.slice(0, 4);
   }
+  // 音の高さ順 (ルートからの距離順) に並べる。コードの定義順 (1-3-5-7-9) のまま積むと
+  // 9th の音が 1 オクターブ上に飛んで「密集した押さえ方」が作れなくなるため。
+  pcs.sort((a, b) => ((a - root + 12) % 12) - ((b - root + 12) % 12));
   const n = pcs.length;
   const cands: number[][] = [];
   for (let inv = 0; inv < n; inv++) {
@@ -1903,7 +1906,19 @@ function voiceLeadVoicing(
       if (v[n - 1] <= hi) cands.push(v);
     }
   }
-  if (cands.length === 0) return chordVoicing(chord, 48);
+  if (cands.length === 0) {
+    // どの押さえ方も上限に収まらない時: 上限以下で一番高い密集形を作り、はみ出た上の音を省く (3 音は残す)
+    let base = hi - 11;
+    while (base % 12 !== pcs[0]) base--;
+    const v = [base];
+    for (let k = 1; k < n; k++) {
+      let m = v[v.length - 1] + 1;
+      while (m % 12 !== pcs[k]) m++;
+      v.push(m);
+    }
+    while (v.length > 3 && v[v.length - 1] > hi) v.pop();
+    return v;
+  }
 
   let best = cands[0];
   let bestCost = Infinity;
@@ -1920,10 +1935,46 @@ function voiceLeadVoicing(
     } else {
       cost = Math.abs(top - target);
     }
-    if (v[0] < 55 && v[1] - v[0] <= 3) cost += 6; // 低音域の密集 (濁り)
+    // 低音域の密集 (濁り): E3 より下で 3 度以内に重なる押さえ方は強く避ける
+    for (let k = 1; k < v.length; k++) {
+      if (v[k] < 52 && v[k] - v[k - 1] <= 3) { cost += 12; break; }
+    }
     if (cost < bestCost) { bestCost = cost; best = v; }
   }
   return best;
+}
+
+/**
+ * 小節ごとに「伴奏の一番上の音はここまで」という上限を返す。
+ * メロディ (歌) と同じ高さで伴奏が鳴ると主役が埋もれるので、その小節のメロディの一番低い音より
+ * 少し下 (3 半音) に伴奏を収める。メロディが無い小節は defaultHi。
+ */
+function accompanimentCeilings(
+  melody: NoteEvent[] | undefined,
+  bars: number,
+  bpm: number,
+  defaultHi: number,
+): number[] {
+  const barSec = (60 / bpm) * 4;
+  const out = new Array(bars).fill(defaultHi);
+  if (!melody || melody.length === 0) return out;
+  for (let b = 0; b < bars; b++) {
+    const t0 = b * barSec;
+    const t1 = t0 + barSec;
+    let low = Infinity;
+    for (const n of melody) {
+      if (n.startSec < t1 && n.startSec + n.durationSec > t0) low = Math.min(low, n.midi);
+    }
+    // 伴奏が低くなりすぎて濁らないよう、上限は E4 より下げない
+    if (low !== Infinity) out[b] = Math.max(64, Math.min(defaultHi, low - 3));
+  }
+  // 上限が小節ごとに変わると伴奏が上下に跳ねるので、4 小節ごとにそろえる (その中で一番低い上限)
+  for (let b0 = 0; b0 < bars; b0 += 4) {
+    const group = out.slice(b0, Math.min(bars, b0 + 4));
+    const m = Math.min(...group);
+    for (let b = b0; b < Math.min(bars, b0 + 4); b++) out[b] = m;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1935,16 +1986,19 @@ function generateChordLayer(
   bpm: number,
   style: ComposerStyle,
   rng: () => number,
+  melody?: NoteEvent[],
 ): NoteEvent[] {
   const beatSec = 60 / bpm;
   const barSec = beatSec * 4;
   const out: NoteEvent[] = [];
   let prevVoicing: number[] | null = null;
+  const ceilings = accompanimentCeilings(melody, chords.length, bpm, 79);
 
   for (let bar = 0; bar < chords.length; bar++) {
     const sec = sectionAtBar(sections, bar);
-    // 前の小節から一番なめらかにつながる転回形を選ぶ
-    const voicing = voiceLeadVoicing(chords[bar], prevVoicing);
+    // 前の小節から一番なめらかにつながる転回形を選ぶ (メロディより下に収める)
+    const hi = ceilings[bar];
+    const voicing = voiceLeadVoicing(chords[bar], prevVoicing, Math.max(46, hi - 21), hi, hi - 10);
     prevVoicing = voicing;
     const barStart = bar * barSec;
     const vel0 = sec.intensity;
@@ -3660,13 +3714,15 @@ function generateSynthLayer(
     // 弦の各パートがなめらかに動くよう、前の小節から一番動きの少ない押さえ方を選ぶ
     // (G3〜E5 付近 = メロディの少し下で支える位置)。
     let prevPad: number[] | null = null;
+    const padCeilings = accompanimentCeilings(melodyNotes, chords.length, bpm, 76);
     for (let bar = 0; bar < chords.length; bar++) {
       const sec = sectionAtBar(sections, bar);
       if (sec.kind === "break" || sec.kind === "intro" || sec.kind === "outro") {
         prevPad = null;
         continue;
       }
-      const padTones = voiceLeadVoicing(chords[bar], prevPad, 55, 76, 69);
+      const hi = padCeilings[bar];
+      const padTones = voiceLeadVoicing(chords[bar], prevPad, Math.max(48, hi - 17), hi, hi - 5);
       prevPad = padTones;
       const barStart = bar * barSec;
       const v = sec.intensity * (style === "ballad" ? 0.35 : 0.42);
@@ -5264,6 +5320,107 @@ function applyHalfBarChords(
 }
 
 // ---------------------------------------------------------------------------
+// セクションの盛り上がり設計 (サビを曲で一番厚くする)
+//
+// 計測したら、Bメロの伴奏がサビより多く (ポップ 31 音/小節 > 26)、ドラムはAメロ〜サビで
+// 同じ音数 (18/18/18) だった。これでは「サビが来た!」と感じない。プロの編曲の定石どおり:
+//   1) Bメロは「溜め」: 伴奏・ギターを間引き、最後の小節で一気に詰める
+//   2) サビはドラムを厚く: 8 分のハイハットを埋め、16 分の刻み・シンコペのキック・オープンハットを足す
+//   3) サビ直前の「キメ」: 最後の半拍だけメロディ以外が全員止まり、サビ頭で全員が戻る
+// ---------------------------------------------------------------------------
+
+/** Bメロの伴奏を間引く。前半は 1・3 拍目だけ、後半は各拍の頭だけ、最後の小節はそのまま。 */
+function thinPreChorus(notes: NoteEvent[], sections: SongSection[], bpm: number): NoteEvent[] {
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+  return notes.filter((n) => {
+    const bar = Math.floor(n.startSec / barSec + 1e-6);
+    const sec = sectionAtBar(sections, bar);
+    if (sec.kind !== "preChorus") return true;
+    const len = sec.endBar - sec.startBar;
+    const idx = bar - sec.startBar;
+    if (idx >= len - 1) return true; // 最後の小節は詰めてサビへ突入
+    const pos = (n.startSec - bar * barSec) / beatSec;
+    const onBeat = Math.abs(pos - Math.round(pos)) < 0.04;
+    if (idx < len / 2) return onBeat && Math.round(pos) % 2 === 0; // 前半: 1・3 拍目だけ
+    return onBeat; // 後半: 拍の頭だけ
+  });
+}
+
+/** サビのドラムを厚くする (既にある音は変えず、足りない所に足す)。 */
+function thickenChorusDrums(
+  drums: NoteEvent[],
+  sections: SongSection[],
+  bpm: number,
+  style: ComposerStyle,
+): NoteEvent[] {
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+  const out = [...drums];
+  const has = (midis: number[], t: number, tol = beatSec * 0.1) =>
+    out.some((d) => midis.includes(d.midi) && Math.abs(d.startSec - t) < tol);
+  const HATS = [DRUM_HIHAT_MIDI, DRUM_HIHAT_OPEN_MIDI, DRUM_RIDE_MIDI];
+  for (const sec of sections) {
+    if (sec.kind !== "chorus") continue;
+    const v = sec.intensity;
+    for (let bar = sec.startBar; bar < sec.endBar; bar++) {
+      const t0 = bar * barSec;
+      // 1) 8 分のハイハットを埋める (刻みが途切れないように)
+      for (let e = 0; e < 8; e++) {
+        const t = t0 + e * beatSec * 0.5;
+        if (!has(HATS, t)) addNote(out, DRUM_HIHAT_MIDI, t, v * (e % 2 === 0 ? 0.62 : 0.5));
+      }
+      if (style !== "ballad") {
+        // 2) 16 分の裏に弱いハイハット (疾走感)。ジャズはスウィングなので入れない
+        if (style !== "jazz") {
+          for (let e = 0; e < 8; e++) {
+            const t = t0 + (e + 0.5) * beatSec * 0.5;
+            if (!has(HATS, t, beatSec * 0.06)) addNote(out, DRUM_HIHAT_MIDI, t, v * 0.3);
+          }
+        }
+        // 3) 2 拍目の裏にシンコペのキック (1 小節おき)
+        const k = t0 + 1.5 * beatSec;
+        if ((bar - sec.startBar) % 2 === 1 && !has([DRUM_KICK_MIDI], k)) addNote(out, DRUM_KICK_MIDI, k, v * 0.8);
+      }
+      // 4) 2 小節ごとの 4 拍目の裏はオープンハット (次の小節へつなぐ)
+      if ((bar - sec.startBar) % 2 === 1) {
+        const t = t0 + 3.5 * beatSec;
+        for (let i = out.length - 1; i >= 0; i--) {
+          if (out[i].midi === DRUM_HIHAT_MIDI && Math.abs(out[i].startSec - t) < beatSec * 0.1) out.splice(i, 1);
+        }
+        addNote(out, DRUM_HIHAT_OPEN_MIDI, t, v * 0.7);
+      }
+    }
+  }
+  return out;
+}
+
+/** サビ直前の「キメ」: サビ頭の半拍前から、メロディ以外を全員止める。 */
+function addKimeBeforeChorus(notes: NoteEvent[], sections: SongSection[], bpm: number): NoteEvent[] {
+  const beatSec = 60 / bpm;
+  const barSec = beatSec * 4;
+  const windows: Array<[number, number]> = [];
+  for (let i = 1; i < sections.length; i++) {
+    const sec = sections[i];
+    const prev = sections[i - 1];
+    // ブレイク明けは既に静かなので、Bメロ / Aメロ / 間奏からサビへ入る所だけ
+    if (sec.kind !== "chorus" || prev.kind === "chorus" || prev.kind === "break") continue;
+    const t = sec.startBar * barSec;
+    windows.push([t - beatSec * 0.5, t]);
+  }
+  if (windows.length === 0) return notes;
+  const out: NoteEvent[] = [];
+  for (const n of notes) {
+    const w = windows.find(([a, b]) => n.startSec < b && n.startSec + n.durationSec > a);
+    if (!w) { out.push(n); continue; }
+    // 止める区間で始まる音 (と、その直前で始まって切ると短すぎる音) は消す
+    if (n.startSec >= w[0] - 0.06) continue;
+    out.push({ ...n, durationSec: w[0] - n.startSec }); // 伸びている音は手前で切る
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // 作曲パイプライン本体
 // composeSong (同期) と composeSongAsync (UI を止めない版) は、ここの手順を共有する。
 // 以前は 2 つの関数に同じ手順を別々に書いていたため、片方だけ直す事故が起きていた。
@@ -5293,11 +5450,26 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
   if (style === "rock" && !(opts.chordsOverride && opts.chordsOverride.length > 0)) {
     applyRockBorrowedChords(chords, scale, sections, rng);
   }
+  // イントロでサビを予告する: イントロの最後の 1 小節以外を、サビと同じコードにする
+  // (メロディも後でサビのフックを写す)。最後の 1 小節は Aメロへの橋渡しのまま残す。
+  const userChords = !!(opts.chordsOverride && opts.chordsOverride.length > 0);
+  const introSec = sections[0]?.kind === "intro" ? sections[0] : undefined;
+  const firstChorus = sections.find((x) => x.kind === "chorus");
+  const introHookBars =
+    !userChords && introSec && firstChorus && introSec.keyOffsetSemitones === firstChorus.keyOffsetSemitones
+      ? Math.max(0, Math.min(introSec.endBar - introSec.startBar - 1, firstChorus.endBar - firstChorus.startBar))
+      : 0;
+  for (let i = 0; i < introHookBars; i++) {
+    chords[introSec!.startBar + i] = chords[firstChorus!.startBar + i];
+  }
+
   // フレーズの終わりで小節の途中からコードを変える (ユーザー指定の進行では行わない)
-  const halfBarChords: (HarmonicChord | null)[] =
-    opts.chordsOverride && opts.chordsOverride.length > 0
-      ? new Array(chords.length).fill(null)
-      : planHalfBarChords(chords, sections, scale, style);
+  const halfBarChords: (HarmonicChord | null)[] = userChords
+    ? new Array(chords.length).fill(null)
+    : planHalfBarChords(chords, sections, scale, style);
+  for (let i = 0; i < introHookBars; i++) {
+    halfBarChords[introSec!.startBar + i] = halfBarChords[firstChorus!.startBar + i];
+  }
   const fitHalf = (notes: NoteEvent[], mode: "shift" | "revoice" | "melody") =>
     applyHalfBarChords(notes, mode, chords, halfBarChords, sections, scale, bpm);
   yield;
@@ -5313,12 +5485,32 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
     : [], "melody");
   // ユーザー指定の進行でなければ、メロディの最後の音を主音 (キーの "ド") に着地させる
   addBreaths(melodyNotes, sections, bpm);
+  // イントロのメロディをサビのフックの写しに置き換える (最初に曲の顔を聴かせる)
+  if (introHookBars > 0) {
+    const barSec = (60 / bpm) * 4;
+    const iStart = introSec!.startBar * barSec;
+    const iEnd = (introSec!.startBar + introHookBars) * barSec;
+    const cStart = firstChorus!.startBar * barSec;
+    const hook = melodyNotes
+      .filter((n) => n.startSec >= cStart - 1e-6 && n.startSec < cStart + (iEnd - iStart) - 1e-6)
+      .map((n) => ({
+        ...n,
+        startSec: n.startSec - cStart + iStart,
+        // フックの最後の音がイントロの橋渡しの小節にはみ出さないように
+        durationSec: Math.min(n.durationSec, iEnd - (n.startSec - cStart + iStart)),
+        velocity: n.velocity * 0.9,
+      }));
+    const kept = melodyNotes.filter((n) => n.startSec < iStart - 1e-6 || n.startSec >= iEnd - 1e-6);
+    melodyNotes.length = 0;
+    melodyNotes.push(...kept, ...hook);
+    melodyNotes.sort((a, b) => a.startSec - b.startSec);
+  }
   if (!(opts.chordsOverride && opts.chordsOverride.length > 0)) {
     endMelodyOnTonic(melodyNotes, sections, scale, bpm, bars);
   }
   yield;
   let chordNotes = fitHalf((opts.includeChord ?? true)
-    ? generateChordLayer(chords, sections, bpm, style, rng)
+    ? generateChordLayer(chords, sections, bpm, style, rng, melodyNotes)
     : [], "revoice");
   yield;
   const bassNotes = fitHalf((opts.includeBass ?? true)
@@ -5365,6 +5557,14 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
 
   const totalSec = bars * 4 * (60 / bpm);
 
+  // セクションの盛り上がり設計: Bメロは溜め、サビは厚く、サビ直前はキメ
+  chordNotes = addKimeBeforeChorus(thinPreChorus(chordNotes, sections, bpm), sections, bpm);
+  guitarNotes = addKimeBeforeChorus(thinPreChorus(guitarNotes, sections, bpm), sections, bpm);
+  acousticNotes = addKimeBeforeChorus(thinPreChorus(acousticNotes, sections, bpm), sections, bpm);
+  const shapedBass = addKimeBeforeChorus(bassNotes, sections, bpm);
+  const shapedSynth = addKimeBeforeChorus(synthNotes, sections, bpm);
+  const shapedDrums = addKimeBeforeChorus(thickenChorusDrums(drumNotes, sections, bpm, style), sections, bpm);
+
   // セクション × 楽器のアレンジを適用 (イントロでドラム休符など) → 人間らしい揺れを加える
   const hRng = makeRng((seed ^ 0x9e3779b9) >>> 0);
   const finish = (notes: NoteEvent[], layer: ArrangeLayer, kind: HumanizeKind) =>
@@ -5373,12 +5573,12 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
       : humanizeNotes(applyArrangement(notes, layer, sections, bpm, style), kind, bpm, hRng);
   const arrMelody = finish(melodyNotes, "melody", "melody");
   const arrChord = finish(chordNotes, "chord", "chord");
-  const arrBass = finish(bassNotes, "bass", "bass");
-  const arrDrums = finish(drumNotes, "drums", "drums");
+  const arrBass = finish(shapedBass, "bass", "bass");
+  const arrDrums = finish(shapedDrums, "drums", "drums");
   const arrGuitar = finish(guitarNotes, "guitar", "guitar");
   const arrAcoustic = finish(acousticNotes, "acoustic", "acoustic");
   const arrVocal = finish(vocalNotes, "vocal", "vocal");
-  const arrSynth = finish(synthNotes, "synth", "synth");
+  const arrSynth = finish(shapedSynth, "synth", "synth");
 
   for (const arr of [
     arrMelody, arrChord, arrBass, arrDrums, fxNotes,

@@ -6,6 +6,7 @@
  *   - eguitar  : Karoryfer "Emilyguitar" (クリーン・ライン録り)
  *   - acoustic : Jeff Learman "Martin HD28" (Discord SFZ GM Bank 026, スチール弦)
  *   - strings  : Versilian Studios "VSCO 2 CE" 弦楽合奏 (低音=チェロ / 中音=ビオラ / 高音=バイオリン)
+ *   - violin   : Versilian Studios "VSCO 2 CE" ソロ・バイオリン (メロディのリード音色)
  * 詳細は public/samples/CREDITS.txt。
  *
  * ファイル名は「実際に鳴っている音程の MIDI 番号」(例: 40.mp3 = E2)。
@@ -16,13 +17,15 @@
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 
-export type SampleSetId = "bass" | "eguitar" | "acoustic" | "strings";
+export type SampleSetId = "bass" | "eguitar" | "acoustic" | "strings" | "violin";
 
 const SAMPLE_MIDIS: Record<SampleSetId, number[]> = {
   bass: [23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53],
   eguitar: [37, 40, 42, 45, 48, 51, 54, 57, 60, 63, 66, 69, 72, 75, 78, 81, 84, 86],
   acoustic: [40, 43, 46, 49, 52, 55, 58, 61, 64, 68, 71, 74, 77, 80, 83],
   strings: [36, 40, 43, 47, 50, 53, 55, 59, 62, 65, 69, 72, 76, 79, 83, 86],
+  // ソロ・バイオリン (メロディ専用のリード)
+  violin: [55, 57, 60, 64, 67, 69, 72, 76, 79, 81, 84, 88, 91, 93],
 };
 
 export interface SamplerOptions {

@@ -30,6 +30,7 @@ import {
 } from "../audio/guitarEngine";
 import { acousticHoldOff, acousticHoldOn } from "../audio/acousticGuitarEngine";
 import { vocalHoldOff, vocalHoldOn } from "../audio/vocalEngine";
+import { leadHoldOff, leadHoldOn } from "../audio/leadEngine";
 import type { ComposedSong } from "./autoComposer";
 
 export interface AutoComposeCallbacks {
@@ -87,6 +88,10 @@ function holdOnFor(
     case "vocal":
       vocalHoldOn(midi, velocity);
       return;
+    case "melody":
+      // メロディはピアノではなく専用のリード音色 (バイオリン等) で主役として鳴らす
+      leadHoldOn(midi, velocity);
+      return;
     case "drum":
       triggerDrumHit(midi, undefined, velocity);
       return;
@@ -122,6 +127,9 @@ function holdOffFor(layerId: LayerId, midi: number, engine?: EngineOverride): vo
       return;
     case "vocal":
       vocalHoldOff(midi);
+      return;
+    case "melody":
+      leadHoldOff(midi);
       return;
     case "drum":
       // ドラムは一発もの (triggerDrumHit) なので Off は不要

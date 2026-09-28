@@ -13,3 +13,6 @@ strings/  Versilian Studios "VSCO 2 Community Edition" 弦楽合奏 (sustain vib
           低音 (〜F#3) = Cello Section, 中音 (G3〜F4) = Viola Section, 高音 (A4〜) = Violin Section
           https://github.com/sgossner/VSCO-2-CE  License: CC0-1.0
           ※元ファイル名の音名は実音より 1 オクターブ低い表記のため、実測した音程で命名し直しています。
+violin/   Versilian Studios "VSCO 2 Community Edition" Solo Violin (Arco Vib / f)
+          https://github.com/sgossner/VSCO-2-CE  License: CC0-1.0
+          メロディ専用の「リード」音色として使用。音程は実測で確認 (元の音名どおり)。
