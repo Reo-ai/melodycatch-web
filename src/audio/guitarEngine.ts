@@ -19,6 +19,7 @@
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 import { getMixerInput } from "./mixer";
+import { createSampler, samplerReady, velocity01 } from "./sampledInstruments";
 
 export type GuitarType = "distortion" | "clean";
 
@@ -37,6 +38,12 @@ let guitarDistortion: Tone.Distortion | null = null;
 let guitarPreGain: Tone.Gain | null = null;
 let guitarGain: Tone.Gain | null = null;
 
+/**
+ * 本物のエレキギター (クリーンのライン録り) のサンプル音源。
+ * クリーン時はそのまま、ディストーション時は歪み回路に通して鳴らす。
+ * 読み込みが終わるまでは下の PluckSynth (シンセ) が代わりに鳴る。
+ */
+let guitarSampler: Tone.Sampler | null = null;
 /** ラウンドロビンで使う PluckSynth ボイス。 */
 let guitarVoices: Tone.PluckSynth[] = [];
 let voiceCursor = 0;
@@ -63,6 +70,13 @@ function disposeGuitar(): void {
     v.dispose();
   }
   guitarVoices = [];
+  try {
+    guitarSampler?.releaseAll();
+  } catch {
+    /* noop */
+  }
+  guitarSampler?.dispose();
+  guitarSampler = null;
   noteToVoice.clear();
   for (const handle of noteToRepluckTimer.values()) {
     window.clearTimeout(handle);
@@ -157,6 +171,8 @@ function ensureGuitar() {
       v.connect(guitarPreGain);
       guitarVoices.push(v);
     }
+    guitarSampler = createSampler("eguitar", { release: 0.25, volume: -16 });
+    guitarSampler.connect(guitarPreGain);
   } else {
     // クリーントーン: 歪みなし、開いた高域、軽いコーラスとリバーブ。
     guitarReverb = new Tone.Reverb({ decay: 2.0, wet: 0.24 }).connect(getMixerInput("guitar"));
@@ -208,7 +224,14 @@ function ensureGuitar() {
       v.connect(guitarHighpass);
       guitarVoices.push(v);
     }
+    guitarSampler = createSampler("eguitar", { release: 0.35, volume: -9.7 });
+    guitarSampler.connect(guitarHighpass);
   }
+}
+
+/** 本物のギター音源の読み込みが終わっているか。 */
+function guitarSamplerOn(): boolean {
+  return samplerReady(guitarSampler);
 }
 
 function clamp01(v: number): number {
@@ -252,6 +275,10 @@ function scheduleRepluck(midi: number, baseVolumeDb: number, step: number): void
 
 export function guitarHoldOn(midi: number, velocity = 0.85): void {
   ensureGuitar();
+  if (guitarSamplerOn()) {
+    guitarSampler!.triggerAttack(midiToNoteString(midi), undefined, velocity01(velocity));
+    return;
+  }
   // 同じ音が既に鳴っていたらタイマーをクリア (重複再ピック防止)。
   clearRepluckTimer(midi);
   const v = nextVoice();
@@ -268,6 +295,9 @@ export function guitarHoldOn(midi: number, velocity = 0.85): void {
 export function guitarHoldOff(midi: number): void {
   // リプラックタイマーは必ずクリア (キーが離れたら再ピックしない)。
   clearRepluckTimer(midi);
+  if (guitarSamplerOn()) {
+    guitarSampler!.triggerRelease(midiToNoteString(midi));
+  }
   const v = noteToVoice.get(midi);
   if (!v) return;
   noteToVoice.delete(midi);
@@ -282,6 +312,15 @@ export function guitarTriggerNote(
   time?: number,
 ): void {
   ensureGuitar();
+  if (guitarSamplerOn()) {
+    guitarSampler!.triggerAttackRelease(
+      midiToNoteString(midi),
+      Math.max(0.05, durationSec),
+      time,
+      velocity01(velocity),
+    );
+    return;
+  }
   const v = nextVoice();
   v.volume.value =
     (currentGuitarType === "clean" ? -2 : -3) + (clamp01(velocity) - 0.85) * 8;
@@ -321,6 +360,17 @@ export function guitarReleaseAll(): void {
   for (const v of guitarVoices) {
     v.triggerRelease();
   }
+  try {
+    guitarSampler?.releaseAll();
+  } catch {
+    /* noop */
+  }
+}
+
+/** 本物のギター音源を先に読み込んでおく。 */
+export function preloadGuitar(): void {
+  ensureGuitar();
+  ensureLeadGuitar();
 }
 
 // ===========================================================================
@@ -346,6 +396,8 @@ let leadPreGain: Tone.Gain | null = null;
 let leadGain: Tone.Gain | null = null;
 let leadVoices: Tone.PluckSynth[] = [];
 let leadVoiceCursor = 0;
+/** リードギター用の本物のギター音源 (バッキングとは別チェーンで鳴らすので別インスタンス)。 */
+let leadSampler: Tone.Sampler | null = null;
 
 function disposeLeadGuitarInternal(): void {
   for (const v of leadVoices) {
@@ -353,6 +405,9 @@ function disposeLeadGuitarInternal(): void {
     v.dispose();
   }
   leadVoices = [];
+  try { leadSampler?.releaseAll(); } catch { /* noop */ }
+  leadSampler?.dispose();
+  leadSampler = null;
   leadPreGain?.dispose();
   leadDistortion?.dispose();
   leadChebyshev?.dispose();
@@ -417,6 +472,8 @@ function ensureLeadGuitar() {
       v.connect(leadPreGain);
       leadVoices.push(v);
     }
+    leadSampler = createSampler("eguitar", { release: 0.3, volume: -16 });
+    leadSampler.connect(leadPreGain);
   } else {
     // リード用クリーン: コーラスを深めに、リバーブも深めにして "歌う" 雰囲気
     leadReverb = new Tone.Reverb({ decay: 2.6, wet: 0.3 }).connect(getMixerInput("guitar2"));
@@ -443,6 +500,8 @@ function ensureLeadGuitar() {
       v.connect(leadHighpass);
       leadVoices.push(v);
     }
+    leadSampler = createSampler("eguitar", { release: 0.5, volume: -8.7 });
+    leadSampler.connect(leadHighpass);
   }
 }
 
@@ -463,6 +522,15 @@ export function leadGuitarTriggerNote(
   time?: number,
 ): void {
   ensureLeadGuitar();
+  if (samplerReady(leadSampler)) {
+    leadSampler.triggerAttackRelease(
+      midiToNoteString(midi),
+      Math.max(0.05, durationSec),
+      time,
+      velocity01(velocity),
+    );
+    return;
+  }
   const v = nextLeadVoice();
   v.volume.value =
     (currentLeadGuitarType === "clean" ? -1 : -2) + (clamp01(velocity) - 0.85) * 8;
@@ -473,4 +541,5 @@ export function leadGuitarReleaseAll(): void {
   for (const v of leadVoices) {
     try { v.triggerRelease(); } catch { /* noop */ }
   }
+  try { leadSampler?.releaseAll(); } catch { /* noop */ }
 }

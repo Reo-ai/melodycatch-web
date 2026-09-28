@@ -57,6 +57,7 @@ import {
   bassHoldOff,
   bassHoldOn,
   bassReleaseAll,
+  preloadBass,
   setBassType,
   type BassType,
 } from "../audio/bassEngine";
@@ -72,6 +73,7 @@ import {
   guitarHoldOn,
   guitarReleaseAll,
   guitarTriggerNote,
+  preloadGuitar,
   setGuitarType,
   setLeadGuitarType,
   type GuitarType,
@@ -82,7 +84,32 @@ import {
   acousticHoldOn,
   acousticReleaseAll,
   acousticTriggerNote,
+  preloadAcoustic,
 } from "../audio/acousticGuitarEngine";
+import * as Tone from "tone";
+
+/** 本物の楽器音源 (ベース・ギター・アコギ) の読み込みを始める。 */
+function preloadRealInstruments(): void {
+  try {
+    preloadBass();
+    preloadGuitar();
+    preloadAcoustic();
+  } catch (e) {
+    console.warn("楽器音源の先読みに失敗しました", e);
+  }
+}
+
+/**
+ * 楽器音源の読み込み完了を待つ (最大 maxMs)。
+ * 間に合わなければ待たずに進み、読み込み中の楽器はシンセ音で代わりに鳴る。
+ */
+async function waitRealInstruments(maxMs = 5000): Promise<void> {
+  preloadRealInstruments();
+  await Promise.race([
+    Tone.loaded().catch(() => undefined),
+    new Promise((r) => setTimeout(r, maxMs)),
+  ]);
+}
 import {
   isVocalLoaded,
   preloadVocal,
@@ -444,7 +471,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
    */
   const [recordCorrectionMode, setRecordCorrectionMode] = useState<"auto" | "raw">("auto");
   /** ベースのタイプ: ウッド / シンセ / スラップ。 */
-  const [bassType, setBassTypeState] = useState<BassType>("wood");
+  const [bassType, setBassTypeState] = useState<BassType>("finger");
   /** ギターのタイプ: クリーン / ディストーション。 */
   const [guitarType, setGuitarTypeState] = useState<GuitarType>("distortion");
   /** 2 本目のギター (リード) のタイプ。デフォルトはクリーンにして
@@ -897,6 +924,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (audioReady.current) return;
     await ensureAudio();
     audioReady.current = true;
+    // 最初の操作のタイミングで本物の楽器音源の読み込みを始めておく (待たない)
+    preloadRealInstruments();
   }, []);
 
   // ---- 共通 note handler (ピアノ/キーボード/MIDI) ---------------------------
@@ -1680,6 +1709,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   // ---- 再生 -----------------------------------------------------------------
   async function startPlayback() {
     await arm();
+    await waitRealInstruments();
     if (state === "recording") stopRecord();
     cancelProgressionTimers();
     // 録音した内容を再生する間はライブ DrumLoop を止める (二重発音防止)
@@ -1764,6 +1794,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
       await ensureAudio();
       audioReady.current = true;
     }
+    await waitRealInstruments();
     // 10 楽器の選択状態を取り出す
     const w = {
       melody: autoComposeWriteMelody,
@@ -3016,14 +3047,17 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         {/* 音色設定をひとまとめにしたカード */}
         <div className="mt-4 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4">
         <div className="mb-1 text-sm font-semibold text-white">音色</div>
-        {/* ベースタイプ切替: ウッド / シンセ / スラップ */}
+        {/* ベースタイプ切替: リアル (本物の録音) / ウッド / シンセ / スラップ */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-ink-600">🎸 ベース音色:</span>
           <div className="inline-flex overflow-hidden rounded-full border border-ink-200 bg-surface-2">
-            {(["wood", "synth", "slap"] as const).map((t) => {
-              const label = t === "wood" ? "ウッド" : t === "synth" ? "シンセ" : "スラップ";
+            {(["finger", "wood", "synth", "slap"] as const).map((t) => {
+              const label =
+                t === "finger" ? "リアル" : t === "wood" ? "ウッド" : t === "synth" ? "シンセ" : "スラップ";
               const title =
-                t === "wood"
+                t === "finger"
+                  ? "本物のエレキベース (指弾き) を録音した音源"
+                  : t === "wood"
                   ? "アップライト/ウッドベース (丸く太い、歪みなし)"
                   : t === "synth"
                     ? "シンセベース (鋸波・共振フィルタ・パワフル)"
@@ -3051,7 +3085,9 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
             })}
           </div>
           <span className="text-xs text-ink-500">
-            {bassType === "wood"
+            {bassType === "finger"
+              ? "リアル: 本物のエレキベースを指で弾いた録音"
+              : bassType === "wood"
               ? "アップライト風: 木の胴鳴り、丸く短い減衰"
               : bassType === "synth"
                 ? "シンセ風: 鋸波と共振フィルタでパワフル"

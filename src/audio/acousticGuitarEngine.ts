@@ -35,6 +35,7 @@
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 import { getMixerInput } from "./mixer";
+import { createSampler, samplerReady, velocity01 } from "./sampledInstruments";
 
 const VOICE_COUNT = 8;
 
@@ -52,6 +53,12 @@ let acBodyPeak: Tone.Filter | null = null;
 let acHighpass: Tone.Filter | null = null;
 let acGain: Tone.Gain | null = null;
 let acVoices: Tone.PluckSynth[] = [];
+/**
+ * 本物のアコギ (Martin, スチール弦) のサンプル音源。
+ * 録音自体がアコギの音なので、シンセ用の胴鳴り EQ は通さず、低域カットだけしてコーラスの手前に合流させる。
+ * 読み込みが終わるまでは PluckSynth (シンセ) が代わりに鳴る。
+ */
+let acSampler: Tone.Sampler | null = null;
 /** アタックノイズ (ピック/指のスクラッチ) 用。発音時に短時間トリガする。 */
 let acAttackNoise: Tone.NoiseSynth | null = null;
 let voiceCursor = 0;
@@ -76,6 +83,9 @@ function ensureAcoustic() {
     wet: 0.08,
   }).connect(acGain);
   acChorus.start();
+  const samplerHighpass = new Tone.Filter({ frequency: 75, type: "highpass", Q: 0.7 }).connect(acChorus);
+  acSampler = createSampler("acoustic", { release: 0.6, volume: -14 });
+  acSampler.connect(samplerHighpass);
   // 胴の奥での反射 — ディレイ感を控えめに (空間エフェクトを薄く)。
   acDelay = new Tone.FeedbackDelay({
     delayTime: 0.045,
@@ -222,6 +232,10 @@ function scheduleRepluck(midi: number, baseVolumeDb: number, step: number): void
 
 export function acousticHoldOn(midi: number, velocity = 0.85): void {
   ensureAcoustic();
+  if (samplerReady(acSampler)) {
+    acSampler.triggerAttack(midiToNoteString(midi), undefined, velocity01(velocity));
+    return;
+  }
   clearRepluckTimer(midi);
   const v = nextVoice();
   noteToVoice.set(midi, v);
@@ -234,6 +248,7 @@ export function acousticHoldOn(midi: number, velocity = 0.85): void {
 
 export function acousticHoldOff(midi: number): void {
   clearRepluckTimer(midi);
+  if (samplerReady(acSampler)) acSampler.triggerRelease(midiToNoteString(midi));
   const v = noteToVoice.get(midi);
   if (!v) return;
   noteToVoice.delete(midi);
@@ -247,6 +262,15 @@ export function acousticTriggerNote(
   time?: number,
 ): void {
   ensureAcoustic();
+  if (samplerReady(acSampler)) {
+    acSampler.triggerAttackRelease(
+      midiToNoteString(midi),
+      Math.max(0.05, durationSec),
+      time,
+      velocity01(velocity),
+    );
+    return;
+  }
   const v = nextVoice();
   v.volume.value = -2 + (clamp01(velocity) - 0.85) * 8;
   triggerAttackNoise(velocity, time);
@@ -285,4 +309,14 @@ export function acousticReleaseAll(): void {
   for (const v of acVoices) {
     v.triggerRelease();
   }
+  try {
+    acSampler?.releaseAll();
+  } catch {
+    /* noop */
+  }
+}
+
+/** 本物のアコギ音源を先に読み込んでおく。 */
+export function preloadAcoustic(): void {
+  ensureAcoustic();
 }

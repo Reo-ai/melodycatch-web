@@ -13,10 +13,17 @@
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 import { getMixerInput } from "./mixer";
+import { createSampler, samplerReady, velocity01 } from "./sampledInstruments";
 
-export type BassType = "wood" | "synth" | "slap";
+/**
+ * "finger" は実際のエレキベース (指弾き) を録音したサンプル音源。既定値。
+ * 読み込みが終わるまでは "wood" と同じシンセ音で代わりに鳴らす。
+ */
+export type BassType = "finger" | "wood" | "synth" | "slap";
 
-let currentBassType: BassType = "wood";
+let currentBassType: BassType = "finger";
+/** 本物のベースのサンプル音源 (finger のときだけ使う)。 */
+let bassSampler: Tone.Sampler | null = null;
 
 let bassSynth: Tone.PolySynth | null = null;
 let bassHighpass: Tone.Filter | null = null;
@@ -39,6 +46,13 @@ function disposeBass(): void {
     /* noop */
   }
   bassSynth?.dispose();
+  try {
+    bassSampler?.releaseAll();
+  } catch {
+    /* noop */
+  }
+  bassSampler?.dispose();
+  bassSampler = null;
   bassSlapNoise?.dispose();
   bassSlapNoiseFilter?.dispose();
   bassHighpass?.dispose();
@@ -81,7 +95,34 @@ function ensureBass() {
     knee: 6,
   }).connect(bassReverb);
 
-  if (currentBassType === "wood") {
+  if (currentBassType === "finger") {
+    // 本物のベース (指弾き) のサンプル。録音自体が良い音なので EQ は控えめ。
+    bassEq = new Tone.EQ3({
+      low: 1.5,
+      mid: 0,
+      high: -2,
+      lowFrequency: 150,
+      highFrequency: 2500,
+    }).connect(bassCompressor);
+    bassHighpass = new Tone.Filter({
+      frequency: 32,
+      type: "highpass",
+      Q: 0.7,
+    }).connect(bassEq);
+    bassSampler = createSampler("bass", { release: 0.18, volume: 9 });
+    bassSampler.connect(bassHighpass);
+    // 読み込み完了までの代役 (ウッドと同じ丸いシンセ音)。
+    bassSynth = new Tone.PolySynth(Tone.MonoSynth, {
+      oscillator: { type: "triangle" },
+      filter: { Q: 1.4, type: "lowpass", rolloff: -24 },
+      envelope: { attack: 0.012, decay: 0.55, sustain: 0.2, release: 0.6 },
+      filterEnvelope: {
+        attack: 0.004, decay: 0.3, sustain: 0.1, release: 0.4, baseFrequency: 80, octaves: 2.4,
+      },
+      volume: -4,
+    });
+    bassSynth.connect(bassHighpass);
+  } else if (currentBassType === "wood") {
     // ウッドベース (アップライト) — 木の胴鳴り、丸く太い、歪みなし、短い減衰。
     // 低域を強めにブースト、中域は控えめ、高域はバッサリ落とす。
     bassEq = new Tone.EQ3({
@@ -246,13 +287,26 @@ function triggerSlapNoise(velocity: number, time?: number): void {
   }
 }
 
+/** 本物のベース音源が使えるか (finger 選択中 かつ 読み込み完了)。 */
+function bassSamplerOn(): boolean {
+  return currentBassType === "finger" && samplerReady(bassSampler);
+}
+
 export function bassHoldOn(midi: number, velocity = 0.85): void {
   ensureBass();
+  if (bassSamplerOn()) {
+    bassSampler!.triggerAttack(midiToNoteString(midi), undefined, velocity01(velocity));
+    return;
+  }
   triggerSlapNoise(velocity);
   bassSynth?.triggerAttack(midiToNoteString(midi), undefined, velocity);
 }
 
 export function bassHoldOff(midi: number): void {
+  if (bassSamplerOn()) {
+    bassSampler!.triggerRelease(midiToNoteString(midi));
+    return;
+  }
   bassSynth?.triggerRelease(midiToNoteString(midi));
 }
 
@@ -263,6 +317,15 @@ export function bassTriggerNote(
   time?: number,
 ): void {
   ensureBass();
+  if (bassSamplerOn()) {
+    bassSampler!.triggerAttackRelease(
+      midiToNoteString(midi),
+      Math.max(0.05, durationSec),
+      time,
+      velocity01(velocity),
+    );
+    return;
+  }
   triggerSlapNoise(velocity, time);
   bassSynth?.triggerAttackRelease(
     midiToNoteString(midi),
@@ -287,6 +350,10 @@ export function bassChordOn(
   const sorted = [...midiNotes].sort((a, b) => a - b);
   const root = sorted[0] - 12; // ルートを 1 オクターブ下げてベースらしく
   const notes = [root, ...sorted].map(midiToNoteString);
+  if (bassSamplerOn()) {
+    bassSampler!.triggerAttackRelease(notes, Math.max(0.05, duration), undefined, velocity01(velocity));
+    return;
+  }
   triggerSlapNoise(velocity);
   bassSynth.triggerAttackRelease(
     notes,
@@ -298,4 +365,14 @@ export function bassChordOn(
 
 export function bassReleaseAll(): void {
   bassSynth?.releaseAll();
+  try {
+    bassSampler?.releaseAll();
+  } catch {
+    /* noop */
+  }
+}
+
+/** 本物のベース音源を先に読み込んでおく (最初の 1 音から本物の音で鳴らすため)。 */
+export function preloadBass(): void {
+  ensureBass();
 }
