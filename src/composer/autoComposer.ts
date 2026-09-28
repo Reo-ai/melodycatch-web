@@ -1303,6 +1303,10 @@ function generateMelody(
   const memos = new Map<SectionKind, SectionMemo>();
   // memo を作ったセクション。初出セクションの 2 小節目以降を「再現」と誤判定しないために使う。
   const memoOwner = new Map<SectionKind, SongSection>();
+  // セクションごとの輪郭の高さのずらし (曲ごとに少し違う形にする)
+  const contourShiftBySec = new Map<SongSection, number>();
+  // セクションごとの「強拍ごとの上下の動き」(半音)。大きな輪郭の上に小さな起伏を付け、平らな線になるのを防ぐ。
+  const wobbleBySec = new Map<SongSection, number[]>();
 
   // モチーフを「スケール上の段数」で移すための全音域スケール音列。
   // 半音で平行移動するとキー外の音が出るため、度数 (スケール段) 単位で移動する。
@@ -1479,10 +1483,16 @@ function generateMelody(
     let slots: typeof patterns[number];
     let motifBarForRecord: MotifBar | null = null;
     let motifBarForReplay: MotifBar | null = null;
+    // 8 小節以上のセクションの 5〜6 小節目は、モチーフを繰り返さず「新しい盛り上がり」を作る
+    // (A → A' → 盛り上がり → A'' の定番の形。同じ 2 小節を 4 回繰り返すと単調になる)
+    const secLen = sec.endBar - sec.startBar;
+    const isClimaxBar = isMotifSec && secLen >= 8 && (barInSec % 8 === 4 || barInSec % 8 === 5);
     if (isMotifSec && barInSec < 2) {
       slots = pickSingable(patterns, rng);
       motifBarForRecord = { slots, notes: [] };
       motifList!.push(motifBarForRecord);
+    } else if (isClimaxBar) {
+      slots = pickSingable(patterns, rng);
     } else if (isMotifSec && motifList && motifList.length >= 2) {
       motifBarForReplay = motifList[barInSec % 2];
       slots = motifBarForReplay.slots;
@@ -1554,9 +1564,97 @@ function generateMelody(
     // コードが変わるたびにメロディが大きく跳ばないようにする。
     let motifOctShift: number | null = null;
 
-    // ===== 直近 2 音追跡 (anti-stagnation 用) =====
-    let recentSame = 0; // 直近で prevMidi と同じ音を何回続けて鳴らしたか
-    let lastDelta: number | null = null; // 直前のジャンプ量 (leap recovery 用)
+    // ===== メロディの骨組み (輪郭) =====
+    // プロの作曲と同じく「このフレーズの中でどこへ向かうか」を先に決め、
+    //   - 強拍: 輪郭に一番近いコードの音 (前の音からあまり離れないもの)
+    //   - 弱拍: 次の強拍の目標へ 1 音ずつ近づく音 (経過音) / 同じ高さなら隣の音 (刺繍音)
+    // で埋める。ランダムに近い音を選ぶだけだと、線がさまよって「歌」に聞こえない。
+    const chordToneRange = range.filter((m) => chordPCs.has(m % 12));
+    let contourShift = contourShiftBySec.get(sec);
+    if (contourShift === undefined) {
+      contourShift = (rng() - 0.5) * 0.14;
+      contourShiftBySec.set(sec, contourShift);
+    }
+    let wobble = wobbleBySec.get(sec);
+    if (!wobble) {
+      // 強拍 8 個分 (= 4 小節) の起伏。上がって下がる小さな山を 2 つ作る
+      const amp = sec.kind === "verse" ? 3 : 4;
+      const up = () => Math.round(amp * (0.6 + rng() * 0.6));
+      wobble = [0, up(), Math.round(up() / 2), -Math.round(amp / 2), 0, up(), -1, -Math.round(amp / 2)];
+      wobbleBySec.set(sec, wobble);
+    }
+    const contourAt = (frac: number): number => {
+      const phrasePos = ((barInSec % 4) + frac) / 4; // 4 小節フレーズの中の位置 0..1
+      let h: number;
+      if (sec.kind === "chorus") {
+        if (isClimaxBar) {
+          // 盛り上がりの 2 小節: 曲で一番高い所へ
+          h = 0.8 + 0.2 * Math.sin((Math.PI * (((barInSec % 8) - 4) + frac)) / 2);
+        } else {
+          // 高めに始まり、少し上がってから着地へ下りる
+          h = 0.6 + 0.12 * Math.sin(Math.PI * phrasePos) - 0.3 * phrasePos;
+        }
+      } else if (sec.kind === "preChorus") {
+        // サビへ向かってだんだん上がる
+        h = 0.3 + 0.55 * ((barInSec + frac) / Math.max(1, secLen));
+      } else {
+        // Aメロ: 低めで穏やかな山
+        h = 0.3 + 0.22 * Math.sin(Math.PI * phrasePos);
+      }
+      // 大きな輪郭 + 強拍ごとの小さな起伏
+      const k = ((barInSec % 4) * 2 + (frac >= 0.5 ? 1 : 0)) % wobble!.length;
+      const shift = isClimaxBar ? Math.max(0, contourShift) : contourShift;
+      const base = lo + (hi - lo) * Math.max(0.05, Math.min(0.9, h + shift));
+      return Math.max(lo + 1, Math.min(hi - 2, base + wobble![k]));
+    };
+    const nearest = (pool: number[], target: number, prev: number | null, smooth: number): number => {
+      let best = pool[0];
+      let bestScore = Infinity;
+      for (const m of pool) {
+        const score =
+          Math.abs(m - target) +
+          (prev !== null ? smooth * Math.abs(m - prev) : 0) +
+          (prev !== null && m === prev ? 2.5 : 0) + // 同じ音の連続は選ばれにくく
+          rng() * 0.8; // 少しだけ揺らして毎回同じにならないように
+        if (score < bestScore) { bestScore = score; best = m; }
+      }
+      return best;
+    };
+    const pickAlongContour = (i: number): number => {
+      const slotStart = slots.slice(0, i).reduce((a, sl) => a + sl.beats, 0) * beatScale;
+      const target = contourAt(slotStart / 4);
+      const pool = chordToneRange.length > 0 ? chordToneRange : range;
+      if (slots[i].strong || prevMidi === null) {
+        return nearest(pool, target, prevMidi, 0.6);
+      }
+      // 弱拍: 次の強拍 (無ければ次の小節頭) の目標へ向かう
+      let nextStart = 4;
+      for (let j = i + 1; j < slots.length; j++) {
+        if (slots[j].strong && !slots[j].rest) {
+          nextStart = slots.slice(0, j).reduce((a, sl) => a + sl.beats, 0) * beatScale;
+          break;
+        }
+      }
+      const goal = nearest(pool, contourAt(nextStart / 4), prevMidi, 0.4);
+      const dir = Math.sign(goal - prevMidi);
+      // 音域の天井 / 床で同じ音に張り付かないよう、動けなければ逆向きに 1 音動く
+      const stepOrBounce = (from: number, d: number): number => {
+        const n = stepInScaleRange(from, d);
+        return n !== from ? n : stepInScaleRange(from, -d);
+      };
+      if (dir === 0) {
+        // 同じ高さへ戻るなら隣の音 (上か下) を挟む
+        return stepOrBounce(prevMidi, rng() < 0.6 ? 1 : -1);
+      }
+      // 目標まで遠いときはコードの音で間を詰める、近いときは 1 音ずつ進む
+      const stepsLeft = Math.abs(range.indexOf(goal) - range.indexOf(prevMidi));
+      if (stepsLeft >= 4) {
+        const mid = (prevMidi + goal) / 2;
+        const between = pool.filter((m) => (m - prevMidi!) * dir > 0 && (goal - m) * dir >= 0);
+        if (between.length > 0) return nearest(between, mid, prevMidi, 0);
+      }
+      return stepOrBounce(prevMidi, dir);
+    };
 
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
@@ -1564,14 +1662,6 @@ function generateMelody(
       if (slot.rest) {
         t += slotDurSec;
         continue;
-      }
-
-      let candidates: number[];
-      if (slot.strong) {
-        candidates = range.filter((m) => chordPCs.has(m % 12));
-        if (candidates.length === 0) candidates = range;
-      } else {
-        candidates = range;
       }
 
       let pickMidi: number;
@@ -1583,22 +1673,30 @@ function generateMelody(
         if (rec) {
           let si = rootStep + rec.stepsFromRoot;
           if (motifOctShift === null) {
+            // 小節のモチーフ全体が音域に一番よく収まるオクターブを選ぶ
+            // (1 音目だけで決めると、後ろの音が音域からはみ出て天井に張り付く)。
+            // 収まり具合が同じなら、直前の音に近い方。
             motifOctShift = 0;
-            if (prevMidi != null) {
-              let bestD = Infinity;
-              for (let k = -2; k <= 2; k++) {
-                const cand = allTones[si + k * stepsPerOctave];
-                if (cand === undefined || cand < lo || cand > hi) continue;
-                const d = Math.abs(cand - prevMidi);
-                if (d < bestD) { bestD = d; motifOctShift = k; }
+            let bestCost = Infinity;
+            for (let k = -2; k <= 2; k++) {
+              let cost = 0;
+              for (const nn of motifBarForReplay.notes) {
+                const m = allTones[rootStep + nn.stepsFromRoot + k * stepsPerOctave];
+                if (m === undefined) { cost += 100; continue; }
+                if (m > hi) cost += (m - hi) * 3;
+                if (m < lo) cost += (lo - m) * 3;
               }
+              const first = allTones[si + k * stepsPerOctave];
+              if (first !== undefined && prevMidi != null) cost += Math.abs(first - prevMidi) * 0.3;
+              if (cost < bestCost) { bestCost = cost; motifOctShift = k; }
             }
           }
           si += motifOctShift * stepsPerOctave;
           si = Math.max(0, Math.min(allTones.length - 1, si));
           // 音域外は 1 オクターブ折り返すと跳躍になるので、音域の端に留める
-          while (allTones[si] < lo && si + 1 < allTones.length) si++;
-          while (allTones[si] > hi && si - 1 >= 0) si--;
+          // 少し (3 半音まで) はみ出すのは許す。天井 / 床に張り付けると同じ音の連打になるため
+          while (allTones[si] < lo - 3 && si + 1 < allTones.length) si++;
+          while (allTones[si] > hi + 3 && si - 1 >= 0) si--;
           const m0 = allTones[si];
           let m = m0;
           if (m >= lo && m <= hi) {
@@ -1657,59 +1755,14 @@ function generateMelody(
         sec.kind === "chorus" && barInSec === 0 && i === 0 && !isReplay;
       if (motifReplayPitch !== null) {
         pickMidi = motifReplayPitch;
-      } else if (isChorusHookOpener) {
-        const hookCands = range.filter((m) => chordPCs.has(m % 12) && m >= 72); // C5 以上
-        const fallback = range.filter((m) => chordPCs.has(m % 12));
-        const src = hookCands.length > 0 ? hookCands : (fallback.length > 0 ? fallback : range);
-        pickMidi = src[Math.floor(src.length * 0.7)] ?? src[src.length - 1];
-      } else if (prevMidi === null) {
-        // 最初は中央付近のコードトーン
-        const mids = candidates.filter((m) => chordPCs.has(m % 12));
-        pickMidi = (mids.length > 0 ? mids : candidates)[
-          Math.floor((mids.length > 0 ? mids.length : candidates.length) / 2)
-        ];
       } else {
-        // フレーズの形: アーチ contour (前半 climb, 中盤 peak, 後半 descend)
-        // peak を 60% 位置に置くことで「自然な弧」を作る。
-        const phasePos = (i / Math.max(1, slots.length - 1)); // 0..1
-        const peakPos = 0.6;
-        const climbBias = phasePos < peakPos ? +0.45 : -0.45;
-        // ===== leap recovery: 直前が大きく跳ねたら逆方向 step を強制バイアス =====
-        const leapRecoverDir =
-          lastDelta != null && Math.abs(lastDelta) >= 5
-            ? (lastDelta > 0 ? -1 : +1)
-            : 0;
-        const weights = candidates.map((m) => {
-          const d = m - (prevMidi as number);
-          const ad = Math.abs(d);
-          // ステップワイズ優先 (±2 半音内が最大)
-          let w = ad === 0 ? 0.30 : ad > 9 ? 0.02 : ad > 5 ? 0.18 : ad > 2 ? 0.55 : 1.0;
-          // セクション形に沿った方向バイアス
-          if ((climbBias > 0 && d > 0) || (climbBias < 0 && d < 0)) w *= 1.4;
-          // leap recovery: 直前が leap なら逆方向 step を大きく押し上げる
-          if (leapRecoverDir !== 0 && d !== 0) {
-            const sameDir = (leapRecoverDir > 0 && d > 0) || (leapRecoverDir < 0 && d < 0);
-            if (sameDir && ad <= 3) w *= 2.4;
-            else if (!sameDir && ad > 4) w *= 0.15;
-          }
-          // 直前と同じ音が 2 回以上続いたら 3 回目は強く抑制
-          if (recentSame >= 1 && d === 0) w *= 0.05;
-          // 弱拍で「コードトーンへの半音/全音アプローチ」を加点 (passing/neighbor)
-          if (!slot.strong && !chordPCs.has(m % 12) && ad <= 2 && ad >= 1) {
-            w *= 1.3;
-          }
-          // 強拍がコードトーンの場合、prev から近いコードトーンを優先
-          if (slot.strong && chordPCs.has(m % 12)) {
-            if (ad <= 4) w *= 1.5;
-          }
-          return w;
-        });
-        pickMidi = pickWeighted(candidates, weights, rng);
+        pickMidi = pickAlongContour(i);
       }
 
       const isLastSlot = i === slots.length - 1;
       // セクション最終小節の最後の音はロング解決
-      let dur = slotDurSec * 0.92;
+      const nextIsRest = i + 1 < slots.length && slots[i + 1].rest;
+      let dur = slotDurSec * (nextIsRest ? 0.9 : 0.98); // 歌のようにつなげる (休符の前だけ切る)
       if (isLastSlot && isLastInSec) {
         dur = slotDurSec * 1.4;
       } else if (isLastSlot) {
@@ -1743,12 +1796,6 @@ function generateMelody(
           slotIndex: i,
           stepsFromRoot: scaleStepIndex(allTones, pickMidi) - rootStep,
         });
-      }
-      // leap recovery / anti-stagnation 用の追跡更新
-      if (prevMidi != null) {
-        lastDelta = pickMidi - prevMidi;
-        if (pickMidi === prevMidi) recentSame++;
-        else recentSame = 0;
       }
       prevMidi = pickMidi;
       t += slotDurSec;
