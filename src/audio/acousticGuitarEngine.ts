@@ -69,7 +69,7 @@ const REPLUCK_DELAY_MS = 1300;
 const REPLUCK_DECAY_DB = -2;
 
 function ensureAcoustic() {
-  if (acVoices.length > 0) return;
+  if (acHighpass) return;
   // 終段: Reverb → Destination
   acReverb = new Tone.Reverb({ decay: 3.0, wet: 0.3 }).connect(getMixerInput("acoustic"));
   acGain = new Tone.Gain(0.58).connect(acReverb);
@@ -152,20 +152,8 @@ function ensureAcoustic() {
     type: "highpass",
   }).connect(acBodyPeak);
 
-  for (let i = 0; i < VOICE_COUNT; i++) {
-    const v = new Tone.PluckSynth({
-      // 指/ピックの摩擦音を抑えめにしてエレクトロっぽい鋭さを避ける。
-      attackNoise: 1.3,
-      // dampening を下げて高域を早めに減衰 → エレキ的な「シャリーン」を抑える。
-      dampening: 3800,
-      // サステインは鉄弦アコギらしくゆっくりめに。
-      resonance: 0.992,
-      release: 1.2,
-    });
-    v.volume.value = -2;
-    v.connect(acHighpass);
-    acVoices.push(v);
-  }
+  // 代わりのシンセ音 (PluckSynth) は鳴っていなくても常に計算し続けるので、ここでは作らない。
+  // 本物の音源が読み込めていない時に nextVoice() で初めて作る。
 
   // アタックノイズ: 指/ピックで弦を弾いた瞬間の摩擦音。
   // エレキっぽい鋭さを抑えるため、HPF を下げて全体音量も控えめにする。
@@ -201,7 +189,27 @@ function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
+/** 代わりのシンセ音を必要になった時にだけ作る。 */
+function ensureAcousticVoices(): void {
+  if (acVoices.length > 0 || !acHighpass) return;
+  for (let i = 0; i < VOICE_COUNT; i++) {
+    const v = new Tone.PluckSynth({
+      // 指/ピックの摩擦音を抑えめにしてエレクトロっぽい鋭さを避ける。
+      attackNoise: 1.3,
+      // dampening を下げて高域を早めに減衰 → エレキ的な「シャリーン」を抑える。
+      dampening: 3800,
+      // サステインは鉄弦アコギらしくゆっくりめに。
+      resonance: 0.992,
+      release: 1.2,
+    });
+    v.volume.value = -2;
+    v.connect(acHighpass);
+    acVoices.push(v);
+  }
+}
+
 function nextVoice(): Tone.PluckSynth {
+  ensureAcousticVoices();
   const v = acVoices[voiceCursor];
   voiceCursor = (voiceCursor + 1) % acVoices.length;
   return v;

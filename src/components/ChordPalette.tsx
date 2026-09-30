@@ -1,3 +1,4 @@
+import { memo } from "react";
 /**
  * Diatonic chord palette: a row of chord buttons for the active scale.
  *
@@ -97,7 +98,7 @@ const PIANO_PATTERN_LABELS: Record<PianoPatternId, { num: string; jp: string }> 
   piano10: { num: "10", jp: "チャールストン (1 / &2 / 3 / &4・コード全弾き)" },
 };
 
-export default function ChordPalette({
+function ChordPalette({
   scale,
   onPlayChord,
   onPlayPattern,
@@ -239,3 +240,6 @@ export default function ChordPalette({
     </div>
   );
 }
+
+// 渡されたデータが変わった時だけ描き直す (親の Studio が再生中に頻繁に描き直されても巻き込まれないように)
+export default memo(ChordPalette);

@@ -86,14 +86,17 @@ function ensureBass() {
   if (bassSynth) return;
 
   // 共通の終段。
-  bassReverb = new Tone.Reverb({ decay: 0.6, wet: 0.04 }).connect(getMixerInput("bass"));
+  // 残響は 4% しか混ぜておらず聞こえないのに、残響 (畳み込み) は処理が重いので使わない。
+  // (bassReverb は後片付けの都合で変数だけ残し、ここでは素通しの Gain を置く)
+  bassReverb = null;
+  const bassOut = new Tone.Gain(1).connect(getMixerInput("bass"));
   bassCompressor = new Tone.Compressor({
     threshold: -18,
     ratio: 3.5,
     attack: 0.006,
     release: 0.12,
     knee: 6,
-  }).connect(bassReverb);
+  }).connect(bassOut);
 
   if (currentBassType === "finger") {
     // 本物のベース (指弾き) のサンプル。録音自体が良い音なので EQ は控えめ。

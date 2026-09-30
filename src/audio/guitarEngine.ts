@@ -44,8 +44,26 @@ let guitarGain: Tone.Gain | null = null;
  * 読み込みが終わるまでは下の PluckSynth (シンセ) が代わりに鳴る。
  */
 let guitarSampler: Tone.Sampler | null = null;
-/** ラウンドロビンで使う PluckSynth ボイス。 */
+/** ラウンドロビンで使う PluckSynth ボイス (本物の音源が読み込めていない時だけ作る)。 */
 let guitarVoices: Tone.PluckSynth[] = [];
+/**
+ * PluckSynth は鳴っていなくても常に計算し続ける (内部で AudioWorklet を使う) ため、
+ * 最初から 8 個作っておくと、本物の音源で鳴らしている間もずっと処理が重くなる。
+ * 代わりの音が本当に必要になった時にだけ作る。ここにはその接続先と設定を覚えておく。
+ */
+let guitarVoiceTarget: Tone.InputNode | null = null;
+let guitarVoiceOpts: { attackNoise: number; dampening: number; resonance: number; release: number; volume: number } | null = null;
+
+function ensureGuitarVoices(): void {
+  if (guitarVoices.length > 0 || !guitarVoiceTarget || !guitarVoiceOpts) return;
+  const { volume, ...opts } = guitarVoiceOpts;
+  for (let i = 0; i < VOICE_COUNT; i++) {
+    const v = new Tone.PluckSynth(opts);
+    v.volume.value = volume;
+    v.connect(guitarVoiceTarget);
+    guitarVoices.push(v);
+  }
+}
 let voiceCursor = 0;
 /** 同じ MIDI ノートが現在どのボイスで鳴っているか (HoldOff 用)。 */
 const noteToVoice: Map<number, Tone.PluckSynth> = new Map();
@@ -70,6 +88,8 @@ function disposeGuitar(): void {
     v.dispose();
   }
   guitarVoices = [];
+  guitarVoiceTarget = null;
+  guitarVoiceOpts = null;
   try {
     guitarSampler?.releaseAll();
   } catch {
@@ -106,7 +126,7 @@ function disposeGuitar(): void {
 
 /** ギターのサウンドタイプを切り替える。再生中の音は止めて内部チェーンを作り直す。 */
 export function setGuitarType(type: GuitarType): void {
-  if (type === currentGuitarType && guitarVoices.length > 0) return;
+  if (type === currentGuitarType && guitarSampler) return;
   disposeGuitar();
   currentGuitarType = type;
   // 次回の発音で ensureGuitar() が新しいタイプで作り直す。
@@ -117,7 +137,7 @@ export function getGuitarType(): GuitarType {
 }
 
 function ensureGuitar() {
-  if (guitarVoices.length > 0) return;
+  if (guitarSampler) return;
 
   if (currentGuitarType === "distortion") {
     // ハードロック系エレキ (現行の挙動)。
@@ -160,17 +180,8 @@ function ensureGuitar() {
     // 歪み段を稼ぐためのプリゲイン。
     guitarPreGain = new Tone.Gain(2.0).connect(guitarDistortion);
 
-    for (let i = 0; i < VOICE_COUNT; i++) {
-      const v = new Tone.PluckSynth({
-        attackNoise: 1.8,
-        dampening: 4200,
-        resonance: 0.97,
-        release: 0.6,
-      });
-      v.volume.value = -3;
-      v.connect(guitarPreGain);
-      guitarVoices.push(v);
-    }
+    guitarVoiceTarget = guitarPreGain;
+    guitarVoiceOpts = { attackNoise: 1.8, dampening: 4200, resonance: 0.97, release: 0.6, volume: -3 };
     guitarSampler = createSampler("eguitar", { release: 0.25, volume: -16 });
     guitarSampler.connect(guitarPreGain);
   } else {
@@ -211,19 +222,9 @@ function ensureGuitar() {
       type: "highpass",
     }).connect(guitarBodyPeak);
 
-    for (let i = 0; i < VOICE_COUNT; i++) {
-      const v = new Tone.PluckSynth({
-        // クリーンは指弾き〜軽いピッキングをイメージしてアタックを控えめに。
-        attackNoise: 1.4,
-        // 高域は早めに減衰させて耳に痛いシャリ感を避ける。
-        dampening: 4600,
-        resonance: 0.975,
-        release: 0.7,
-      });
-      v.volume.value = -2;
-      v.connect(guitarHighpass);
-      guitarVoices.push(v);
-    }
+    // クリーンは指弾き〜軽いピッキングをイメージしてアタックを控えめに、高域は早めに減衰。
+    guitarVoiceTarget = guitarHighpass;
+    guitarVoiceOpts = { attackNoise: 1.4, dampening: 4600, resonance: 0.975, release: 0.7, volume: -2 };
     guitarSampler = createSampler("eguitar", { release: 0.35, volume: -9.7 });
     guitarSampler.connect(guitarHighpass);
   }
@@ -240,6 +241,7 @@ function clamp01(v: number): number {
 
 /** 次に使うボイスを取得 (ラウンドロビン)。 */
 function nextVoice(): Tone.PluckSynth {
+  ensureGuitarVoices();
   const v = guitarVoices[voiceCursor];
   voiceCursor = (voiceCursor + 1) % guitarVoices.length;
   return v;
@@ -396,6 +398,20 @@ let leadPreGain: Tone.Gain | null = null;
 let leadGain: Tone.Gain | null = null;
 let leadVoices: Tone.PluckSynth[] = [];
 let leadVoiceCursor = 0;
+/** リードの代わりの音も、必要になった時にだけ作る (上のバッキングと同じ理由)。 */
+let leadVoiceTarget: Tone.InputNode | null = null;
+let leadVoiceOpts: { attackNoise: number; dampening: number; resonance: number; release: number; volume: number } | null = null;
+
+function ensureLeadVoices(): void {
+  if (leadVoices.length > 0 || !leadVoiceTarget || !leadVoiceOpts) return;
+  const { volume, ...opts } = leadVoiceOpts;
+  for (let i = 0; i < VOICE_COUNT; i++) {
+    const v = new Tone.PluckSynth(opts);
+    v.volume.value = volume;
+    v.connect(leadVoiceTarget);
+    leadVoices.push(v);
+  }
+}
 /** リードギター用の本物のギター音源 (バッキングとは別チェーンで鳴らすので別インスタンス)。 */
 let leadSampler: Tone.Sampler | null = null;
 
@@ -405,6 +421,8 @@ function disposeLeadGuitarInternal(): void {
     v.dispose();
   }
   leadVoices = [];
+  leadVoiceTarget = null;
+  leadVoiceOpts = null;
   try { leadSampler?.releaseAll(); } catch { /* noop */ }
   leadSampler?.dispose();
   leadSampler = null;
@@ -431,7 +449,7 @@ function disposeLeadGuitarInternal(): void {
 }
 
 export function setLeadGuitarType(type: GuitarType): void {
-  if (type === currentLeadGuitarType && leadVoices.length > 0) return;
+  if (type === currentLeadGuitarType && leadSampler) return;
   disposeLeadGuitarInternal();
   currentLeadGuitarType = type;
 }
@@ -441,7 +459,7 @@ export function getLeadGuitarType(): GuitarType {
 }
 
 function ensureLeadGuitar() {
-  if (leadVoices.length > 0) return;
+  if (leadSampler) return;
 
   if (currentLeadGuitarType === "distortion") {
     // リード用ディストーション: バッキングより少し明るめ、リバーブやや深め
@@ -461,17 +479,8 @@ function ensureLeadGuitar() {
     leadDistortion = new Tone.Distortion({ distortion: 0.78, oversample: "4x", wet: 1.0 }).connect(leadChebyshev);
     leadPreGain = new Tone.Gain(1.9).connect(leadDistortion);
 
-    for (let i = 0; i < VOICE_COUNT; i++) {
-      const v = new Tone.PluckSynth({
-        attackNoise: 1.6,
-        dampening: 4500,
-        resonance: 0.975,
-        release: 0.7,
-      });
-      v.volume.value = -2;
-      v.connect(leadPreGain);
-      leadVoices.push(v);
-    }
+    leadVoiceTarget = leadPreGain;
+    leadVoiceOpts = { attackNoise: 1.6, dampening: 4500, resonance: 0.975, release: 0.7, volume: -2 };
     leadSampler = createSampler("eguitar", { release: 0.3, volume: -16 });
     leadSampler.connect(leadPreGain);
   } else {
@@ -489,23 +498,15 @@ function ensureLeadGuitar() {
     leadBodyPeak = new Tone.Filter({ frequency: 220, type: "peaking", Q: 1.0, gain: 1.5 }).connect(leadMidPeak);
     leadHighpass = new Tone.Filter({ frequency: 90, type: "highpass" }).connect(leadBodyPeak);
 
-    for (let i = 0; i < VOICE_COUNT; i++) {
-      const v = new Tone.PluckSynth({
-        attackNoise: 1.3,
-        dampening: 4800,
-        resonance: 0.98,
-        release: 0.9,
-      });
-      v.volume.value = -1;
-      v.connect(leadHighpass);
-      leadVoices.push(v);
-    }
+    leadVoiceTarget = leadHighpass;
+    leadVoiceOpts = { attackNoise: 1.3, dampening: 4800, resonance: 0.98, release: 0.9, volume: -1 };
     leadSampler = createSampler("eguitar", { release: 0.5, volume: -8.7 });
     leadSampler.connect(leadHighpass);
   }
 }
 
 function nextLeadVoice(): Tone.PluckSynth {
+  ensureLeadVoices();
   const v = leadVoices[leadVoiceCursor];
   leadVoiceCursor = (leadVoiceCursor + 1) % leadVoices.length;
   return v;

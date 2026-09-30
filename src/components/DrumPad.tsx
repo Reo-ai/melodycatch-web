@@ -18,6 +18,7 @@ import {
   useMemo,
   useRef,
   useState,
+  memo,
 } from "react";
 import {
   clonePattern,
@@ -278,7 +279,8 @@ const DrumPad = forwardRef<DrumPadHandle, DrumPadProps>(function DrumPad(
   );
 });
 
-export default DrumPad;
+// 渡されたデータが変わった時だけ描き直す
+export default memo(DrumPad);
 
 function EditableStepRow({
   label,

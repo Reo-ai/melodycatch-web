@@ -514,6 +514,30 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
   const [state, setState] = useState<ArmState>("idle");
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
   const [playbackHighlight, setPlaybackHighlight] = useState<Set<number>>(new Set());
+  // 再生中に鍵盤を光らせる処理は、音が 1 つ鳴るたびに画面全体を描き直していた
+  // (7 パートで毎秒 70 回以上 → 画面が固まる)。鍵盤に出すパート (メロディ・コード・ベース) だけにし、
+  // 0.1 秒ごとにまとめて 1 回だけ描き直す。
+  const hlPendingRef = useRef<Map<number, boolean>>(new Map());
+  const hlTimerRef = useRef<number | null>(null);
+  const queueHighlight = useCallback((layerId: string, midi: number, on: boolean) => {
+    if (layerId !== "melody" && layerId !== "chord" && layerId !== "bass") return;
+    hlPendingRef.current.set(midi, on);
+    if (hlTimerRef.current !== null) return;
+    hlTimerRef.current = window.setTimeout(() => {
+      hlTimerRef.current = null;
+      const pending = hlPendingRef.current;
+      hlPendingRef.current = new Map();
+      setPlaybackHighlight((cur) => {
+        let changed = false;
+        const next = new Set(cur);
+        for (const [m, isOn] of pending) {
+          if (isOn && !next.has(m)) { next.add(m); changed = true; }
+          if (!isOn && next.has(m)) { next.delete(m); changed = true; }
+        }
+        return changed ? next : cur;
+      });
+    }, 100);
+  }, []);
   const [activeChordIndex, setActiveChordIndex] = useState<number | null>(null);
   const [spotlightLabel, setSpotlightLabel] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -1595,19 +1619,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (fx.notes.length > 0) otherLayers.push(fx);
     if (otherLayers.length > 0) {
       const overdub = new Playback(otherLayers, {
-        onNoteOn: (_id, m) =>
-          setPlaybackHighlight((cur) => {
-            const next = new Set(cur);
-            next.add(m);
-            return next;
-          }),
-        onNoteOff: (_id, m) =>
-          setPlaybackHighlight((cur) => {
-            if (!cur.has(m)) return cur;
-            const next = new Set(cur);
-            next.delete(m);
-            return next;
-          }),
+        onNoteOn: (id, m) => queueHighlight(id, m, true),
+        onNoteOff: (id, m) => queueHighlight(id, m, false),
       });
       overdubRef.current = overdub;
       overdub.start();
@@ -1778,19 +1791,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     );
     if (layers.length === 0) return;
     const pb = new Playback(layers, {
-      onNoteOn: (_id, m) =>
-        setPlaybackHighlight((cur) => {
-          const next = new Set(cur);
-          next.add(m);
-          return next;
-        }),
-      onNoteOff: (_id, m) =>
-        setPlaybackHighlight((cur) => {
-          if (!cur.has(m)) return cur;
-          const next = new Set(cur);
-          next.delete(m);
-          return next;
-        }),
+      onNoteOn: (id, m) => queueHighlight(id, m, true),
+      onNoteOff: (id, m) => queueHighlight(id, m, false),
       onEnd: () => {
         setPlaying(false);
         setPlaybackHighlight(new Set());
@@ -2035,9 +2037,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
 
     // 既に走っている flush timer があれば止めてから開始 (二重起動防止)
     stopAutoComposeFlush();
+    // 画面の更新は 0.25 秒ごと (7 パートぶんの音符を毎回描き直すので、細かすぎると画面が固まる)
     autoComposeFlushTimerRef.current = window.setInterval(
       flushAutoComposeBuffer,
-      100,
+      250,
     ) as unknown as number;
 
     const session = new AutoComposeSession(

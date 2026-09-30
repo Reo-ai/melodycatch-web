@@ -20,7 +20,7 @@
  *   onNoteOn / onNoteOff: 既存の handleNoteOn/Off と互換のシグネチャ
  */
 
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, memo } from "react";
 import {
   CHORD_INTERVALS,
   chordSymbol,
@@ -50,7 +50,7 @@ interface ChordTonePianoProps {
 const DEFAULT_BASS_MIDI = 21; // A0
 const DEFAULT_OCTAVE_SPAN = 8;
 
-export default function ChordTonePiano({
+function ChordTonePiano({
   scale,
   chord,
   bassMidi = DEFAULT_BASS_MIDI,
@@ -201,3 +201,6 @@ export default function ChordTonePiano({
     </div>
   );
 }
+
+// 渡されたデータが変わった時だけ描き直す (親の Studio が再生中に頻繁に描き直されても巻き込まれないように)
+export default memo(ChordTonePiano);

@@ -10,7 +10,7 @@
  *     - keys highlighted as the suggested chord (`spotlightNotes`)
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, memo } from "react";
 import { isBlackKey, noteName, pitchClass } from "../music/pitch";
 import type { Scale } from "../music/scale";
 import { scaleContains } from "../music/scale";
@@ -36,7 +36,7 @@ interface PianoProps {
   initialCenterMidi?: number;
 }
 
-export default function Piano({
+function Piano({
   scale,
   activeNotes,
   spotlightNotes,
@@ -245,3 +245,6 @@ export default function Piano({
     </div>
   );
 }
+
+// 渡されたデータが変わった時だけ描き直す (親の Studio が再生中に頻繁に描き直されても巻き込まれないように)
+export default memo(Piano);

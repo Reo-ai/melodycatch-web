@@ -23,7 +23,7 @@
  *   - Cmd / Ctrl 押しながら   → スナップを一時無効化 (自由位置で配置可能)
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, memo } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { Layer, LayerId } from "../audio/recorder";
 import {
@@ -274,7 +274,7 @@ interface MarqueeDrag {
 
 type Drag = MoveDrag | ResizeDrag | MarqueeDrag;
 
-export default function PianoRoll({
+function PianoRoll({
   melody,
   chord,
   drum,
@@ -1713,3 +1713,6 @@ export default function PianoRoll({
     </div>
   );
 }
+
+// 渡されたデータが変わった時だけ描き直す (親の Studio が再生中に頻繁に描き直されても巻き込まれないように)
+export default memo(PianoRoll);

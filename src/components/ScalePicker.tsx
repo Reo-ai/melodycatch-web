@@ -1,3 +1,4 @@
+import { memo } from "react";
 /**
  * Header-style picker for choosing the key (root) and scale kind.
  *
@@ -20,7 +21,7 @@ interface ScalePickerProps {
   onChange: (scale: Scale) => void;
 }
 
-export default function ScalePicker({ scale, onChange }: ScalePickerProps) {
+function ScalePicker({ scale, onChange }: ScalePickerProps) {
   function setRoot(rootPitchClass: number) {
     onChange({ ...scale, rootPitchClass });
   }
@@ -85,3 +86,6 @@ export default function ScalePicker({ scale, onChange }: ScalePickerProps) {
     </div>
   );
 }
+
+// 渡されたデータが変わった時だけ描き直す (親の Studio が再生中に頻繁に描き直されても巻き込まれないように)
+export default memo(ScalePicker);

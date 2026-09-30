@@ -7,7 +7,7 @@
  *   sequentially with a gentle gap so the user hears the harmonic motion.
  */
 
-import { useState } from "react";
+import { useState, memo } from "react";
 import { chordSymbol, chordVoicing, type HarmonicChord } from "../music/chord";
 import type { Scale } from "../music/scale";
 import {
@@ -37,7 +37,7 @@ interface ProgressionListProps {
   onProgressionEnd: () => void;
 }
 
-export default function ProgressionList({
+function ProgressionList({
   scale,
   bpm,
   onPlayChord,
@@ -104,3 +104,6 @@ export default function ProgressionList({
     </div>
   );
 }
+
+// 渡されたデータが変わった時だけ描き直す (親の Studio が再生中に頻繁に描き直されても巻き込まれないように)
+export default memo(ProgressionList);

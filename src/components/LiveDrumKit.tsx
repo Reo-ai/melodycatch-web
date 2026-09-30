@@ -12,7 +12,7 @@
  * - `onHit(midi, velocity)` を発火して親 (Studio) の録音システムと連動
  */
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, memo } from "react";
 import {
   DRUM_CLAP_MIDI,
   DRUM_CRASH_MIDI,
@@ -154,7 +154,7 @@ interface LiveDrumKitProps {
   armed?: boolean;
 }
 
-export default function LiveDrumKit({ onHit, armed = false }: LiveDrumKitProps) {
+function LiveDrumKit({ onHit, armed = false }: LiveDrumKitProps) {
   const flashRef = useRef<Map<number, number>>(new Map());
   const onHitRef = useRef<typeof onHit>(undefined);
 
@@ -294,3 +294,6 @@ function DrumButton({
     </button>
   );
 }
+
+// 渡されたデータが変わった時だけ描き直す (親の Studio が再生中に頻繁に描き直されても巻き込まれないように)
+export default memo(LiveDrumKit);
