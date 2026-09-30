@@ -84,7 +84,7 @@ function ensureAcoustic() {
   }).connect(acGain);
   acChorus.start();
   const samplerHighpass = new Tone.Filter({ frequency: 75, type: "highpass", Q: 0.7 }).connect(acChorus);
-  acSampler = createSampler("acoustic", { release: 0.6, volume: -14 });
+  acSampler = createSampler("acoustic", { release: 0.6, volume: -9 });
   acSampler.connect(samplerHighpass);
   // 胴の奥での反射 — ディレイ感を控えめに (空間エフェクトを薄く)。
   acDelay = new Tone.FeedbackDelay({

@@ -42,7 +42,7 @@ function ensureLead(): void {
   // バイオリン: 低い胴鳴りを整理し、声の「抜け」の帯域 (3kHz 付近) を少し持ち上げる
   const vPresence = new Tone.Filter({ type: "peaking", frequency: 3000, Q: 0.9, gain: 2 }).connect(delay);
   const vHighpass = new Tone.Filter({ type: "highpass", frequency: 180, Q: 0.7 }).connect(vPresence);
-  violin = createSampler("violin", { attack: 0.04, release: 0.35, volume: 0 });
+  violin = createSampler("violin", { attack: 0.04, release: 0.35, volume: 4 });
   violin.connect(vHighpass);
 
   // ギター: 歪み → 低域を削る → 耳に痛い高域を丸める → コーラスで広げる
@@ -50,7 +50,7 @@ function ensureLead(): void {
   const gLowpass = new Tone.Filter({ type: "lowpass", frequency: 5200, Q: 0.6, rolloff: -24 }).connect(gChorus);
   const gHighpass = new Tone.Filter({ type: "highpass", frequency: 140, Q: 0.7 }).connect(gLowpass);
   const gDrive = new Tone.Distortion({ distortion: 0.55, oversample: "4x", wet: 1 }).connect(gHighpass);
-  guitar = createSampler("eguitar", { attack: 0.005, release: 0.4, volume: -19 });
+  guitar = createSampler("eguitar", { attack: 0.005, release: 0.4, volume: -15 });
   guitar.connect(gDrive);
 }
 

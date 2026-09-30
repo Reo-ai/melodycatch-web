@@ -46,7 +46,7 @@ function ensureStrings() {
   stringsReverb = new Tone.Reverb({ decay: 2.8, preDelay: 0.02, wet: 0.3 }).connect(getMixerInput("synth"));
   const highpass = new Tone.Filter({ frequency: 60, type: "highpass", Q: 0.7 }).connect(stringsReverb);
   // 弓で弾き始める自然な立ち上がり (attack) と、弓を離したあとの余韻 (release)
-  stringsSampler = createSampler("strings", { attack: 0.08, release: 0.9, volume: 0 });
+  stringsSampler = createSampler("strings", { attack: 0.08, release: 0.9, volume: -2 });
   stringsSampler.connect(highpass);
 }
 

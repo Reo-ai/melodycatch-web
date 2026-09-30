@@ -5567,10 +5567,15 @@ function* composeSteps(opts: AutoComposeOptions): Generator<void, ComposedSong, 
 
   // セクション × 楽器のアレンジを適用 (イントロでドラム休符など) → 人間らしい揺れを加える
   const hRng = makeRng((seed ^ 0x9e3779b9) >>> 0);
+  // 伴奏系 (ピアノ / ギター / アコギ / パッド) は、Aメロ等で強さが 0.2 前後まで下がり
+  // ほぼ聞こえなくなっていた。強弱の差は残したまま、弱すぎる音だけを底上げする。
+  const LIFT: Partial<Record<ArrangeLayer, boolean>> = { chord: true, guitar: true, acoustic: true, synth: true };
+  const lift = (notes: NoteEvent[], layer: ArrangeLayer) =>
+    LIFT[layer] ? notes.map((n) => ({ ...n, velocity: Math.min(1, 0.3 + 0.7 * n.velocity) })) : notes;
   const finish = (notes: NoteEvent[], layer: ArrangeLayer, kind: HumanizeKind) =>
     opts.humanize === false
-      ? applyArrangement(notes, layer, sections, bpm, style)
-      : humanizeNotes(applyArrangement(notes, layer, sections, bpm, style), kind, bpm, hRng);
+      ? lift(applyArrangement(notes, layer, sections, bpm, style), layer)
+      : humanizeNotes(lift(applyArrangement(notes, layer, sections, bpm, style), layer), kind, bpm, hRng);
   const arrMelody = finish(melodyNotes, "melody", "melody");
   const arrChord = finish(chordNotes, "chord", "chord");
   const arrBass = finish(shapedBass, "bass", "bass");

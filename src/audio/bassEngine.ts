@@ -109,7 +109,7 @@ function ensureBass() {
       type: "highpass",
       Q: 0.7,
     }).connect(bassEq);
-    bassSampler = createSampler("bass", { release: 0.18, volume: 9 });
+    bassSampler = createSampler("bass", { release: 0.18, volume: -9 });
     bassSampler.connect(bassHighpass);
     // 読み込み完了までの代役 (ウッドと同じ丸いシンセ音)。
     bassSynth = new Tone.PolySynth(Tone.MonoSynth, {

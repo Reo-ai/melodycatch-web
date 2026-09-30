@@ -640,6 +640,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         setAcousticDrumKitState("studio");
         setSynthToneState("synth"); // ロックのシンセは速い合いの手なのでシンセ音色
         setLeadToneState("guitar"); // ロックの主役はギター
+        setGuitarTypeState("distortion");
         break;
       case "ballad":
         // 静かなバンド: ピアノ + アコギ + ベース + 生ドラム + FX (歪みなし)
@@ -677,15 +678,18 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
         break;
       case "pop":
       default:
-        // ポップ標準: ピアノ + ベース + 生ドラム (Studio キット) + FX
+        // ポップ標準: フルバンド
+        //   メロディ (バイオリン) + ピアノ + アコギ + エレキ (クリーン) + ストリングス + ベース + 生ドラム + FX
+        //   (以前は ピアノ + ベース + ドラム だけで、曲として音が足りなかった)
         setAutoComposeWriteMelody(true);
         setAutoComposeWriteChord(true);
         setAutoComposeWriteBass(true);
         setAutoComposeWriteDrum(false);
         setAutoComposeWriteFx(true);
-        setAutoComposeWriteSynth(false);
-        setAutoComposeWriteGuitar(false);
-        setAutoComposeWriteAcoustic(false);
+        setAutoComposeWriteSynth(true);
+        setAutoComposeWriteGuitar(true);
+        setAutoComposeWriteAcoustic(true);
+        setGuitarTypeState("clean");
         setAutoComposeWriteDrumAcoustic(true);
         setAcousticDrumKitState("studio");
         setSynthToneState("strings");
