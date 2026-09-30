@@ -27,7 +27,7 @@
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 import { loadGleitzSoundfont } from "./voiceSampleLoader";
-import { getMixerInput } from "./mixer";
+import { getReverbInput } from "./mixer";
 
 // =============================================================================
 // 型定義
@@ -115,7 +115,6 @@ const EXPRESSION_PRESETS: Record<VocalExpression, ExpressionPreset> = {
 // =============================================================================
 // 共通出力チェーン
 // =============================================================================
-let vocalReverb: Tone.Reverb | null = null;
 let vocalGain: Tone.Gain | null = null;
 let vocalChorus: Tone.Chorus | null = null;
 let vocalVibrato: Tone.Vibrato | null = null;
@@ -160,8 +159,8 @@ let activeExpression: VocalExpression = "natural";
 function buildOutputChain() {
   if (vocalInput) return;
   const exp = EXPRESSION_PRESETS[activeExpression];
-  vocalReverb = new Tone.Reverb({ decay: 3.0, wet: 0.28 }).connect(getMixerInput("vocal"));
-  vocalGain = new Tone.Gain(4.0).connect(vocalReverb);
+  // 残響は共有のホールへ送る (楽器ごとにリバーブを持つと重いため)
+  vocalGain = new Tone.Gain(4.0).connect(getReverbInput("vocal", "hall", 0.28));
   vocalChorus = new Tone.Chorus({
     frequency: 0.3,
     delayTime: 4.0,

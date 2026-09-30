@@ -18,7 +18,7 @@
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
-import { getMixerInput } from "./mixer";
+import { getReverbInput } from "./mixer";
 import { createSampler, samplerReady, velocity01 } from "./sampledInstruments";
 
 export type GuitarType = "distortion" | "clean";
@@ -141,8 +141,9 @@ function ensureGuitar() {
 
   if (currentGuitarType === "distortion") {
     // ハードロック系エレキ (現行の挙動)。
-    guitarReverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).connect(getMixerInput("guitar"));
-    guitarGain = new Tone.Gain(0.55).connect(guitarReverb);
+    // 残響は共有の部屋リバーブへ送る (楽器ごとにリバーブを持つと重いため)
+    guitarReverb = null;
+    guitarGain = new Tone.Gain(0.55).connect(getReverbInput("guitar", "room", 0.18));
     guitarChorus = new Tone.Chorus({
       frequency: 0.8,
       delayTime: 2.5,
@@ -186,8 +187,8 @@ function ensureGuitar() {
     guitarSampler.connect(guitarPreGain);
   } else {
     // クリーントーン: 歪みなし、開いた高域、軽いコーラスとリバーブ。
-    guitarReverb = new Tone.Reverb({ decay: 2.0, wet: 0.24 }).connect(getMixerInput("guitar"));
-    guitarGain = new Tone.Gain(0.62).connect(guitarReverb);
+    guitarReverb = null;
+    guitarGain = new Tone.Gain(0.62).connect(getReverbInput("guitar", "hall", 0.2));
     guitarChorus = new Tone.Chorus({
       frequency: 0.6,
       delayTime: 3.0,
@@ -463,8 +464,8 @@ function ensureLeadGuitar() {
 
   if (currentLeadGuitarType === "distortion") {
     // リード用ディストーション: バッキングより少し明るめ、リバーブやや深め
-    leadReverb = new Tone.Reverb({ decay: 1.8, wet: 0.22 }).connect(getMixerInput("guitar2"));
-    leadGain = new Tone.Gain(0.5).connect(leadReverb);
+    leadReverb = null;
+    leadGain = new Tone.Gain(0.5).connect(getReverbInput("guitar2", "room", 0.22));
     leadChorus = new Tone.Chorus({
       frequency: 1.1,
       delayTime: 2.2,
@@ -485,8 +486,8 @@ function ensureLeadGuitar() {
     leadSampler.connect(leadPreGain);
   } else {
     // リード用クリーン: コーラスを深めに、リバーブも深めにして "歌う" 雰囲気
-    leadReverb = new Tone.Reverb({ decay: 2.6, wet: 0.3 }).connect(getMixerInput("guitar2"));
-    leadGain = new Tone.Gain(0.6).connect(leadReverb);
+    leadReverb = null;
+    leadGain = new Tone.Gain(0.6).connect(getReverbInput("guitar2", "hall", 0.28));
     leadChorus = new Tone.Chorus({
       frequency: 0.55,
       delayTime: 3.5,

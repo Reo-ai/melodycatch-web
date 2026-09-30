@@ -34,12 +34,11 @@
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
-import { getMixerInput } from "./mixer";
+import { getReverbInput } from "./mixer";
 import { createSampler, samplerReady, velocity01 } from "./sampledInstruments";
 
 const VOICE_COUNT = 8;
 
-let acReverb: Tone.Reverb | null = null;
 let acChorus: Tone.Chorus | null = null;
 let acDelay: Tone.FeedbackDelay | null = null;
 let acLowpass: Tone.Filter | null = null;
@@ -71,8 +70,8 @@ const REPLUCK_DECAY_DB = -2;
 function ensureAcoustic() {
   if (acHighpass) return;
   // 終段: Reverb → Destination
-  acReverb = new Tone.Reverb({ decay: 3.0, wet: 0.3 }).connect(getMixerInput("acoustic"));
-  acGain = new Tone.Gain(0.58).connect(acReverb);
+  // 残響は共有のホールへ送る (楽器ごとにリバーブを持つと重いため)
+  acGain = new Tone.Gain(0.58).connect(getReverbInput("acoustic", "hall", 0.3));
   // 弦のうねり — エレクトロっぽさを避けるため、コーラスはごく薄く。
   acChorus = new Tone.Chorus({
     frequency: 0.4,

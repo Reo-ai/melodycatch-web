@@ -104,6 +104,55 @@ export function getMixerInput(id: MixerChannelId): Tone.Channel {
   return ch;
 }
 
+// ---------------------------------------------------------------------------
+// 共有リバーブ (部屋 / ホール)
+//
+// 以前は楽器ごとに別々のリバーブ (畳み込み) を持っていて、フルバンドだと 8 個が同時に動き重かった。
+// プロのミックスと同じく、全楽器で 2 つのリバーブを共有する (軽くなり、同じ空間で鳴っている一体感も出る)。
+// 各チャネルの「フェーダーの後」から送るので、ミュート / ソロするとそのリバーブも一緒に消える。
+// ---------------------------------------------------------------------------
+export type ReverbSpace = "room" | "hall";
+
+const spaces = new Map<ReverbSpace, Tone.Reverb>();
+const sends = new Map<MixerChannelId, { gain: Tone.Gain; space: ReverbSpace }>();
+
+/** 共有リバーブ本体 (100% 残響の音だけを出す)。直接送りたい時 (効果音の瞬間的な残響など) に使う。 */
+export function getReverbBus(space: ReverbSpace): Tone.Reverb {
+  let r = spaces.get(space);
+  if (!r) {
+    r = new Tone.Reverb(
+      space === "room"
+        ? { decay: 1.1, preDelay: 0.012, wet: 1 } // 短い部屋鳴り (ドラム / 歪みギター / ピアノ)
+        : { decay: 2.6, preDelay: 0.025, wet: 1 }, // 広いホール (メロディ / ストリングス / アコギ)
+    );
+    r.connect(ensureMaster());
+    spaces.set(space, r);
+  }
+  return r;
+}
+
+/**
+ * チャネルの入口を返し、そのチャネルから共有リバーブへ wet (0..1) の量だけ送るよう設定する。
+ * 以前の「new Tone.Reverb({ wet }).connect(getMixerInput(id))」の置き換え。
+ */
+export function getReverbInput(id: MixerChannelId, space: ReverbSpace, wet: number): Tone.Channel {
+  const ch = getMixerInput(id);
+  let send = sends.get(id);
+  if (!send) {
+    const gain = new Tone.Gain(0);
+    ch.connect(gain); // フェーダーの後から送る
+    send = { gain, space };
+    sends.set(id, send);
+    gain.connect(getReverbBus(space));
+  } else if (send.space !== space) {
+    send.gain.disconnect();
+    send.gain.connect(getReverbBus(space));
+    send.space = space;
+  }
+  send.gain.gain.value = wet;
+  return ch;
+}
+
 export function setMixerChannelVolumeDb(id: MixerChannelId, db: number): void {
   getMixerInput(id).volume.value = db;
 }

@@ -13,7 +13,7 @@
  */
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
-import { getMixerInput } from "./mixer";
+import { getMixerInput, getReverbInput } from "./mixer";
 import { createSampler, samplerReady, velocity01 } from "./sampledInstruments";
 import { holdOff as pianoHoldOff, holdOn as pianoHoldOn } from "./pianoEngine";
 
@@ -36,7 +36,9 @@ function ensureLead(): void {
   const out = getMixerInput("lead");
 
   // 共通の空間: 短いディレイ (歌のような余韻) + プレート風リバーブ
-  const reverb = new Tone.Reverb({ decay: 2.4, preDelay: 0.02, wet: 0.24 }).connect(out);
+  void out;
+  // 残響は共有のホールへ送る (楽器ごとにリバーブを持つと重いため)
+  const reverb = getReverbInput("lead", "hall", 0.24);
   const delay = new Tone.FeedbackDelay({ delayTime: 0.28, feedback: 0.22, wet: 0.12 }).connect(reverb);
 
   // バイオリン: 低い胴鳴りを整理し、声の「抜け」の帯域 (3kHz 付近) を少し持ち上げる

@@ -17,7 +17,7 @@
  */
 
 import * as Tone from "tone";
-import { getMixerInput } from "./mixer";
+import { getMixerInput, getReverbBus } from "./mixer";
 import {
   DRUM_CLAP_MIDI,
   DRUM_CRASH_MIDI,
@@ -48,7 +48,6 @@ let aComp: Tone.Compressor | null = null;
 let aEq: Tone.EQ3 | null = null;
 /** 部屋鳴り送り用 (バスから分岐して短いリバーブに送る)。 */
 let aRoomSend: Tone.Gain | null = null;
-let aRoomReverb: Tone.Reverb | null = null;
 /** 全体に薄くかけるサチュレーション (アナログ感)。 */
 let aSat: Tone.Distortion | null = null;
 
@@ -385,8 +384,8 @@ function ensureAcousticDrums() {
   aEq = new Tone.EQ3({ low: 1.5, mid: 0, high: 1.8, lowFrequency: 180, highFrequency: 4500 }).connect(aSat);
 
   // 4. 部屋鳴りリバーブ: 短め (0.9s) で初期反射感、preDelay でアタックを濁らせない
-  aRoomReverb = new Tone.Reverb({ decay: 0.9, preDelay: 0.018, wet: 1.0 }).connect(getMixerInput("drumAcoustic"));
-  aRoomSend = new Tone.Gain(0.22).connect(aRoomReverb);
+  // 部屋鳴りは共有の部屋リバーブへ送る (楽器ごとにリバーブを持つと重いため)
+  aRoomSend = new Tone.Gain(0.22).connect(getReverbBus("room"));
 
   // 5. メインバス: ドライ (EQ→sat→comp) と Wet (room) の 2 系統に送る
   aBus = new Tone.Channel({ volume: 5 });

@@ -8,7 +8,7 @@
 
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
-import { getMixerInput } from "./mixer";
+import { getMixerInput, getReverbInput } from "./mixer";
 import { createSampler, samplerReady, velocity01 } from "./sampledInstruments";
 
 /**
@@ -21,9 +21,7 @@ export type SynthTone = "strings" | "synth";
 let currentTone: SynthTone = "strings";
 
 let synthSynth: Tone.PolySynth | null = null;
-let synthReverb: Tone.Reverb | null = null;
 let stringsSampler: Tone.Sampler | null = null;
-let stringsReverb: Tone.Reverb | null = null;
 
 export function setSynthTone(tone: SynthTone): void {
   if (tone === currentTone) return;
@@ -43,8 +41,10 @@ function stringsOn(): boolean {
 function ensureStrings() {
   if (stringsSampler) return;
   // 弦はホールで鳴っている感じが大事なので、シンセより長めの残響をかける
-  stringsReverb = new Tone.Reverb({ decay: 2.8, preDelay: 0.02, wet: 0.3 }).connect(getMixerInput("synth"));
-  const highpass = new Tone.Filter({ frequency: 60, type: "highpass", Q: 0.7 }).connect(stringsReverb);
+  // 残響は共有のホールへ送る (楽器ごとにリバーブを持つと重いため)
+  const highpass = new Tone.Filter({ frequency: 60, type: "highpass", Q: 0.7 }).connect(
+    getReverbInput("synth", "hall", 0.3),
+  );
   // 弓で弾き始める自然な立ち上がり (attack) と、弓を離したあとの余韻 (release)
   stringsSampler = createSampler("strings", { attack: 0.08, release: 0.9, volume: -2 });
   stringsSampler.connect(highpass);
@@ -58,7 +58,8 @@ export function preloadStrings(): void {
 function ensureSynth() {
   ensureStrings();
   if (synthSynth) return;
-  synthReverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).connect(getMixerInput("synth"));
+  // シンセ音色も同じ "synth" チャネル (残響の送り量はストリングスと共通)
+  const synthOut = getMixerInput("synth");
   synthSynth = new Tone.PolySynth(Tone.Synth, {
     oscillator: { type: "fatsawtooth", count: 3, spread: 28 },
     envelope: {
@@ -68,7 +69,7 @@ function ensureSynth() {
       release: 0.5,
     },
     volume: -12,
-  }).connect(synthReverb);
+  }).connect(synthOut);
 }
 
 export function synthHoldOn(midi: number, velocity = 0.8): void {

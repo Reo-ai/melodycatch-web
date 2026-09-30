@@ -22,7 +22,7 @@
 
 import * as Tone from "tone";
 import { ensureAudio } from "./pianoEngine";
-import { getMixerInput } from "./mixer";
+import { getReverbBus, getReverbInput } from "./mixer";
 
 export const FX_WHITE_NOISE = 0;
 export const FX_SWEEP_UP = 1;
@@ -56,7 +56,6 @@ export const FX_MIDI_LIST = [
 ];
 
 let fxBus: Tone.Channel | null = null;
-let fxReverb: Tone.Reverb | null = null;
 let fxCompressor: Tone.Compressor | null = null;
 /** 大きなホールのような長い残響 (インパクトやライザーの終わりを広げる)。 */
 let fxHallSend: Tone.Gain | null = null;
@@ -101,7 +100,8 @@ function disposeLater(nodes: Array<{ dispose: () => unknown }>, afterSec: number
 function ensureFxBus(): Tone.Channel {
   if (fxBus) return fxBus;
   // リバーブ: 中位の decay + preDelay でアタックを濁らせない / wet を 0.22 にして空間広め
-  fxReverb = new Tone.Reverb({ decay: 2.4, preDelay: 0.02, wet: 0.22 }).connect(getMixerInput("fx"));
+  // 残響は共有のホールへ送る (楽器ごとにリバーブを持つと重いため)
+  const fxOut = getReverbInput("fx", "hall", 0.22);
   // コンプ: 比率を緩める (3 → 2.0) + knee 大きめでナチュラルに
   fxCompressor = new Tone.Compressor({
     threshold: -14,
@@ -109,10 +109,10 @@ function ensureFxBus(): Tone.Channel {
     attack: 0.02,
     release: 0.25,
     knee: 10,
-  }).connect(fxReverb);
+  }).connect(fxOut);
   fxBus = new Tone.Channel({ volume: -6 }).connect(fxCompressor);
   // ホール残響 (送り): 長い余韻で空間を広げる
-  const hall = new Tone.Reverb({ decay: 4.5, preDelay: 0.03, wet: 1 }).connect(getMixerInput("fx"));
+  const hall = getReverbBus("hall");
   fxHallSend = new Tone.Gain(0).connect(hall);
   fxBus.connect(fxHallSend);
   fxHallSend.gain.value = 0.18;
