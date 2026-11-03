@@ -17,7 +17,8 @@
  */
 
 import * as Tone from "tone";
-import { getMixerInput, getReverbBus } from "./mixer";
+import { getReverbInput } from "./mixer";
+import { studioLayerFor, studioVelocityGain } from "./studioDynamics";
 import {
   DRUM_CLAP_MIDI,
   DRUM_CRASH_MIDI,
@@ -35,21 +36,13 @@ import {
 // ---------------------------------------------------------------------------
 // Master chain (生ドラム専用バス)
 //
-// 生ドラムらしさの肝は「単発のシンセ音色」よりも「全体の処理 (圧縮・部屋鳴り・
-// アタックの強調)」と「人間味 (ベロシティ揺らぎ・微妙なタイミング揺らぎ・
-// ゴーストノート)」にある。ここではマスタチェーンを
-//   [ kit bus ] → [ EQ3 ] → [ glue compressor ] → [ destination ]
-//                      └→ [ room send → short reverb → destination ]
-// の 2 系統に分け、各楽器の triggerAttackRelease 後に微小なランダマイズを
-// かけて生っぽさを出す。
+// kit bus → EQ3 → compressor → mixer channel → destination / room send
+// Studio samples retain sequenced timing and velocity; recording-level differences
+// are compensated separately from velocity. Room send follows the mixer fader.
 // ---------------------------------------------------------------------------
 let aBus: Tone.Channel | null = null;
 let aComp: Tone.Compressor | null = null;
 let aEq: Tone.EQ3 | null = null;
-/** 部屋鳴り送り用 (バスから分岐して短いリバーブに送る)。 */
-let aRoomSend: Tone.Gain | null = null;
-/** 全体に薄くかけるサチュレーション (アナログ感)。 */
-let aSat: Tone.Distortion | null = null;
 
 // ---- Kick ----
 let aKickSub: Tone.MembraneSynth | null = null;
@@ -293,11 +286,6 @@ function loadStudioKit(): void {
  * 普通の強さ (0.9 以上) は一番強い録音、0.3 以下はゴーストノート用の一番弱い録音。
  * 電子ドラム用のベロシティ (0.6〜1.0 が中心) でも自然な強さになるよう、この範囲を広げて割り当てる。
  */
-function studioLayerFor(velocity: number, layers: number): number {
-  const t = (velocity - 0.3) / 0.6;
-  return Math.max(0, Math.min(layers - 1, Math.round(t * (layers - 1))));
-}
-
 function triggerStudio(midi: number, time: number, velocity: number): boolean {
   if (!aStudioMode || !aStudioBuffers || !aBus) return false;
   const inst = STUDIO_KIT[midi];
@@ -323,9 +311,8 @@ function triggerStudio(midi: number, time: number, velocity: number): boolean {
     playbackRate: inst.rate ?? 1,
     fadeOut: 0.04,
   }).connect(aBus);
-  // 段の中での細かい強弱 (段と段の間を埋める程度に軽く)
-  const layerCenter = 0.3 + (0.6 * layer) / Math.max(1, inst.layers - 1);
-  const fineGain = Math.max(0.6, Math.min(1.15, 1 + (velocity - layerCenter) * 0.8));
+  // 音色の強弱と録音レベルを分離。境界でハットが13〜16dB跳ねるのを防ぐ。
+  const fineGain = studioVelocityGain(inst.dir, layer * inst.takes + take, velocity);
   src.onended = () => {
     aOpenHatSources = aOpenHatSources.filter((x) => x !== src);
     src.dispose();
@@ -337,7 +324,7 @@ function triggerStudio(midi: number, time: number, velocity: number): boolean {
 
 /** サンプル差し替え動作中か */
 export function isAcousticDrumSampleMode(): boolean {
-  return aSampleMode;
+  return aStudioMode || aSampleMode;
 }
 
 /** 1 発のサンプル発音。読み込み済みの楽器のみ鳴り、未読み込みは false を返す。 */
@@ -368,29 +355,20 @@ function ensureAcousticDrums() {
   // === マスタチェーン ===
   // 生ドラムらしさは「アタックを残しつつ、サスティンを軽く詰めて部屋鳴りで貼る」
   // 1. ナチュラルなグルーコンプ (バス全体をまとめる)
-  //    アタック 8ms に伸ばし、トランジェント (キック/スネアの "コン" "パン") を逃がす。
-  //    比率 2.0 / knee 12 で「踏みつぶさず、後ろの胴鳴りだけ揃える」感覚。
+  //    アタック25ms・比率1.6で録音済みのトランジェントを保つ。
   aComp = new Tone.Compressor({
-    threshold: -16,
-    ratio: 2.0,
-    attack: 0.008,
-    release: 0.22,
-    knee: 12,
-  }).connect(getMixerInput("drumAcoustic"));
-  // 2. テープ風サチュレーション: ごく薄く (wet 0.18) かけて倍音を足し、デジタル感を消す
-  aSat = new Tone.Distortion({ distortion: 0.05, wet: 0.18 }).connect(aComp);
-  // 3. EQ: 低域は控えめに、中域 (胴鳴り) は触らず、高域だけ少し開ける
-  //    ボトムを盛りすぎると "シンセドラム" 感が出るので 1.5dB 程度に抑える。
-  aEq = new Tone.EQ3({ low: 1.5, mid: 0, high: 1.8, lowFrequency: 180, highFrequency: 4500 }).connect(aSat);
+    threshold: -18,
+    ratio: 1.6,
+    attack: 0.025,
+    release: 0.12,
+    knee: 8,
+  }).connect(getReverbInput("drumAcoustic", "room", 0.06));
+  // 録音済みの胴鳴りとアタックを保つ。歪み・高域ブーストを重ねない。
+  aEq = new Tone.EQ3({ low: 0, mid: 0, high: -1, lowFrequency: 180, highFrequency: 4500 }).connect(aComp);
 
-  // 4. 部屋鳴りリバーブ: 短め (0.9s) で初期反射感、preDelay でアタックを濁らせない
-  // 部屋鳴りは共有の部屋リバーブへ送る (楽器ごとにリバーブを持つと重いため)
-  aRoomSend = new Tone.Gain(0.22).connect(getReverbBus("room"));
-
-  // 5. メインバス: ドライ (EQ→sat→comp) と Wet (room) の 2 系統に送る
+  // 残響もミキサーフェーダーの後から送るため、mute/soloが正しく効く。
   aBus = new Tone.Channel({ volume: 5 });
   aBus.connect(aEq);
-  aBus.connect(aRoomSend);
 
   // ---- KICK : サブ (低胴・タイト) + ボディ (中胴・スクエア寄り) + ビーター (アタック)
   // 実機キックは「低音の押し込み」と「ビーターのコンッ」の二層構造。
@@ -630,10 +608,11 @@ export function triggerDrumHitAcoustic(
   velocity = 0.85,
 ) {
   ensureAcousticDrums();
-  const vRaw = Math.max(0.05, Math.min(1, velocity));
+  if (!Number.isFinite(velocity) || velocity <= 0) return;
+  const vRaw = Math.min(1, velocity);
   const t0 = time ?? Tone.now();
   // Studio キット (強弱対応) が読み込めていれば、それだけで鳴らす
-  if (aStudioMode && triggerStudio(midi, jitterTime(t0, 2), jitterVel(vRaw, 0.06))) {
+  if (aStudioMode && triggerStudio(midi, t0, vRaw)) {
     return;
   }
   // サンプル差し替え動作中で、この楽器のサンプルが読み込めていれば
