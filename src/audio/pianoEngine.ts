@@ -8,10 +8,10 @@
 import * as Tone from "tone";
 import { midiToNoteString } from "../music/pitch";
 import { getReverbInput } from "./mixer";
+import { configurePlaybackSession } from "./playbackSession";
 
 let sampler: Tone.Sampler | null = null;
 let fallback: Tone.PolySynth | null = null;
-let started = false;
 let loading: Promise<void> | null = null;
 
 /**
@@ -54,10 +54,9 @@ const PIANO_SAMPLES: Record<string, string> = {
 
 /** Ensure AudioContext is running. Call from a user-gesture handler. */
 export async function ensureAudio(): Promise<void> {
-  if (!started) {
-    await Tone.start();
-    started = true;
-  }
+  configurePlaybackSession();
+  // Resume on every user gesture: iOS can suspend audio after an interruption.
+  await Tone.start();
   if (!sampler && !loading) {
     loading = loadSampler();
   }

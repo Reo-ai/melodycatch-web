@@ -1001,8 +1001,8 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
 
   // ---- audio gate -----------------------------------------------------------
   const arm = useCallback(async () => {
-    if (audioReady.current) return;
     await ensureAudio();
+    if (audioReady.current) return;
     audioReady.current = true;
     // 最初の操作のタイミングで本物の楽器音源の読み込みを始めておく (待たない)
     preloadRealInstruments();
@@ -1853,10 +1853,7 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
     if (autoComposing) return;
     // 他のオーディオ動作をすべて止める
     stopAll();
-    if (!audioReady.current) {
-      await ensureAudio();
-      audioReady.current = true;
-    }
+    await arm();
     await waitRealInstruments();
     // 10 楽器の選択状態を取り出す
     const w = {
