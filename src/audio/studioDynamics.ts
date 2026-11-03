@@ -1,3 +1,4 @@
+import { STUDIO_V2_LEVELS } from './studioV2Levels.ts';
 // Measured from the shipped CC0 samples: decoded stereo, first 100 ms RMS dBFS.
 // Compensate recording-level jumps separately from the musical velocity curve.
 export const STUDIO_ATTACK_DB: Record<string, readonly number[]> = {
@@ -68,7 +69,8 @@ export const STUDIO_ATTACK_DB: Record<string, readonly number[]> = {
     -25.0765,
     -18.8978,
     -15.0699
-  ]
+  ],
+  ...STUDIO_V2_LEVELS,
 };
 
 export function studioLayerFor(velocity: number, layers: number): number {
@@ -81,7 +83,13 @@ export function studioVelocityGain(dir: string, file: number, velocity: number):
   if (v === 0) return 0;
   const levels = STUDIO_ATTACK_DB[dir];
   if (!levels || levels[file] === undefined) return Math.pow(v, 1.5);
-  const reference = Math.max(...levels);
+  const reference = STUDIO_REFERENCE_DB[dir] ?? Math.max(...levels);
   const compensation = Math.pow(10, (reference - levels[file]) / 20);
   return compensation * Math.pow(v, 1.5);
 }
+
+// Stable family balance, independent of the gain of the recording microphone.
+export const STUDIO_REFERENCE_DB: Record<string, number> = {
+  kick: -9, snare: -15.4, rim: -20.8, hh_closed: -26.2,
+  hh_open: -22.4, crash: -16.3, ride: -27.3, tom_hi: -11.2, tom_lo: -15.1,
+};

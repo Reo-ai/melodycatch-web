@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { STUDIO_ATTACK_DB, studioLayerFor, studioVelocityGain } from '../src/audio/studioDynamics.ts';
+import { STUDIO_ATTACK_DB, STUDIO_REFERENCE_DB, studioLayerFor, studioVelocityGain } from '../src/audio/studioDynamics.ts';
 
-const takes = { kick: 2, hh_closed: 2, clap: 2 };
+const takes = Object.fromEntries(Object.keys(STUDIO_ATTACK_DB).map(key => [key, 2]));
 test('all layer boundaries have continuous attack energy, including both takes', () => {
   for (const [dir, levels] of Object.entries(STUDIO_ATTACK_DB)) {
     const n = takes[dir] ?? 1;
@@ -13,7 +13,7 @@ test('all layer boundaries have continuous attack energy, including both takes',
       for (let take = 0; take < n; take++) {
         const file = layer * n + take;
         const actual = levels[file] + 20 * Math.log10(studioVelocityGain(dir, file, v));
-        const expected = Math.max(...levels) + 30 * Math.log10(v);
+        const expected = (STUDIO_REFERENCE_DB[dir] ?? Math.max(...levels)) + 30 * Math.log10(v);
         assert.ok(Math.abs(actual - expected) < 1e-8, `${dir}:${file}`);
         assert.ok(actual >= previous - 1e-8);
         previous = actual;

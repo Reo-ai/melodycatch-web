@@ -1,0 +1,11 @@
+Virtuosity Drums — Versilian Studios & Karoryfer Samples
+Source: https://github.com/sfzinstruments/virtuosity_drums
+License: CC0-1.0. Revision and exact source paths: provenance.json.
+
+Melody Catch v2 conversion: original FLAC -> family-specific high-pass -> stereo 44.1kHz 192kbps MP3.
+Kick: kick mic, snare/rim: snare mic, toms: mid mic, cymbals: overhead.
+No equal sum of all close mics. Original source files are not re-encoded MP3s.
+Two different recordings alternate per layer. Kick/cymbals use genuine recorded round robins.
+Snare/rim/toms use neighboring velocity recordings, level-compensated in the engine;
+these are NOT described as same-velocity round-robin recordings.
+Mid tom remains transposed from low tom. Clap retains the previous body_percussion samples.

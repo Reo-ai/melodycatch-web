@@ -199,13 +199,13 @@ export function setAcousticDrumKit(kitId: AcousticDrumKitId) {
 // Studio キット (強弱対応のリアルな生ドラム)
 //
 // 音源: Versilian Studios & Karoryfer "Virtuosity Drums" (CC0)。
-// キックマイク + スネアマイク + オーバーヘッドの 3 本を 1 本に混ぜて mp3 化してある
-// (public/drums/studio/<楽器>/<番号>.mp3)。
+// v2は楽器群ごとに専用マイクを選び原FLACから変換。
+// public/drums/studio-v2/ のprovenance.jsonに全原音と計測値を保存。
 //
 // 本物のドラマーの音に近づけるために:
 //   1) 強さで録音を切り替える (弱く叩いた録音 / 強く叩いた録音)。
 //      音量を下げるだけの電子ドラムと違い、弱い音は音色そのものが柔らかい。
-//   2) 同じ強さでも別テイクを交互に使う (毎回まったく同じ音 = マシンガン感を防ぐ)。
+//   2) 複数録音を交互に使う。スネア/リム/タムは近接する強弱録音を補正して使用。
 //   3) クローズドハイハットを叩いたら、鳴っているオープンハイハットを止める (実機と同じ)。
 //   4) 同じ楽器を連打しても前の音の余韻を切らない (シンバルが自然に重なる)。
 // 番号の並びは「強さ (弱→強) × テイク」。file = 強さ段 × テイク数 + テイク番号。
@@ -226,15 +226,15 @@ interface StudioInstrument {
 }
 const STUDIO_KIT: Partial<Record<number, StudioInstrument>> = {
   [DRUM_KICK_MIDI]: { dir: "kick", layers: 4, takes: 2, gainDb: -11 },
-  [DRUM_SNARE_MIDI]: { dir: "snare", layers: 8, takes: 1, gainDb: -11 },
-  [DRUM_RIM_MIDI]: { dir: "rim", layers: 4, takes: 1, gainDb: -12 },
+  [DRUM_SNARE_MIDI]: { dir: "snare", layers: 8, takes: 2, gainDb: -11 },
+  [DRUM_RIM_MIDI]: { dir: "rim", layers: 4, takes: 2, gainDb: -12 },
   [DRUM_HIHAT_MIDI]: { dir: "hh_closed", layers: 4, takes: 2, gainDb: -10 },
-  [DRUM_HIHAT_OPEN_MIDI]: { dir: "hh_open", layers: 3, takes: 1, gainDb: -11 },
-  [DRUM_CRASH_MIDI]: { dir: "crash", layers: 2, takes: 1, gainDb: -10 },
-  [DRUM_RIDE_MIDI]: { dir: "ride", layers: 3, takes: 1, gainDb: -11 },
-  [DRUM_TOM_HI_MIDI]: { dir: "tom_hi", layers: 4, takes: 1, gainDb: -11 },
-  [DRUM_TOM_MID_MIDI]: { dir: "tom_lo", layers: 4, takes: 1, rate: 1.19, gainDb: -11 },
-  [DRUM_TOM_LO_MIDI]: { dir: "tom_lo", layers: 4, takes: 1, gainDb: -11 },
+  [DRUM_HIHAT_OPEN_MIDI]: { dir: "hh_open", layers: 4, takes: 2, gainDb: -11 },
+  [DRUM_CRASH_MIDI]: { dir: "crash", layers: 3, takes: 2, gainDb: -10 },
+  [DRUM_RIDE_MIDI]: { dir: "ride", layers: 3, takes: 2, gainDb: -11 },
+  [DRUM_TOM_HI_MIDI]: { dir: "tom_hi", layers: 4, takes: 2, gainDb: -11 },
+  [DRUM_TOM_MID_MIDI]: { dir: "tom_lo", layers: 4, takes: 2, rate: 1.19, gainDb: -11 },
+  [DRUM_TOM_LO_MIDI]: { dir: "tom_lo", layers: 4, takes: 2, gainDb: -11 },
   // ハンドクラップ (Karoryfer body_percussion, CC0): 弱 / 強 の 2 段 × 2 テイク
   [DRUM_CLAP_MIDI]: { dir: "clap", layers: 2, takes: 2, gainDb: -8 },
 };
@@ -265,12 +265,13 @@ function loadStudioKit(): void {
   for (const [midiStr, inst] of Object.entries(STUDIO_KIT)) {
     if (!inst) continue;
     for (let f = 0; f < inst.layers * inst.takes; f++) {
-      urls[studioKey(Number(midiStr), f)] = `${inst.dir}/${f}.mp3`;
+      const kit = inst.dir === "clap" ? "studio" : "studio-v2";
+      urls[studioKey(Number(midiStr), f)] = `${kit}/${inst.dir}/${f}.mp3`;
     }
   }
   aStudioBuffers = new Tone.ToneAudioBuffers({
     urls,
-    baseUrl: `${import.meta.env.BASE_URL}drums/studio/`,
+    baseUrl: `${import.meta.env.BASE_URL}drums/`,
     onload: () => {
       // 別キットに切り替えられていたら有効にしない
       if (aCurrentKitBase === "studio") aStudioMode = true;
