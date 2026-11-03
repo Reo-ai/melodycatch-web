@@ -218,6 +218,10 @@ let hihatHPF: Tone.Filter | null = null;
 
 let hihatOpenNoise: Tone.NoiseSynth | null = null;
 let hihatOpenHPF: Tone.Filter | null = null;
+let hatMetal: Tone.MetalSynth | null = null;
+let openHatMetal: Tone.MetalSynth | null = null;
+let crashMetal: Tone.MetalSynth | null = null;
+let rimBody: Tone.Synth | null = null;
 
 let crashNoise: Tone.NoiseSynth | null = null;
 let crashHPF: Tone.Filter | null = null;
@@ -240,20 +244,20 @@ function ensureDrumSynths() {
   // マスターチェーン: drumBus → drumEq → drumComp → destination
   drumComp = new Tone.Compressor({
     threshold: -18,
-    ratio: 3,
-    attack: 0.003,
+    ratio: 2,
+    attack: 0.02,
     release: 0.12,
   }).connect(getMixerInput("drum"));
-  drumEq = new Tone.EQ3({ low: 2, mid: 0, high: 1 }).connect(drumComp);
+  drumEq = new Tone.EQ3({ low: 0, mid: 0, high: -1 }).connect(drumComp);
   drumBus = new Tone.Channel({ volume: -2 }).connect(drumEq);
 
   // ---- KICK : 低音 (MembraneSynth) + アタックの "クリック" (HPF ノイズ)
   kickSynth = new Tone.MembraneSynth({
-    pitchDecay: 0.045,
-    octaves: 6.2,
-    envelope: { attack: 0.001, decay: 0.42, sustain: 0, release: 0.5 },
+    pitchDecay: 0.025,
+    octaves: 2.5,
+    envelope: { attack: 0.001, decay: 0.25, sustain: 0, release: 0.12 },
     oscillator: { type: "sine" },
-    volume: -3,
+    volume: -5,
   }).connect(drumBus);
   kickClickHPF = new Tone.Filter({ type: "highpass", frequency: 2500, Q: 1.0 });
   kickClick = new Tone.NoiseSynth({
@@ -263,17 +267,17 @@ function ensureDrumSynths() {
   }).chain(kickClickHPF, drumBus);
 
   // ---- SNARE : ノイズ (バンドパス) + 短いシェル音
-  snareBP = new Tone.Filter({ type: "bandpass", frequency: 1800, Q: 0.9 });
+  snareBP = new Tone.Filter({ type: "bandpass", frequency: 2600, Q: 0.55 });
   snareNoise = new Tone.NoiseSynth({
     noise: { type: "white" },
     envelope: { attack: 0.001, decay: 0.16, sustain: 0, release: 0.12 },
     volume: -8,
   }).chain(snareBP, drumBus);
   snareBody = new Tone.MembraneSynth({
-    pitchDecay: 0.02,
-    octaves: 4,
+    pitchDecay: 0.008,
+    octaves: 0.7,
     envelope: { attack: 0.001, decay: 0.12, sustain: 0, release: 0.1 },
-    volume: -18,
+    volume: -12,
   }).connect(drumBus);
 
   // ---- RIM : 短いクリックノイズ (木質)
@@ -283,13 +287,18 @@ function ensureDrumSynths() {
     envelope: { attack: 0.0005, decay: 0.03, sustain: 0, release: 0.02 },
     volume: -14,
   }).chain(rimBP, drumBus);
+  rimBody = new Tone.Synth({
+    oscillator: { type: "triangle" },
+    envelope: { attack: 0.0005, decay: 0.024, sustain: 0, release: 0.01 },
+    volume: -20,
+  }).connect(drumBus);
 
   // ---- HI-HAT CLOSED : ハイパス + 短いノイズ
   hihatHPF = new Tone.Filter({ type: "highpass", frequency: 6000, Q: 0.7 });
   hihatNoise = new Tone.NoiseSynth({
     noise: { type: "white" },
     envelope: { attack: 0.001, decay: 0.07, sustain: 0, release: 0.02 },
-    volume: -6,
+    volume: -19,
   }).chain(hihatHPF, drumBus);
 
   // ---- HI-HAT OPEN : 同じハイパス + 長めディケイ
@@ -299,6 +308,16 @@ function ensureDrumSynths() {
     envelope: { attack: 0.001, decay: 0.35, sustain: 0, release: 0.18 },
     volume: -16,
   }).chain(hihatOpenHPF, drumBus);
+  // Inharmonic oscillators provide a metallic spectrum instead of noise alone.
+  hatMetal = new Tone.MetalSynth({
+    envelope: { attack: 0.001, decay: 0.045, release: 0.012 },
+    harmonicity: 5.1, modulationIndex: 28, resonance: 6500, octaves: 1.2, volume: -27,
+  }).connect(drumBus);
+  openHatMetal = new Tone.MetalSynth({
+    envelope: { attack: 0.001, decay: 0.28, release: 0.025 },
+    harmonicity: 5.1, modulationIndex: 28, resonance: 6500, octaves: 1.2, volume: -28,
+  }).connect(drumBus);
+  hihatOpenNoise.envelope.release = 0.025;
 
   // ---- CRASH : ハイパス + 長いシマー
   crashHPF = new Tone.Filter({ type: "highpass", frequency: 5200, Q: 0.4 });
@@ -306,8 +325,12 @@ function ensureDrumSynths() {
   crashNoise = new Tone.NoiseSynth({
     noise: { type: "white" },
     envelope: { attack: 0.001, decay: 1.6, sustain: 0, release: 0.8 },
-    volume: -14,
+    volume: -21,
   }).chain(crashBP, crashHPF, drumBus);
+  crashMetal = new Tone.MetalSynth({
+    envelope: { attack: 0.003, decay: 1.15, release: 0.25 },
+    harmonicity: 3.1, modulationIndex: 18, resonance: 3200, octaves: 1.5, volume: -29,
+  }).connect(drumBus);
 
   // ---- RIDE : 中高域 + 金属ベル
   rideBP = new Tone.Filter({ type: "bandpass", frequency: 5500, Q: 1.4 });
@@ -322,25 +345,25 @@ function ensureDrumSynths() {
     modulationIndex: 24,
     resonance: 4000,
     octaves: 1.2,
-    volume: -28,
+    volume: -22,
   }).connect(drumBus);
 
   // ---- TOMS : 3 種類の Membrane
   tomLo = new Tone.MembraneSynth({
-    pitchDecay: 0.06,
-    octaves: 4,
+    pitchDecay: 0.025,
+    octaves: 1.2,
     envelope: { attack: 0.001, decay: 0.5, sustain: 0, release: 0.4 },
     volume: -8,
   }).connect(drumBus);
   tomMid = new Tone.MembraneSynth({
-    pitchDecay: 0.05,
-    octaves: 4,
+    pitchDecay: 0.02,
+    octaves: 1.1,
     envelope: { attack: 0.001, decay: 0.4, sustain: 0, release: 0.35 },
     volume: -8,
   }).connect(drumBus);
   tomHi = new Tone.MembraneSynth({
-    pitchDecay: 0.04,
-    octaves: 4,
+    pitchDecay: 0.018,
+    octaves: 1,
     envelope: { attack: 0.001, decay: 0.32, sustain: 0, release: 0.3 },
     volume: -8,
   }).connect(drumBus);
@@ -349,7 +372,7 @@ function ensureDrumSynths() {
   clapBP = new Tone.Filter({ type: "bandpass", frequency: 1500, Q: 1.2 });
   clapNoise = new Tone.NoiseSynth({
     noise: { type: "white" },
-    envelope: { attack: 0.001, decay: 0.18, sustain: 0, release: 0.1 },
+    envelope: { attack: 0.001, decay: 0.09, sustain: 0, release: 0.06 },
     volume: -11,
   }).chain(clapBP, drumBus);
 }
@@ -365,47 +388,55 @@ export function triggerDrumHit(
   time?: number,
   velocity = 0.85,
 ) {
+  if (!Number.isFinite(velocity) || velocity <= 0) return;
   ensureDrumSynths();
-  const v = Math.max(0.05, Math.min(1, velocity));
+  const v = Math.pow(Math.min(1, velocity), 1.25);
   const t = time ?? Tone.now();
   switch (midi) {
     case DRUM_KICK_MIDI:
-      kickSynth?.triggerAttackRelease("C2", "8n", t, v);
+      kickSynth?.triggerAttackRelease("G1", 0.22, t, v);
       kickClick?.triggerAttackRelease(0.018, t, v * 0.7);
       return;
     case DRUM_SNARE_MIDI:
       snareNoise?.triggerAttackRelease(0.16, t, v);
-      snareBody?.triggerAttackRelease("D3", 0.08, t, v * 0.6);
+      snareBody?.triggerAttackRelease("G3", 0.08, t, v * 0.65);
       return;
     case DRUM_RIM_MIDI:
       rimNoise?.triggerAttackRelease(0.03, t, v);
+      rimBody?.triggerAttackRelease("E5", 0.025, t, v);
       return;
     case DRUM_HIHAT_MIDI:
+      hihatOpenNoise?.triggerRelease(t);
+      openHatMetal?.triggerRelease(t);
       hihatNoise?.triggerAttackRelease(0.04, t, v);
+      hatMetal?.triggerAttackRelease("C4", 0.035, t, v);
       return;
     case DRUM_HIHAT_OPEN_MIDI:
       hihatOpenNoise?.triggerAttackRelease(0.32, t, v);
+      openHatMetal?.triggerAttackRelease("C4", 0.28, t, v);
       return;
     case DRUM_CRASH_MIDI:
       crashNoise?.triggerAttackRelease(1.5, t, v);
+      crashMetal?.triggerAttackRelease("G3", 1.1, t, v);
       return;
     case DRUM_RIDE_MIDI:
       rideNoise?.triggerAttackRelease(0.18, t, v);
-      rideBell?.triggerAttackRelease("C5", 0.12, t, v * 0.18);
+      rideBell?.triggerAttackRelease("C5", 0.12, t, v * 0.45);
       return;
     case DRUM_TOM_LO_MIDI:
-      tomLo?.triggerAttackRelease("F2", "8n", t, v);
+      tomLo?.triggerAttackRelease("F2", 0.26, t, v);
       return;
     case DRUM_TOM_MID_MIDI:
-      tomMid?.triggerAttackRelease("A2", "8n", t, v);
+      tomMid?.triggerAttackRelease("A2", 0.22, t, v);
       return;
     case DRUM_TOM_HI_MIDI:
-      tomHi?.triggerAttackRelease("D3", "8n", t, v);
+      tomHi?.triggerAttackRelease("D3", 0.18, t, v);
       return;
     case DRUM_CLAP_MIDI:
       // クラップは「3 連打の集合」感を出すために少しずらして 2 発鳴らす
-      clapNoise?.triggerAttackRelease(0.04, t, v);
-      clapNoise?.triggerAttackRelease(0.12, t + 0.014, v * 0.85);
+      clapNoise?.triggerAttackRelease(0.006, t, v * 0.7);
+      clapNoise?.triggerAttackRelease(0.006, t + 0.012, v * 0.85);
+      clapNoise?.triggerAttackRelease(0.1, t + 0.025, v);
       return;
     default:
       return;

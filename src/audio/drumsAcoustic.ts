@@ -19,6 +19,7 @@
 import * as Tone from "tone";
 import { getReverbInput } from "./mixer";
 import { studioLayerFor, studioVelocityGain } from "./studioDynamics";
+import { studioVelocityGain as legacyVelocityGain } from "./studioLegacyDynamics";
 import {
   DRUM_CLAP_MIDI,
   DRUM_CRASH_MIDI,
@@ -117,10 +118,11 @@ let aCurrentKitBase: string | null = null;
  *   - "root"  : /drums/*.wav (後方互換 / 既定キット)
  *   - "kit1..4": /drums/kit1..4/*.wav
  */
-export type AcousticDrumKitId = "studio" | "root" | "kit1" | "kit2" | "kit3" | "kit4";
+export type AcousticDrumKitId = "studio" | "studioV2" | "root" | "kit1" | "kit2" | "kit3" | "kit4";
 
 export const ACOUSTIC_DRUM_KIT_LABEL_JA: Record<AcousticDrumKitId, string> = {
-  studio: "Studio: リアル (強弱対応・おすすめ)",
+  studio: "Studio Original: 元の生ドラム",
+  studioV2: "Studio V2: 新しい生ドラムセット",
   root: "標準 (既定)",
   kit1: "Kit1: Sixties Rock (Ludwig)",
   kit2: "Kit2: Sixties Basic (汎用ロック)",
@@ -187,8 +189,8 @@ export function loadAcousticDrumSamples(baseUrl = "/drums/") {
  * "root" の場合は /drums/ (後方互換 = 既存ファイルを直接使用)。
  */
 export function setAcousticDrumKit(kitId: AcousticDrumKitId) {
-  if (kitId === "studio") {
-    loadStudioKit();
+  if (kitId === "studio" || kitId === "studioV2") {
+    loadStudioKit(kitId);
     return;
   }
   const base = kitId === "root" ? "/drums/" : `/drums/${kitId}/`;
@@ -239,6 +241,15 @@ const STUDIO_KIT: Partial<Record<number, StudioInstrument>> = {
   [DRUM_CLAP_MIDI]: { dir: "clap", layers: 2, takes: 2, gainDb: -8 },
 };
 let aStudioMode = false;
+let selectedStudio: "studio" | "studioV2" = "studio";
+let studioLoadGeneration = 0;
+const LEGACY_STUDIO_KIT = Object.fromEntries(Object.entries(STUDIO_KIT).map(([midi, inst]) => {
+  const old = { ...inst! };
+  if (!["kick", "hh_closed", "clap"].includes(old.dir)) old.takes = 1;
+  if (old.dir === "hh_open") old.layers = 3;
+  if (old.dir === "crash") old.layers = 2;
+  return [midi, old];
+})) as Partial<Record<number, StudioInstrument>>;
 let aStudioBuffers: Tone.ToneAudioBuffers | null = null;
 const aStudioTakeCursor: Partial<Record<number, number>> = {};
 /** 鳴っているオープンハイハット (クローズドで止めるため)。 */
@@ -248,9 +259,15 @@ function studioKey(midi: number, file: number): string {
   return `${midi}_${file}`;
 }
 
-function loadStudioKit(): void {
+function loadStudioKit(kitId: "studio" | "studioV2"): void {
   ensureAcousticDrums();
-  if (aStudioMode || aCurrentKitBase === "studio") return;
+  if (aCurrentKitBase === kitId) return;
+  aStudioMode = false;
+  selectedStudio = kitId;
+  const generation = ++studioLoadGeneration;
+  for (const midi of Object.keys(aStudioTakeCursor)) delete aStudioTakeCursor[Number(midi)];
+  aStudioBuffers?.dispose();
+  aStudioBuffers = null;
   // 旧キットのプレイヤーは止めて、シンセ代役に戻しておく (読み込み完了までの間)
   for (const k of Object.keys(aSamplers)) {
     const m = Number(k);
@@ -260,12 +277,12 @@ function loadStudioKit(): void {
     aSamplesReady[m] = false;
   }
   aSampleMode = false;
-  aCurrentKitBase = "studio";
+  aCurrentKitBase = kitId;
   const urls: Record<string, string> = {};
-  for (const [midiStr, inst] of Object.entries(STUDIO_KIT)) {
+  for (const [midiStr, inst] of Object.entries(kitId === "studio" ? LEGACY_STUDIO_KIT : STUDIO_KIT)) {
     if (!inst) continue;
     for (let f = 0; f < inst.layers * inst.takes; f++) {
-      const kit = inst.dir === "clap" ? "studio" : "studio-v2";
+      const kit = kitId === "studio" || inst.dir === "clap" ? "studio" : "studio-v2";
       urls[studioKey(Number(midiStr), f)] = `${kit}/${inst.dir}/${f}.mp3`;
     }
   }
@@ -274,7 +291,7 @@ function loadStudioKit(): void {
     baseUrl: `${import.meta.env.BASE_URL}drums/`,
     onload: () => {
       // 別キットに切り替えられていたら有効にしない
-      if (aCurrentKitBase === "studio") aStudioMode = true;
+      if (aCurrentKitBase === kitId && generation === studioLoadGeneration) aStudioMode = true;
     },
     onerror: (e) => {
       console.warn("[drumsAcoustic] Studio キットの読み込みに失敗しました (シンセで鳴らします)", e);
@@ -289,7 +306,7 @@ function loadStudioKit(): void {
  */
 function triggerStudio(midi: number, time: number, velocity: number): boolean {
   if (!aStudioMode || !aStudioBuffers || !aBus) return false;
-  const inst = STUDIO_KIT[midi];
+  const inst = (selectedStudio === "studio" ? LEGACY_STUDIO_KIT : STUDIO_KIT)[midi];
   if (!inst) return false; // Studio キットに無い楽器はシンセで鳴らす
   const layer = studioLayerFor(velocity, inst.layers);
   const take = (aStudioTakeCursor[midi] ?? 0) % inst.takes;
@@ -313,7 +330,8 @@ function triggerStudio(midi: number, time: number, velocity: number): boolean {
     fadeOut: 0.04,
   }).connect(aBus);
   // 音色の強弱と録音レベルを分離。境界でハットが13〜16dB跳ねるのを防ぐ。
-  const fineGain = studioVelocityGain(inst.dir, layer * inst.takes + take, velocity);
+  const gainFor = selectedStudio === "studio" ? legacyVelocityGain : studioVelocityGain;
+  const fineGain = gainFor(inst.dir, layer * inst.takes + take, velocity);
   src.onended = () => {
     aOpenHatSources = aOpenHatSources.filter((x) => x !== src);
     src.dispose();
