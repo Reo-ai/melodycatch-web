@@ -139,6 +139,7 @@ export const ACOUSTIC_DRUM_KIT_LABEL_JA: Record<AcousticDrumKitId, string> = {
 export function loadAcousticDrumSamples(baseUrl = "/drums/") {
   ensureAcousticDrums();
   if (aCurrentKitBase === baseUrl) return; // 同じキットなら何もしない
+  const generation = ++studioLoadGeneration;
   // Studio キットから別のキットへ切り替えるときは強弱対応モードを止める
   aStudioMode = false;
   // 既存のプレイヤーを破棄してリセット
@@ -171,10 +172,12 @@ export function loadAcousticDrumSamples(baseUrl = "/drums/") {
       url,
       autostart: false,
       onload: () => {
+        if (generation !== studioLoadGeneration || aCurrentKitBase !== baseUrl) return;
         aSamplesReady[midi] = true;
         aSampleMode = true;
       },
       onerror: () => {
+        if (generation !== studioLoadGeneration || aCurrentKitBase !== baseUrl) return;
         // ファイルが無い (404) などは静かに無視 (シンセ側で鳴らす)
         aSamplesReady[midi] = false;
       },
