@@ -2820,7 +2820,10 @@ export default function Studio({ scale, onScaleChange }: StudioProps) {
                     key={k}
                     type="button"
                     disabled={autoComposing}
-                    onClick={() => setAcousticDrumKitState(k)}
+                    onClick={() => {
+                      if (k === acousticDrumKit) setAcousticDrumKit(k);
+                      else setAcousticDrumKitState(k);
+                    }}
                     className={[
                       "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
                       active

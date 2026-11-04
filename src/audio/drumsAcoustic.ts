@@ -112,6 +112,7 @@ const aSamplesReady: Partial<Record<number, boolean>> = {};
 let aSampleMode = false;
 /** 現在ロード中のキットのベース URL (例: "/drums/kit1/")。未ロード時は null */
 let aCurrentKitBase: string | null = null;
+let aKitLoadFailed = false;
 
 /**
  * 利用可能なキット ID。
@@ -134,11 +135,12 @@ export const ACOUSTIC_DRUM_KIT_LABEL_JA: Record<AcousticDrumKitId, string> = {
  * /public/drums/ 配下の WAV/MP3 ファイルからサンプルを読み込んで
  * 各 MIDI ノートに紐付ける。ファイルが無いものはエラーを握りつぶし、
  * シンセフォールバックのままにする。アプリ起動時に一度呼べばよい。
- * 同じ baseUrl で再呼出しされた場合は何もしない (二重ロード防止)。
+ * 同じ baseUrl の二重ロードを防ぐ。失敗後の再選択では再試行する。
  */
 export function loadAcousticDrumSamples(baseUrl = "/drums/") {
   ensureAcousticDrums();
-  if (aCurrentKitBase === baseUrl) return; // 同じキットなら何もしない
+  if (aCurrentKitBase === baseUrl && !aKitLoadFailed) return;
+  aKitLoadFailed = false;
   const generation = ++studioLoadGeneration;
   // Studio キットから別のキットへ切り替えるときは強弱対応モードを止める
   aStudioMode = false;
@@ -180,6 +182,7 @@ export function loadAcousticDrumSamples(baseUrl = "/drums/") {
         if (generation !== studioLoadGeneration || aCurrentKitBase !== baseUrl) return;
         // ファイルが無い (404) などは静かに無視 (シンセ側で鳴らす)
         aSamplesReady[midi] = false;
+        aKitLoadFailed = true;
       },
     });
     if (aBus) player.connect(aBus);
@@ -264,7 +267,8 @@ function studioKey(midi: number, file: number): string {
 
 function loadStudioKit(kitId: "studio" | "studioV2"): void {
   ensureAcousticDrums();
-  if (aCurrentKitBase === kitId) return;
+  if (aCurrentKitBase === kitId && !aKitLoadFailed) return;
+  aKitLoadFailed = false;
   aStudioMode = false;
   selectedStudio = kitId;
   const generation = ++studioLoadGeneration;
@@ -297,6 +301,8 @@ function loadStudioKit(kitId: "studio" | "studioV2"): void {
       if (aCurrentKitBase === kitId && generation === studioLoadGeneration) aStudioMode = true;
     },
     onerror: (e) => {
+      if (aCurrentKitBase !== kitId || generation !== studioLoadGeneration) return;
+      aKitLoadFailed = true;
       console.warn("[drumsAcoustic] Studio キットの読み込みに失敗しました (シンセで鳴らします)", e);
     },
   });

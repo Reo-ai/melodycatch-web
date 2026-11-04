@@ -32,6 +32,32 @@ function engine(file) {
   return {api:load(file),nodes,events};
 }
 
+test('failed legacy kit can retry while healthy or pending kit avoids duplicate loads',()=>{
+  const {api,nodes}=engine('./drumsAcoustic');
+  api.setAcousticDrumKit('kit1');
+  const count=nodes.length;
+  api.setAcousticDrumKit('kit1');assert.equal(nodes.length,count);
+  const old=nodes.filter(n=>n.options?.url);
+  old[0].options.onerror();
+  api.setAcousticDrumKit('kit1');assert.ok(nodes.length>count);
+  const retryCount=nodes.length;
+  old[0].options.onerror();
+  api.setAcousticDrumKit('kit1');assert.equal(nodes.length,retryCount);
+});
+test('failed Studio kit can retry and stale failures cannot poison new load',()=>{
+  const {api,nodes}=engine('./drumsAcoustic');
+  api.setAcousticDrumKit('studioV2');
+  const old=nodes.find(n=>n.options?.urls);
+  const count=nodes.length;
+  api.setAcousticDrumKit('studioV2');assert.equal(nodes.length,count);
+  old.options.onerror('expected test failure');
+  api.setAcousticDrumKit('studioV2');assert.ok(nodes.length>count);
+  const retryCount=nodes.length;
+  old.options.onerror('stale failure');
+  api.setAcousticDrumKit('studioV2');assert.equal(nodes.length,retryCount);
+  nodes.filter(n=>n.options?.urls).at(-1).options.onload();
+  assert.equal(api.isAcousticDrumSampleMode(),true);
+});
 test('electronic invalid velocities do not initialize or fire; simultaneous different parts share time',()=>{
   const {api,nodes,events}=engine('./drums');
   for(const v of [0,-1,NaN,Infinity])api.triggerDrumHit(36,1,v);
